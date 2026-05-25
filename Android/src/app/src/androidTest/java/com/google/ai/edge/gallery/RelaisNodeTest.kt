@@ -56,6 +56,28 @@ import org.junit.runner.RunWith
 class RelaisNodeTest {
 
   private val context: Context = InstrumentationRegistry.getInstrumentation().targetContext
+  private val args = InstrumentationRegistry.getArguments()
+
+  /**
+   * Starts the node and keeps the process + foreground service + endpoint alive for `holdSeconds`
+   * (default 600). Lets a host driver validate G3 (LAN curl) and G2 (forced-Doze survival) against
+   * a live service. Run in the background:
+   *   adb shell am instrument -w -e class ...#holdNode -e holdSeconds 480 ...
+   */
+  @Test
+  fun holdNode() {
+    val modelPath = RelaisEngine.defaultModelPath(context)
+    assumeTrue("Model not present at $modelPath", File(modelPath).exists())
+    val binder = startAndBindService()
+    val readyDeadline = System.currentTimeMillis() + 180_000
+    while (!binder.isReady && System.currentTimeMillis() < readyDeadline) Thread.sleep(2000)
+    assertTrue("engine not ready", binder.isReady)
+    val holdSeconds = args.getString("holdSeconds")?.toLongOrNull() ?: 600L
+    Log.i(TAG, "HOLD node ready (endpoint :8080); holding ${holdSeconds}s for G3/G2 validation")
+    Thread.sleep(holdSeconds * 1000)
+    Log.i(TAG, "HOLD window ended")
+    // Intentionally do not unbind/stop: leave the started foreground service running.
+  }
 
   /** G4 — modality-aware selector logic (pure, no device needed). */
   @Test

@@ -88,6 +88,24 @@ Single resident `litertlm.Engine`, `Backend.GPU()` (visionBackend=GPU, audioBack
   ```
   Results via `adb logcat -s RelaisBench`.
 
+## Gate results — node built & validated on Pixel 9 (2026-05-25)
+Implemented in `app/.../relais/` (`RelaisEngine`, `RelaisNodeService`, `RelaisHttpServer`,
+`BackendSelector`); validated via `RelaisNodeTest.kt` + host curl. All on-device, real runs:
+
+- **G1 ✅** Resident multimodal engine IN the foreground service (`RelaisNodeService`, dataSync FGS +
+  partial wake lock). `resident=true`; text→"ping", image(red)→"Red", audio→processed (routed GPU);
+  streamed decode **5.63 tok/s** (>4.0 floor). Throughput timed by token streaming (BenchmarkInfo
+  only populates via `benchmark()`, per Q1).
+- **G2 ⏳** Real-timed Doze survival run pending (real 5-min screen-off + real Doze, not forced).
+  A first-pass forced-idle check already succeeded (LAN inference @5.59 tok/s, engine not evicted);
+  the elapsed-time run follows in its own commit.
+- **G3 ✅** Endpoint bound `0.0.0.0:8080` (raw `ServerSocket`, no dep). **Real LAN inbound** from a
+  separate host to `192.168.68.57:8080`: `/health` ok; `/generate` text→"ping", **text+image→"Red"**,
+  sentence gen @ 5.6 tok/s. Also reachable via adb-forward.
+- **G4 ✅** `BackendSelector`: audio→GPU always; image/text→AICore on Pixel 10+ else GPU. On this
+  Pixel 9 `aicoreAvailable()` is gated false → all traffic resolves to GPU. **NPU/AICore branch
+  implemented but UNVERIFIED** until a Pixel 10 is available to wire the real `checkStatus()` probe.
+
 ## Honesty / stop conditions for the `/goal` run
 - Do **not** claim NPU on the Pixel 9. Do **not** add audio to the AICore path.
 - Implement the AICore/NPU branch but **guard it behind a runtime `checkStatus()`/device probe**; on the Pixel 9 it must **skip with a logged TODO** and be marked **UNVERIFIED** (no Pixel 10 to validate).
