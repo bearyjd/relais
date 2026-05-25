@@ -127,8 +127,14 @@ Implemented in `app/.../relais/` (`RelaisEngine`, `RelaisNodeService`, `RelaisHt
   **exact** alarm (`setExactAndAllowWhileIdle` + `USE_EXACT_ALARM`), which grants the temporary
   FGS-start exemption. After a crash the node is revived in **~55s** (new PID, inference returns
   "Alive"). Gated by a `shouldRun` latch so an intentional stop is honored.
-- **Not yet covered (longer soak):** overnight/multi-hour Doze, true low-memory OOM-kill (vs
-  simulated crash), wifi drop/reconnect with IP change. Left for a soak test.
+- **Wifi drop/reconnect + IP change ✅** — dropped wifi: server stayed alive (verified over
+  USB-forward; the `0.0.0.0` bind survives the interface going down). Reconnect changed the IP
+  (192.168.68.57 → .55); LAN health + inference worked on the new IP with no code change.
+  Implication: **clients must rediscover the IP** after a change — add mDNS/NSD for zero-config.
+- **OOM-kill:** covered by the same watchdog path as a crash (both are process death → exact-alarm
+  restart); validated via `am crash`. A forced low-memory LMK kill needs root/mem-hog — not done.
+- **Overnight/multi-hour Doze:** partial — a real ~20-min Doze passed (G2). Multi-hour soak left as
+  a follow-up.
 
 ## Honesty / stop conditions for the `/goal` run
 - Do **not** claim NPU on the Pixel 9. Do **not** add audio to the AICore path.
