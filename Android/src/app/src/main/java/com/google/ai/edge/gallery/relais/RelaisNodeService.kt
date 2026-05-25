@@ -44,6 +44,7 @@ private const val NOTIFICATION_ID = 4242
 class RelaisNodeService : Service() {
   private val binder = LocalBinder()
   private var httpServer: RelaisHttpServer? = null
+  private var httpsServer: RelaisHttpServer? = null
   private var wakeLock: PowerManager.WakeLock? = null
 
   inner class LocalBinder : Binder() {
@@ -71,9 +72,10 @@ class RelaisNodeService : Service() {
     thread(name = "relais-init") {
       try {
         RelaisEngine.ensureInitialized(applicationContext)
-        httpServer = RelaisHttpServer(applicationContext).also { it.start() }
-        updateNotification("Resident engine ready · endpoint :8080")
-        Log.i(TAG, "Node up: engine resident, endpoint listening")
+        httpServer = RelaisHttpServer(applicationContext, port = 8080).also { it.start() }
+        httpsServer = RelaisHttpServer(applicationContext, port = 8443, tls = true).also { it.start() }
+        updateNotification("Resident engine ready · http :8080 · https :8443")
+        Log.i(TAG, "Node up: engine resident, endpoints listening (http :8080, https :8443)")
         Log.i(TAG, "API key: ${RelaisConfig.apiKey(applicationContext)}")
       } catch (e: Exception) {
         Log.e(TAG, "Node init failed", e)
@@ -86,6 +88,7 @@ class RelaisNodeService : Service() {
 
   override fun onDestroy() {
     httpServer?.stop()
+    httpsServer?.stop()
     RelaisEngine.shutdown()
     runCatching { wakeLock?.release() }
     super.onDestroy()

@@ -19,18 +19,39 @@ package com.google.ai.edge.gallery.relais
 import android.content.Context
 import android.util.Base64
 import android.util.Log
+import com.google.ai.edge.gallery.R
 import java.io.BufferedReader
 import java.io.InputStreamReader
 import java.io.OutputStream
 import java.net.InetSocketAddress
 import java.net.ServerSocket
+import java.security.KeyStore
 import java.util.concurrent.Executors
+import javax.net.ssl.KeyManagerFactory
+import javax.net.ssl.SSLContext
 import org.json.JSONArray
 import org.json.JSONObject
 
 private const val TAG = "RelaisHttpServer"
 private const val MAX_BODY_BYTES = 32 * 1024 * 1024 // 32 MB cap (base64 image/audio)
 private const val DEFAULT_MODEL = "gemma-4-e4b-it"
+private const val RATE_LIMIT = 30 // requests
+private const val RATE_WINDOW_MS = 60_000L // per 60s, per client IP
+
+/** Fixed-window per-IP rate limiter. */
+private class RateLimiter(private val limit: Int, private val windowMs: Long) {
+  private val hits = HashMap<String, ArrayDeque<Long>>()
+
+  @Synchronized
+  fun allow(ip: String): Boolean {
+    val now = System.currentTimeMillis()
+    val q = hits.getOrPut(ip) { ArrayDeque() }
+    while (q.isNotEmpty() && now - q.first() > windowMs) q.removeFirst()
+    if (q.size >= limit) return false
+    q.addLast(now)
+    return true
+  }
+}
 
 /**
  * Dependency-free LAN endpoint for the multimodal node (Gate 3 + app-usable API).
@@ -43,11 +64,12 @@ private const val DEFAULT_MODEL = "gemma-4-e4b-it"
  * Auth: `Authorization: Bearer <key>` where key = [RelaisConfig.apiKey]. Bodies capped at
  * [MAX_BODY_BYTES]. Streaming uses SSE delimited by connection-close (no chunked framing).
  */
-class RelaisHttpServer(private val context: Context, private val port: Int = 8080) {
+class RelaisHttpServer(private val context: Context, private val port: Int = 8080, private val tls: Boolean = false) {
   private var serverSocket: ServerSocket? = null
   private val pool = Executors.newCachedThreadPool()
   @Volatile private var running = false
   private val apiKey by lazy { RelaisConfig.apiKey(context) }
+  private val rateLimiter = RateLimiter(RATE_LIMIT, RATE_WINDOW_MS)
 
   fun start() {
     if (running) return
@@ -55,9 +77,9 @@ class RelaisHttpServer(private val context: Context, private val port: Int = 808
     Thread(
         {
           try {
-            val socket = ServerSocket().apply { reuseAddress = true; bind(InetSocketAddress("0.0.0.0", port)) }
+            val socket = buildServerSocket().apply { reuseAddress = true; bind(InetSocketAddress("0.0.0.0", port)) }
             serverSocket = socket
-            Log.i(TAG, "Listening on 0.0.0.0:$port")
+            Log.i(TAG, "Listening on ${if (tls) "https" else "http"} 0.0.0.0:$port")
             while (running) {
               val client = socket.accept()
               pool.execute { handle(client) }
@@ -69,6 +91,17 @@ class RelaisHttpServer(private val context: Context, private val port: Int = 808
         "relais-http",
       )
       .start()
+  }
+
+  /** Plain or TLS server socket. TLS loads the bundled self-signed keystore (LAN cert; use -k). */
+  private fun buildServerSocket(): ServerSocket {
+    if (!tls) return ServerSocket()
+    val pass = "relais-spike".toCharArray() // self-signed LAN cert, not a real secret
+    val ks = KeyStore.getInstance("PKCS12")
+    context.resources.openRawResource(R.raw.relais_keystore).use { ks.load(it, pass) }
+    val kmf = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm()).apply { init(ks, pass) }
+    val ctx = SSLContext.getInstance("TLS").apply { init(kmf.keyManagers, null, null) }
+    return ctx.serverSocketFactory.createServerSocket()
   }
 
   private fun handle(client: java.net.Socket) {
@@ -93,10 +126,15 @@ class RelaisHttpServer(private val context: Context, private val port: Int = 808
           }
         }
 
-        // Health is open; everything else needs the API key.
+        // Health is open; everything else needs the API key + is rate-limited per client IP.
         if (!(method == "GET" && path.startsWith("/health"))) {
           if (!authorized(authorization)) {
             respond(sock, 401, JSONObject().put("error", "unauthorized"))
+            return
+          }
+          val ip = (sock.inetAddress?.hostAddress) ?: "unknown"
+          if (!rateLimiter.allow(ip)) {
+            respond(sock, 429, JSONObject().put("error", "rate limit exceeded ($RATE_LIMIT/${RATE_WINDOW_MS / 1000}s)"))
             return
           }
           if (contentLength > MAX_BODY_BYTES) {
