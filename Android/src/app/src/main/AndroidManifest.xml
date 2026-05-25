@@ -122,6 +122,13 @@
             tools:node="merge">
         </service>
 
+        <!-- Relais node control screen (start/stop); exported for launch + automation -->
+        <activity
+            android:name=".relais.RelaisControlActivity"
+            android:exported="true"
+            android:launchMode="singleTop"
+            android:label="Relais Node" />
+
         <!-- Relais node: headless resident multimodal LLM + LAN endpoint -->
         <service
             android:name=".relais.RelaisNodeService"
