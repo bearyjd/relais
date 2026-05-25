@@ -119,6 +119,12 @@
             tools:node="merge">
         </service>
 
+        <!-- Relais node: headless resident multimodal LLM + LAN endpoint -->
+        <service
+            android:name=".relais.RelaisNodeService"
+            android:foregroundServiceType="dataSync"
+            android:exported="false" />
+
         <!-- For Firebase Analytics. -->
         <receiver
             android:name="com.google.android.gms.measurement.AppMeasurementReceiver"
