@@ -23,6 +23,7 @@ import android.content.ServiceConnection
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
+import android.os.Build
 import android.os.IBinder
 import android.util.Log
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -108,6 +109,27 @@ class RelaisNodeTest {
     // This device (Pixel 9): AICore must be unavailable -> everything resolves to GPU. UNVERIFIED on Pixel 10.
     assertFalse("AICore must be gated off on this device", BackendSelector.aicoreAvailable(context))
     Log.i(TAG, "G4 selector OK; aicoreAvailable(this device)=${BackendSelector.aicoreAvailable(context)}")
+  }
+
+  /**
+   * NPU/AICore path: runs the real Gemini-Nano path on a Pixel 10+; auto-skips as UNVERIFIED on
+   * this Pixel 9 (excluded from AICore device groups). This is how the deferred gate closes once a
+   * Pixel 10 is connected — no code change, just a device that passes the probe.
+   */
+  @Test
+  fun g4b_npuAicorePathOrSkip() {
+    val available = com.google.ai.edge.gallery.relais.RelaisAicore.available(context)
+    Log.i(TAG, "AICore/NPU available=$available on ${Build.MODEL}")
+    assumeTrue("AICore/NPU UNVERIFIED here (Pixel 9 excluded); runs on Pixel 10+", available)
+    // Pixel 10+ only below:
+    assertEquals(
+      "image/text must route to NPU when AICore is available",
+      RelaisBackend.NPU_AICORE,
+      BackendSelector.select(RequestModalities(hasImage = true, hasAudio = false), aicoreAvailable = true),
+    )
+    val out = com.google.ai.edge.gallery.relais.RelaisAicore.generate(RelaisRequest(text = "Reply with one word: ping"))
+    Log.i(TAG, "NPU(AICore) text -> \"${out.take(60)}\"")
+    assertTrue("empty NPU response", out.isNotBlank())
   }
 
   /** G1 — resident multimodal engine hosted IN the foreground service; text+image+audio; decode>4 tok/s. */

@@ -104,9 +104,12 @@ Implemented in `app/.../relais/` (`RelaisEngine`, `RelaisNodeService`, `RelaisHt
 - **G3 ✅** Endpoint bound `0.0.0.0:8080` (raw `ServerSocket`, no dep). **Real LAN inbound** from a
   separate host to `192.168.68.57:8080`: `/health` ok; `/generate` text→"ping", **text+image→"Red"**,
   sentence gen @ 5.6 tok/s. Also reachable via adb-forward.
-- **G4 ✅** `BackendSelector`: audio→GPU always; image/text→AICore on Pixel 10+ else GPU. On this
-  Pixel 9 `aicoreAvailable()` is gated false → all traffic resolves to GPU. **NPU/AICore branch
-  implemented but UNVERIFIED** until a Pixel 10 is available to wire the real `checkStatus()` probe.
+- **G4 ✅** `BackendSelector`: audio→GPU always; image/text→AICore on Pixel 10+ else GPU. The NPU
+  path (`RelaisAicore`, ML Kit GenAI / Gemini Nano) is **fully wired with a real `checkStatus()`
+  probe** — not a stub. On this Pixel 9 the probe returns `FEATURE_NOT_FOUND` (ML Kit error 606),
+  empirically confirming the device is excluded from AICore, so all traffic resolves to GPU. The
+  `g4b_npuAicorePathOrSkip` test runs the real NPU generation on a Pixel 10+ and auto-skips as
+  **UNVERIFIED** here — the deferred gate closes by simply connecting a Pixel 10, no code change.
 
 ## Honesty / stop conditions for the `/goal` run
 - Do **not** claim NPU on the Pixel 9. Do **not** add audio to the AICore path.

@@ -76,17 +76,11 @@ object BackendSelector {
     }
 
   /**
-   * Whether the AICore/Gemini-Nano NPU path is usable on this device.
-   *
-   * UNVERIFIED / Pixel-10 TODO: the production probe is
-   * `AICoreModelHelper.isModelDownloaded(model)` (ML Kit `checkStatus() == AVAILABLE`) AND the
-   * allowlist device gate `Utils.isAICoreSupported(...)`. The Pixel 9 Pro Fold is excluded from
-   * the AICore device groups, so this returns false here and the GPU path always wins.
+   * Whether the AICore/Gemini-Nano NPU path is usable on this device, via a real ML Kit
+   * `checkStatus()` probe ([RelaisAicore.available]). Returns false on the Pixel 9 (not in the
+   * AICore device groups), so the GPU path always wins here; lights up on a Pixel 10.
    */
-  fun aicoreAvailable(@Suppress("UNUSED_PARAMETER") context: Context): Boolean {
-    // TODO(Pixel 10): wire AICoreModelHelper.checkStatus()==AVAILABLE + Utils.isAICoreSupported().
-    return false
-  }
+  fun aicoreAvailable(context: Context): Boolean = RelaisAicore.available(context)
 }
 
 /**
@@ -140,7 +134,15 @@ object RelaisEngine {
   @OptIn(ExperimentalApi::class)
   fun generate(context: Context, request: RelaisRequest, onToken: ((String) -> Unit)? = null): RelaisResult {
     val backend = BackendSelector.select(request.modalities, BackendSelector.aicoreAvailable(context))
-    // The AICore branch is not wired on this device; everything resolves to the resident GPU engine.
+
+    // NPU path (Pixel 10+): Gemini Nano via AICore, image/text only. UNVERIFIED on Pixel 9 — never
+    // selected here because aicoreAvailable() is false.
+    if (backend == RelaisBackend.NPU_AICORE) {
+      val text = RelaisAicore.generate(request)
+      onToken?.invoke(text)
+      return RelaisResult(text = text, backend = backend, decodeTokensPerSec = 0.0)
+    }
+
     ensureInitialized(context)
     val e = engine ?: error("Engine not initialized")
 
