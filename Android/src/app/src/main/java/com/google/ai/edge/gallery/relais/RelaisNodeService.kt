@@ -74,6 +74,7 @@ class RelaisNodeService : Service() {
         RelaisEngine.ensureInitialized(applicationContext)
         httpServer = RelaisHttpServer(applicationContext, port = 8080).also { it.start() }
         httpsServer = RelaisHttpServer(applicationContext, port = 8443, tls = true).also { it.start() }
+        RelaisDiscovery.register(applicationContext) // advertise _relais._tcp for zero-config LAN discovery
         updateNotification("Resident engine ready · http :8080 · https :8443")
         Log.i(TAG, "Node up: engine resident, endpoints listening (http :8080, https :8443)")
         Log.i(TAG, "API key: ${RelaisConfig.apiKey(applicationContext)}")
@@ -87,6 +88,7 @@ class RelaisNodeService : Service() {
   override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int = START_STICKY
 
   override fun onDestroy() {
+    RelaisDiscovery.unregister()
     httpServer?.stop()
     httpsServer?.stop()
     RelaisEngine.shutdown()
