@@ -118,6 +118,18 @@ Implemented in `app/.../relais/` (`RelaisEngine`, `RelaisNodeService`, `RelaisHt
   `g4b_npuAicorePathOrSkip` test runs the real NPU generation on a Pixel 10+ and auto-skips as
   **UNVERIFIED** here — the deferred gate closes by simply connecting a Pixel 10, no code change.
 
+## Robustness (workstream 3 — validated on Pixel 9)
+- **Battery saver ✅** — inference under `low_power=1` works (6.0 tok/s).
+- **Real Doze ✅** — engine survives genuine Doze while running (see G2).
+- **Crash / OOM recovery ✅ (after a fix).** FINDING: `START_STICKY` alone did **not** restart the
+  foreground service after an app-process crash (no recovery in 250s), and a plain background alarm
+  hit `ForegroundServiceStartNotAllowed` (Android 12+). FIX: `RelaisWatchdog` — a self-rescheduling
+  **exact** alarm (`setExactAndAllowWhileIdle` + `USE_EXACT_ALARM`), which grants the temporary
+  FGS-start exemption. After a crash the node is revived in **~55s** (new PID, inference returns
+  "Alive"). Gated by a `shouldRun` latch so an intentional stop is honored.
+- **Not yet covered (longer soak):** overnight/multi-hour Doze, true low-memory OOM-kill (vs
+  simulated crash), wifi drop/reconnect with IP change. Left for a soak test.
+
 ## Honesty / stop conditions for the `/goal` run
 - Do **not** claim NPU on the Pixel 9. Do **not** add audio to the AICore path.
 - Implement the AICore/NPU branch but **guard it behind a runtime `checkStatus()`/device probe**; on the Pixel 9 it must **skip with a logged TODO** and be marked **UNVERIFIED** (no Pixel 10 to validate).

@@ -24,6 +24,15 @@ object RelaisConfig {
   private const val PREFS = "relais"
   private const val KEY_API = "api_key"
   private const val KEY_AUTOSTART = "auto_start"
+  private const val KEY_SHOULD_RUN = "should_run"
+
+  /** Intent-to-run latch: set true while the node is meant to be up; the watchdog honors it. */
+  fun shouldRun(context: Context): Boolean =
+    context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(KEY_SHOULD_RUN, false)
+
+  fun setShouldRun(context: Context, value: Boolean) {
+    context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putBoolean(KEY_SHOULD_RUN, value).apply()
+  }
 
   /** Stable per-install API key; generated and persisted on first access. */
   fun apiKey(context: Context): String {

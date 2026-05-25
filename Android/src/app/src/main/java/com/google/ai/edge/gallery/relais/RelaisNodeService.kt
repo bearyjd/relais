@@ -117,12 +117,16 @@ class RelaisNodeService : Service() {
 
   companion object {
     fun start(context: Context) {
+      RelaisConfig.setShouldRun(context, true)
       val intent = Intent(context, RelaisNodeService::class.java)
       if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) context.startForegroundService(intent)
       else context.startService(intent)
+      RelaisWatchdog.schedule(context) // self-heal after crash/OOM (START_STICKY alone insufficient)
     }
 
     fun stop(context: Context) {
+      RelaisConfig.setShouldRun(context, false)
+      RelaisWatchdog.cancel(context)
       context.stopService(Intent(context, RelaisNodeService::class.java))
     }
   }
