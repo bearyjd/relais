@@ -133,9 +133,12 @@ object RelaisEngine {
     }
   }
 
-  /** Runs one request against the resident engine. Routes via [BackendSelector]. */
+  /**
+   * Runs one request against the resident engine. Routes via [BackendSelector]. If [onToken] is
+   * provided, each decoded delta is delivered as it streams (used for SSE / chunked HTTP).
+   */
   @OptIn(ExperimentalApi::class)
-  fun generate(context: Context, request: RelaisRequest): RelaisResult {
+  fun generate(context: Context, request: RelaisRequest, onToken: ((String) -> Unit)? = null): RelaisResult {
     val backend = BackendSelector.select(request.modalities, BackendSelector.aicoreAvailable(context))
     // The AICore branch is not wired on this device; everything resolves to the resident GPU engine.
     ensureInitialized(context)
@@ -169,7 +172,9 @@ object RelaisEngine {
               if (firstTokenNs == 0L) firstTokenNs = now
               lastTokenNs = now
               tokens++
-              sb.append(message.toString())
+              val delta = message.toString()
+              sb.append(delta)
+              onToken?.invoke(delta)
             }
 
             override fun onDone() = latch.countDown()

@@ -74,6 +74,7 @@ class RelaisNodeService : Service() {
         httpServer = RelaisHttpServer(applicationContext).also { it.start() }
         updateNotification("Resident engine ready · endpoint :8080")
         Log.i(TAG, "Node up: engine resident, endpoint listening")
+        Log.i(TAG, "API key: ${RelaisConfig.apiKey(applicationContext)}")
       } catch (e: Exception) {
         Log.e(TAG, "Node init failed", e)
         updateNotification("Init failed: ${e.message}")
