@@ -61,6 +61,13 @@ Single resident `litertlm.Engine`, `Backend.GPU()` (visionBackend=GPU, audioBack
 
 **Gate floor:** `decode > 4.0 tok/s` (below that implies a regression off GPU; CPU is far slower).
 
+**Throughput levers tried:** **Speculative decoding** — E4B reports support
+(`Capabilities.hasSpeculativeDecodingSupport()=true`) but **measured a regression**: ~2.56 tok/s
+on vs ~5.6 tok/s off (draft overhead > gains, no draft model bundled). **Left OFF.** Real speedup
+on this device needs either the **NPU (Pixel 10 / AICore)** or the **MTP-enabled model variant**
+(`gemma4_4b_..._thinking.litertlm`, a separate download per the allowlist `updatableModelFiles`).
+~5.5 tok/s decode is the practical ceiling for E4B on the Tensor-G4 GPU via this runtime.
+
 ---
 
 ## Architecture (settled direction)

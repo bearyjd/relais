@@ -25,6 +25,7 @@ import com.google.ai.edge.litertlm.ConversationConfig
 import com.google.ai.edge.litertlm.Engine
 import com.google.ai.edge.litertlm.EngineConfig
 import com.google.ai.edge.litertlm.ExperimentalApi
+import com.google.ai.edge.litertlm.ExperimentalFlags
 import com.google.ai.edge.litertlm.Message
 import com.google.ai.edge.litertlm.MessageCallback
 import com.google.ai.edge.litertlm.SamplerConfig
@@ -109,7 +110,11 @@ object RelaisEngine {
       if (isReady) return
       require(File(modelPath).exists()) { "Model not found: $modelPath" }
       val cacheDir = context.getExternalFilesDir(null)?.absolutePath
-      Log.i(TAG, "Initializing resident GPU multimodal engine from $modelPath")
+      // Speculative decoding is SUPPORTED by E4B (Capabilities.hasSpeculativeDecodingSupport()=true)
+      // but MEASURED A REGRESSION on this E4B/GPU/Tensor-G4 config: ~2.56 tok/s with it on vs
+      // ~5.63 tok/s off (draft overhead > gains, no draft model bundled). Left OFF deliberately.
+      ExperimentalFlags.enableSpeculativeDecoding = false
+      Log.i(TAG, "Initializing resident GPU engine from $modelPath")
       val e =
         Engine(
           EngineConfig(
