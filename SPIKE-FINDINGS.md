@@ -96,9 +96,11 @@ Implemented in `app/.../relais/` (`RelaisEngine`, `RelaisNodeService`, `RelaisHt
   partial wake lock). `resident=true`; text→"ping", image(red)→"Red", audio→processed (routed GPU);
   streamed decode **5.63 tok/s** (>4.0 floor). Throughput timed by token streaming (BenchmarkInfo
   only populates via `benchmark()`, per Q1).
-- **G2 ⏳** Real-timed Doze survival run pending (real 5-min screen-off + real Doze, not forced).
-  A first-pass forced-idle check already succeeded (LAN inference @5.59 tok/s, engine not evicted);
-  the elapsed-time run follows in its own commit.
+- **G2 ✅** Survival under **real Doze** (elapsed-time, not forced): screen off + battery
+  unplugged-sim, real 5-min screen-off, then real ~15-min wait during which the device entered
+  Doze on its own (`deviceidle=IDLE`). LAN inference then succeeded in 7.6s @ **5.37 tok/s** with a
+  correct full-sentence answer — resident engine not evicted. Needed: foreground service (dataSync)
+  + partial wake lock (both in impl). (A faster forced-idle pass corroborated this @5.59 tok/s.)
 - **G3 ✅** Endpoint bound `0.0.0.0:8080` (raw `ServerSocket`, no dep). **Real LAN inbound** from a
   separate host to `192.168.68.57:8080`: `/health` ok; `/generate` text→"ping", **text+image→"Red"**,
   sentence gen @ 5.6 tok/s. Also reachable via adb-forward.
