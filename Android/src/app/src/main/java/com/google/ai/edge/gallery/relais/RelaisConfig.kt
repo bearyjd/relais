@@ -28,6 +28,7 @@ object RelaisConfig {
   private const val KEY_MODEL_ID = "model_id"
   private const val KEY_HF_TOKEN = "hf_token"
   private const val KEY_MODEL_PATH = "model_path"
+  private const val KEY_TLS_PASS = "tls_keystore_pass"
 
   /**
    * Default model the node self-provisions. The litert-community Gemma-4-E4B-it repo is an **open**
@@ -94,5 +95,19 @@ object RelaisConfig {
 
   fun setModelPath(context: Context, value: String) {
     context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putString(KEY_MODEL_PATH, value).apply()
+  }
+
+  /**
+   * Random per-install password protecting the runtime-generated TLS keystore (app-private file).
+   * Generated and persisted on first access, mirroring [apiKey]. Not a shared/committed secret.
+   */
+  fun tlsKeystorePassword(context: Context): String {
+    val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+    prefs.getString(KEY_TLS_PASS, null)?.let {
+      return it
+    }
+    val pass = UUID.randomUUID().toString().replace("-", "")
+    prefs.edit().putString(KEY_TLS_PASS, pass).apply()
+    return pass
   }
 }
