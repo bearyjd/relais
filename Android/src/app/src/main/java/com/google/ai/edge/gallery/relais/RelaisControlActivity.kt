@@ -26,7 +26,10 @@ import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -61,6 +64,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -207,7 +213,8 @@ class RelaisControlActivity : ComponentActivity() {
             Readout("STATUS", if (ready) "engine resident" else if (running) "starting…" else "stopped")
             Readout("HTTP", "$ip:8080")
             Readout("HTTPS", "$ip:8443")
-            Readout("KEY", RelaisConfig.apiKey(ctx))
+            Spacer(Modifier.height(2.dp))
+            AccessKeyChip(apiKey = RelaisConfig.apiKey(ctx), baseUrl = "http://$ip:8080/v1")
             Divider()
 
             OutlinedTextField(
@@ -285,6 +292,66 @@ private fun Readout(label: String, value: String) {
 @Composable
 private fun Divider() {
   Box(Modifier.fillMaxWidth().height(1.dp).background(Line))
+}
+
+/**
+ * The node's bearer key as a tap-to-copy chip, plus a share action. Tapping the chip copies the
+ * raw key to the clipboard; "SHARE CONNECTION" opens the system share sheet with the base URL +
+ * key (a bare key is useless without the endpoint).
+ */
+@Composable
+private fun AccessKeyChip(apiKey: String, baseUrl: String) {
+  val clipboard = LocalClipboardManager.current
+  val ctx = LocalContext.current
+  var copied by remember { mutableStateOf(false) }
+  LaunchedEffect(copied) {
+    if (copied) {
+      delay(1500)
+      copied = false
+    }
+  }
+  Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+    Text("ACCESS KEY", color = Muted, fontFamily = FontFamily.Monospace, fontSize = 12.sp, letterSpacing = 1.sp)
+    Box(
+      modifier =
+        Modifier.fillMaxWidth()
+          .clip(RoundedCornerShape(6.dp))
+          .border(BorderStroke(1.dp, Amber.copy(alpha = 0.5f)), RoundedCornerShape(6.dp))
+          .clickable {
+            clipboard.setText(AnnotatedString(apiKey))
+            copied = true
+          }
+          .padding(horizontal = 14.dp, vertical = 12.dp)
+    ) {
+      Row(verticalAlignment = Alignment.CenterVertically) {
+        Text(apiKey, color = Paper, fontFamily = FontFamily.Monospace, fontSize = 13.sp, modifier = Modifier.weight(1f))
+        Spacer(Modifier.width(12.dp))
+        Text(
+          if (copied) "COPIED" else "TAP TO COPY",
+          color = Amber,
+          fontFamily = FontFamily.Monospace,
+          fontWeight = FontWeight.Bold,
+          fontSize = 11.sp,
+        )
+      }
+    }
+    Box(
+      modifier =
+        Modifier.clip(RoundedCornerShape(6.dp))
+          .clickable {
+            val text = "Relais node\nBase URL: $baseUrl\nAPI key: $apiKey"
+            val send =
+              Intent(Intent.ACTION_SEND).apply {
+                type = "text/plain"
+                putExtra(Intent.EXTRA_TEXT, text)
+              }
+            ctx.startActivity(Intent.createChooser(send, "Share Relais connection"))
+          }
+          .padding(vertical = 4.dp)
+    ) {
+      Text("SHARE CONNECTION ›", color = Amber, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+    }
+  }
 }
 
 /** Best-effort LAN IPv4 (prefers wlan), for showing the real endpoint URLs. */
