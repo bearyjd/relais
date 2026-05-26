@@ -31,6 +31,7 @@ import androidx.test.platform.app.InstrumentationRegistry
 import com.google.ai.edge.gallery.relais.BackendSelector
 import com.google.ai.edge.gallery.relais.RelaisBackend
 import com.google.ai.edge.gallery.relais.RelaisEngine
+import com.google.ai.edge.gallery.relais.RelaisModelProvisioner
 import com.google.ai.edge.gallery.relais.RelaisNodeService
 import com.google.ai.edge.gallery.relais.RelaisRequest
 import com.google.ai.edge.gallery.relais.RequestModalities
@@ -130,6 +131,31 @@ class RelaisNodeTest {
     val out = com.google.ai.edge.gallery.relais.RelaisAicore.generate(RelaisRequest(text = "Reply with one word: ping"))
     Log.i(TAG, "NPU(AICore) text -> \"${out.take(60)}\"")
     assertTrue("empty NPU response", out.isNotBlank())
+  }
+
+  /**
+   * Self-provisioning — resolves the configured model from the allowlist and, if it is **not**
+   * already on disk, downloads it via the real [DownloadWorker] path and confirms the engine
+   * initializes from the freshly downloaded file. Skips (does not re-download) when the model is
+   * already present, so it never deletes or refetches a multi-GB file in CI.
+   *
+   *   adb shell am instrument -w -e class \
+   *     com.google.ai.edge.gallery.RelaisNodeTest#g_provisionDownloadsModel \
+   *     com.google.aiedge.gallery.test/androidx.test.runner.AndroidJUnitRunner
+   */
+  @Test
+  fun g_provisionDownloadsModel() {
+    val model = RelaisModelProvisioner.resolveModel(context)
+    val path = model.getPath(context)
+    Log.i(TAG, "Provision resolved ${model.name} url=${model.url} -> $path")
+    assumeTrue("Model already present at $path — skipping download", !File(path).exists())
+
+    val out = RelaisModelProvisioner.ensureModel(context) { pct -> Log.i(TAG, "download $pct%") }
+    assertTrue("provisioned file missing at $out", File(out).exists())
+
+    RelaisEngine.ensureInitialized(context, out)
+    assertTrue("engine not ready after provisioning from $out", RelaisEngine.isReady)
+    Log.i(TAG, "Provisioned + engine ready from $out")
   }
 
   /** G1 — resident multimodal engine hosted IN the foreground service; text+image+audio; decode>4 tok/s. */

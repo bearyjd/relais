@@ -25,6 +25,16 @@ object RelaisConfig {
   private const val KEY_API = "api_key"
   private const val KEY_AUTOSTART = "auto_start"
   private const val KEY_SHOULD_RUN = "should_run"
+  private const val KEY_MODEL_ID = "model_id"
+  private const val KEY_HF_TOKEN = "hf_token"
+  private const val KEY_MODEL_PATH = "model_path"
+
+  /**
+   * Default model the node self-provisions. The litert-community Gemma-4-E4B-it repo is an **open**
+   * HuggingFace repo — it downloaded with no auth in the spike, so first run needs no token. Switch
+   * to a license-gated `google/gemma-*` id only alongside a token set via [setHfToken].
+   */
+  const val DEFAULT_MODEL_ID = "litert-community/gemma-4-E4B-it-litert-lm"
 
   /** Intent-to-run latch: set true while the node is meant to be up; the watchdog honors it. */
   fun shouldRun(context: Context): Boolean =
@@ -51,5 +61,38 @@ object RelaisConfig {
 
   fun setAutoStart(context: Context, enabled: Boolean) {
     context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putBoolean(KEY_AUTOSTART, enabled).apply()
+  }
+
+  /** Allowlist model id the node downloads & serves; defaults to the open [DEFAULT_MODEL_ID]. */
+  fun modelId(context: Context): String =
+    context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(KEY_MODEL_ID, null)
+      ?: DEFAULT_MODEL_ID
+
+  fun setModelId(context: Context, value: String) {
+    context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putString(KEY_MODEL_ID, value).apply()
+  }
+
+  /**
+   * Optional HuggingFace access token for license-gated repos (e.g. official `google/gemma-*`).
+   * Null for open models. The headless node cannot do interactive OAuth, so a gated model requires
+   * this to be pre-set via [setHfToken].
+   */
+  fun hfToken(context: Context): String? =
+    context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(KEY_HF_TOKEN, null)
+
+  fun setHfToken(context: Context, value: String?) {
+    context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putString(KEY_HF_TOKEN, value).apply()
+  }
+
+  /**
+   * Last successfully provisioned on-disk model path. Persisted so a restarted node whose model is
+   * already downloaded can boot **offline** without re-fetching the allowlist. Null until first
+   * provision; see [RelaisModelProvisioner.ensureModel].
+   */
+  fun modelPath(context: Context): String? =
+    context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(KEY_MODEL_PATH, null)
+
+  fun setModelPath(context: Context, value: String) {
+    context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putString(KEY_MODEL_PATH, value).apply()
   }
 }

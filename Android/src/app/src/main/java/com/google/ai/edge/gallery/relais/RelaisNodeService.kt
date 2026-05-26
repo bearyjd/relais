@@ -68,10 +68,16 @@ class RelaisNodeService : Service() {
         .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "relais:node")
         .apply { setReferenceCounted(false); acquire() }
 
-    // Initialize the resident engine off the main thread; start the endpoint when ready.
+    // Provision the model (download if missing) then initialize the resident engine off the main
+    // thread; start the endpoint when ready.
     thread(name = "relais-init") {
       try {
-        RelaisEngine.ensureInitialized(applicationContext)
+        updateNotification("Provisioning model…")
+        val modelPath =
+          RelaisModelProvisioner.ensureModel(applicationContext) { pct ->
+            updateNotification("Downloading model $pct%…")
+          }
+        RelaisEngine.ensureInitialized(applicationContext, modelPath)
         httpServer = RelaisHttpServer(applicationContext, port = 8080).also { it.start() }
         httpsServer = RelaisHttpServer(applicationContext, port = 8443, tls = true).also { it.start() }
         RelaisDiscovery.register(applicationContext) // advertise _relais._tcp for zero-config LAN discovery

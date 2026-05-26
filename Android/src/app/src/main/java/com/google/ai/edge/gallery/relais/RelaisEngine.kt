@@ -95,16 +95,26 @@ object RelaisEngine {
   @Volatile private var engine: Engine? = null
   private val lock = Any()
 
-  /** Default on-device model location (populated by the spike; see SPIKE-FINDINGS.md). */
+  /**
+   * Legacy hardcoded model location from the spike (manually side-loaded; see SPIKE-FINDINGS.md).
+   * Now only a fallback — the node self-provisions to [Model.getPath]'s layout via
+   * [RelaisModelProvisioner], and [ensureInitialized] defaults to that resolved path.
+   */
   fun defaultModelPath(context: Context): String =
     File(context.getExternalFilesDir(null), "relais/gemma-4-E4B-it.litertlm").absolutePath
 
   val isReady: Boolean
     get() = engine?.isInitialized() == true
 
-  /** Idempotent. Initializes the resident GPU multimodal engine if not already up. */
+  /**
+   * Idempotent. Initializes the resident GPU multimodal engine if not already up. Defaults to the
+   * path resolved by [RelaisModelProvisioner] (falling back to [defaultModelPath] pre-provision).
+   */
   @OptIn(ExperimentalApi::class)
-  fun ensureInitialized(context: Context, modelPath: String = defaultModelPath(context)) {
+  fun ensureInitialized(
+    context: Context,
+    modelPath: String = RelaisModelProvisioner.cachedPathOrDefault(context),
+  ) {
     if (isReady) return
     synchronized(lock) {
       if (isReady) return
