@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Relais mark: amber broadcast beacon (a node transmitting a signal). On the charcoal
+     adaptive-icon background. Foreground is transparent except the glyph. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- node / beacon base -->
+    <path
+        android:fillColor="#FFB000"
+        android:pathData="M54,73 m-7.5,0 a7.5,7.5 0 1,0 15,0 a7.5,7.5 0 1,0 -15,0" />
+    <!-- inner broadcast arc -->
+    <path
+        android:strokeColor="#FFB000"
+        android:strokeWidth="7.5"
+        android:strokeLineCap="round"
+        android:fillColor="#00000000"
+        android:pathData="M39.9,58.9 A20,20 0 0 1 68.1,58.9" />
+    <!-- outer broadcast arc -->
+    <path
+        android:strokeColor="#FFB000"
+        android:strokeWidth="7.5"
+        android:strokeLineCap="round"
+        android:fillColor="#00000000"
+        android:pathData="M30.7,49.7 A33,33 0 0 1 77.3,49.7" />
+</vector>
