@@ -18,6 +18,7 @@ package com.google.ai.edge.gallery.relais
 
 import android.content.Intent
 import android.os.Bundle
+import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.Arrangement
@@ -38,15 +39,28 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.delay
 
+private const val TAG = "RelaisControl"
+
 /**
  * Human start/stop control for the node. Also honors `--es cmd start|stop` so it can be driven
- * headlessly (adb am start) for automation.
+ * headlessly (adb am start) for automation. The activity is exported (launchable), so the `cmd`
+ * extra is gated behind the node's API key: any app can open the screen, but only a caller that
+ * knows the key (i.e. the operator via adb) can start/stop the service. The in-app buttons call
+ * [RelaisNodeService] directly — they are a trusted in-process user action and need no token.
  *
- *   adb shell am start -n <appId>/com.google.ai.edge.gallery.relais.RelaisControlActivity --es cmd start
+ *   adb shell am start -n <appId>/com.google.ai.edge.gallery.relais.RelaisControlActivity \
+ *     --es cmd start --es token <apiKey>
  */
 class RelaisControlActivity : ComponentActivity() {
   private fun handleCmd(intent: Intent?) {
-    when (intent?.getStringExtra("cmd")) {
+    val cmd = intent?.getStringExtra("cmd") ?: return
+    // Gate external start/stop: reject unless the caller presents the node's API key. Prevents a
+    // co-installed app from toggling the service (loading a multi-GB model, binding the endpoint).
+    if (intent.getStringExtra("token") != RelaisConfig.apiKey(this)) {
+      Log.w(TAG, "Ignoring cmd=$cmd from intent: missing/invalid token")
+      return
+    }
+    when (cmd) {
       "start" -> RelaisNodeService.start(this)
       "stop" -> RelaisNodeService.stop(this)
     }

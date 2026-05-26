@@ -29,6 +29,7 @@ import java.net.ServerSocket
 import java.security.KeyPair
 import java.security.KeyPairGenerator
 import java.security.KeyStore
+import java.security.MessageDigest
 import java.security.cert.X509Certificate
 import java.util.Calendar
 import java.util.Date
@@ -45,6 +46,8 @@ import org.json.JSONObject
 private const val TAG = "RelaisHttpServer"
 private const val TLS_KEY_ALIAS = "relais-tls"
 private const val TLS_KEYSTORE_FILE = "relais_tls.p12"
+private const val SOCKET_TIMEOUT_MS = 15_000 // read timeout: bounds slow/idle clients (slowloris)
+private const val MAX_CONNECTIONS = 16 // cap worker threads (single-engine node serializes anyway)
 private const val MAX_BODY_BYTES = 32 * 1024 * 1024 // 32 MB cap (base64 image/audio)
 private const val DEFAULT_MODEL = "gemma-4-e4b-it"
 private const val RATE_LIMIT = 30 // requests
@@ -78,7 +81,7 @@ private class RateLimiter(private val limit: Int, private val windowMs: Long) {
  */
 class RelaisHttpServer(private val context: Context, private val port: Int = 8080, private val tls: Boolean = false) {
   private var serverSocket: ServerSocket? = null
-  private val pool = Executors.newCachedThreadPool()
+  private val pool = Executors.newFixedThreadPool(MAX_CONNECTIONS)
   @Volatile private var running = false
   private val apiKey by lazy { RelaisConfig.apiKey(context) }
   private val rateLimiter = RateLimiter(RATE_LIMIT, RATE_WINDOW_MS)
@@ -155,6 +158,7 @@ class RelaisHttpServer(private val context: Context, private val port: Int = 808
   private fun handle(client: java.net.Socket) {
     client.use { sock ->
       try {
+        sock.soTimeout = SOCKET_TIMEOUT_MS // don't let an idle/slow client hold a worker thread
         val reader = BufferedReader(InputStreamReader(sock.getInputStream()))
         val requestLine = reader.readLine() ?: return
         val parts = requestLine.split(" ")
@@ -305,7 +309,8 @@ class RelaisHttpServer(private val context: Context, private val port: Int = 808
 
   private fun authorized(header: String?): Boolean {
     val token = header?.removePrefix("Bearer ")?.trim() ?: return false
-    return token == apiKey
+    // Constant-time compare to avoid leaking the key via response-timing differences.
+    return MessageDigest.isEqual(token.toByteArray(), apiKey.toByteArray())
   }
 
   private fun readBody(reader: BufferedReader, length: Int): String {
