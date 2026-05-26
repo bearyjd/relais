@@ -90,6 +90,10 @@ dependencies {
   implementation(libs.androidx.security.crypto)
   implementation(libs.androidx.webkit)
   implementation(libs.litertlm)
+  // Runtime self-signed TLS cert for the LAN endpoint: software RSA key + X509 builder. Needed
+  // because AndroidKeyStore keys can't sign the TLS server handshake via conscrypt on-device.
+  // jdk15to18 variant is the Android-compatible (non-multi-release) build.
+  implementation("org.bouncycastle:bcpkix-jdk15to18:1.78.1")
   implementation(libs.commonmark)
   implementation(libs.richtext)
   implementation(libs.tflite)

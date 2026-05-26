@@ -32,6 +32,9 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.WAKE_LOCK"/>
+    <!-- Watchdog exact alarm (grants temporary FGS-start exemption on crash recovery) -->
+    <uses-permission android:name="android.permission.USE_EXACT_ALARM" />
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="com.google.android.apps.aicore.service.BIND_SERVICE" />
 
@@ -118,6 +121,33 @@
             android:exported="false"
             tools:node="merge">
         </service>
+
+        <!-- Relais node control screen (start/stop); exported for launch + automation -->
+        <activity
+            android:name=".relais.RelaisControlActivity"
+            android:exported="true"
+            android:launchMode="singleTop"
+            android:label="Relais Node" />
+
+        <!-- Relais node: headless resident multimodal LLM + LAN endpoint -->
+        <service
+            android:name=".relais.RelaisNodeService"
+            android:foregroundServiceType="dataSync"
+            android:exported="false" />
+
+        <!-- Opt-in only (RelaisConfig.autoStartEnabled, default false) -->
+        <receiver
+            android:name=".relais.RelaisBootReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+            </intent-filter>
+        </receiver>
+
+        <!-- Watchdog: revives the node after a crash/OOM (START_STICKY alone insufficient) -->
+        <receiver
+            android:name=".relais.RelaisWatchdogReceiver"
+            android:exported="false" />
 
         <!-- For Firebase Analytics. -->
         <receiver

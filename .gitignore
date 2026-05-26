@@ -1,1 +1,5 @@
 .DS_Store
+
+# Self-signed TLS keystore is generated at runtime in AndroidKeyStore; never commit key material
+Android/src/app/src/main/res/raw/relais_keystore.p12
+*.p12
