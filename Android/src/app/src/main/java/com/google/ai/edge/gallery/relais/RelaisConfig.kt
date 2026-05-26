@@ -70,7 +70,13 @@ object RelaisConfig {
       ?: DEFAULT_MODEL_ID
 
   fun setModelId(context: Context, value: String) {
-    context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putString(KEY_MODEL_ID, value).apply()
+    val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+    val changed = prefs.getString(KEY_MODEL_ID, null) != value
+    prefs.edit().putString(KEY_MODEL_ID, value).apply()
+    // Switching models must invalidate the cached provisioned path, otherwise the offline
+    // fast-path in RelaisModelProvisioner.ensureModel would keep serving the previous model's
+    // file (it still exists on disk) and never resolve the new id.
+    if (changed) prefs.edit().remove(KEY_MODEL_PATH).apply()
   }
 
   /**

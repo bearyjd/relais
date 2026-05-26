@@ -60,7 +60,7 @@
         android:dataExtractionRules="@xml/data_extraction_rules"
         android:fullBackupContent="@xml/backup_rules"
         android:icon="${appIcon}"
-        android:label="Edge Gallery"
+        android:label="Relais"
         android:roundIcon="${appIcon}"
         android:supportsRtl="true"
         android:theme="@style/Theme.Gallery"
@@ -122,12 +122,19 @@
             tools:node="merge">
         </service>
 
-        <!-- Relais node control screen (start/stop); exported for launch + automation -->
+        <!-- Relais node control screen (start/stop); exported for launch + automation.
+             Has its own LAUNCHER icon ("Relais Node") alongside the stock Gallery icon. The
+             start/stop `cmd` intent extra is API-key gated (see RelaisControlActivity). -->
         <activity
             android:name=".relais.RelaisControlActivity"
             android:exported="true"
             android:launchMode="singleTop"
-            android:label="Relais Node" />
+            android:label="Relais Node">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
 
         <!-- Relais node: headless resident multimodal LLM + LAN endpoint -->
         <service
