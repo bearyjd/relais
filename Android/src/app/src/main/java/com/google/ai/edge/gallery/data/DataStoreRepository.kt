@@ -144,8 +144,8 @@ class DefaultDataStoreRepository(
     return runBlocking {
       val settings = dataStore.data.first()
       val curTheme = settings.theme
-      // Use "auto" as the default theme.
-      if (curTheme == Theme.THEME_UNSPECIFIED) Theme.THEME_AUTO else curTheme
+      // Default to dark — Relais is a dark-first brand (see DESIGN.md). Respects a saved choice.
+      if (curTheme == Theme.THEME_UNSPECIFIED) Theme.THEME_DARK else curTheme
     }
   }
 

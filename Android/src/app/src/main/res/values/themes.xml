@@ -18,8 +18,8 @@
 <resources xmlns:tools="http://schemas.android.com/tools">
   <style name="Theme.Gallery" parent="android:Theme.Material.Light.NoActionBar" />
   <style name="Theme.Gallery.SplashScreen" parent="Theme.SplashScreen">
-      <!-- Need to match surfaceLight in Colors.kt -->
-      <item name="windowSplashScreenBackground">#FFFFFFFF</item>
+      <!-- Charcoal — Relais is dark-first; avoid a white flash before Compose loads -->
+      <item name="windowSplashScreenBackground">#FF0B0B0D</item>
       <item name="windowSplashScreenAnimatedIcon">@drawable/splash_screen_animated_icon</item>
       <item name="postSplashScreenTheme">@style/Theme.Gallery</item>
   </style>
