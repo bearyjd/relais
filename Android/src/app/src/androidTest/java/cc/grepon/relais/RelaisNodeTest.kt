@@ -28,13 +28,13 @@ import android.os.IBinder
 import android.util.Log
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
-import cc.grepon.relais.relais.BackendSelector
-import cc.grepon.relais.relais.RelaisBackend
-import cc.grepon.relais.relais.RelaisEngine
-import cc.grepon.relais.relais.RelaisModelProvisioner
-import cc.grepon.relais.relais.RelaisNodeService
-import cc.grepon.relais.relais.RelaisRequest
-import cc.grepon.relais.relais.RequestModalities
+import cc.grepon.relais.BackendSelector
+import cc.grepon.relais.RelaisBackend
+import cc.grepon.relais.RelaisEngine
+import cc.grepon.relais.RelaisModelProvisioner
+import cc.grepon.relais.RelaisNodeService
+import cc.grepon.relais.RelaisRequest
+import cc.grepon.relais.RequestModalities
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.nio.ByteBuffer
@@ -119,7 +119,7 @@ class RelaisNodeTest {
    */
   @Test
   fun g4b_npuAicorePathOrSkip() {
-    val available = cc.grepon.relais.relais.RelaisAicore.available(context)
+    val available = cc.grepon.relais.RelaisAicore.available(context)
     Log.i(TAG, "AICore/NPU available=$available on ${Build.MODEL}")
     assumeTrue("AICore/NPU UNVERIFIED here (Pixel 9 excluded); runs on Pixel 10+", available)
     // Pixel 10+ only below:
@@ -128,7 +128,7 @@ class RelaisNodeTest {
       RelaisBackend.NPU_AICORE,
       BackendSelector.select(RequestModalities(hasImage = true, hasAudio = false), aicoreAvailable = true),
     )
-    val out = cc.grepon.relais.relais.RelaisAicore.generate(RelaisRequest(text = "Reply with one word: ping"))
+    val out = cc.grepon.relais.RelaisAicore.generate(RelaisRequest(text = "Reply with one word: ping"))
     Log.i(TAG, "NPU(AICore) text -> \"${out.take(60)}\"")
     assertTrue("empty NPU response", out.isNotBlank())
   }

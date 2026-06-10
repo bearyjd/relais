@@ -25,6 +25,7 @@
         android:targetSdkVersion="35" />
 
     <uses-permission android:name="android.permission.CAMERA" />
+    <!-- Standard (non-Google) permission; backs the read-calendar-events agent skill. -->
     <uses-permission android:name="android.permission.READ_CALENDAR" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC"/>
@@ -38,15 +39,8 @@
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="com.google.android.apps.aicore.service.BIND_SERVICE" />
 
-    <!-- Additional permission required for push notification handling -->
-    <!-- Required for resurfacing notifications after boot -->
+    <!-- Resurface scheduled notifications + auto-start the node after boot (opt-in) -->
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
-    <!-- Required for GCM message handling -->
-    <uses-permission android:name="com.google.android.c2dm.permission.RECEIVE" />
-    <!-- Required for registering with Chime properly -->
-    <uses-permission android:name="com.google.android.providers.gsf.permission.READ_GSERVICES" />
-    <!-- Required before JellyBean MR1, optional for newer versions of Android. -->
-    <uses-permission android:name="android.permission.GET_ACCOUNTS" />
 
     <uses-feature
         android:name="android.hardware.camera"
@@ -126,7 +120,7 @@
              Has its own LAUNCHER icon ("Relais Node") alongside the stock Gallery icon. The
              start/stop `cmd` intent extra is API-key gated (see RelaisControlActivity). -->
         <activity
-            android:name=".relais.RelaisControlActivity"
+            android:name=".RelaisControlActivity"
             android:exported="true"
             android:launchMode="singleTop"
             android:label="Relais Node">
@@ -138,13 +132,13 @@
 
         <!-- Relais node: headless resident multimodal LLM + LAN endpoint -->
         <service
-            android:name=".relais.RelaisNodeService"
+            android:name=".RelaisNodeService"
             android:foregroundServiceType="dataSync"
             android:exported="false" />
 
         <!-- Opt-in only (RelaisConfig.autoStartEnabled, default false) -->
         <receiver
-            android:name=".relais.RelaisBootReceiver"
+            android:name=".RelaisBootReceiver"
             android:exported="false">
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
@@ -153,30 +147,8 @@
 
         <!-- Watchdog: revives the node after a crash/OOM (START_STICKY alone insufficient) -->
         <receiver
-            android:name=".relais.RelaisWatchdogReceiver"
+            android:name=".RelaisWatchdogReceiver"
             android:exported="false" />
-
-        <!-- For Firebase Analytics. -->
-        <receiver
-            android:name="com.google.android.gms.measurement.AppMeasurementReceiver"
-            android:enabled="true"
-            android:exported="false" />
-        <service android:name="com.google.android.gms.measurement.AppMeasurementService"
-            android:enabled="true"
-            android:exported="false" />
-        <service
-            android:name="com.google.android.gms.measurement.AppMeasurementJobService"
-            android:enabled="true"
-            android:exported="false"
-            android:permission="android.permission.BIND_JOB_SERVICE" />
-
-        <service
-            android:name=".GalleryFcmMessagingService"
-            android:exported="false">
-            <intent-filter>
-                <action android:name="com.google.firebase.MESSAGING_EVENT" />
-            </intent-filter>
-        </service>
 
         <receiver
             android:name="cc.grepon.relais.notifications.NotificationReceiver"
@@ -190,9 +162,6 @@
             </intent-filter>
         </receiver>
 
-        <meta-data
-            android:name="com.google.firebase.messaging.default_notification_channel_id"
-            android:value="gallery_high_priority_push_channel" />
         <uses-native-library android:name="libvndksupport.so" android:required="false"/>
         <uses-native-library android:name="libOpenCL.so" android:required="false"/>
         <uses-native-library android:name="libcdsprpc.so" android:required="false" />

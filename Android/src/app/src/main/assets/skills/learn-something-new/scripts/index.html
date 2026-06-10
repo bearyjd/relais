@@ -141,22 +141,8 @@
           ctx.font = '42px "Google Sans", sans-serif';
           wrapText(ctx, clampedDescription, 120, nextYAfterTopic + 90, 840, 60);
 
-          // Helper to get platform
-          function getPlatform() {
-            const userAgent = navigator.userAgent || navigator.vendor || window.opera;
-            if (/iPad|iPhone|iPod/.test(userAgent) && !window.MSStream) return "iOS";
-            if (/android/i.test(userAgent)) return "Android";
-            return "unknown";
-          }
-
-          // Determine URL based on platform
-          const platform = getPlatform();
-          let linkUrl = "https://github.com/google-ai-edge/gallery"; // Fallback
-          if (platform === "iOS") {
-            linkUrl = "https://apps.apple.com/us/app/google-ai-edge-gallery/id6749645337";
-          } else if (platform === "Android") {
-            linkUrl = "https://play.google.com/store/apps/details?id=com.google.ai.edge.gallery";
-          }
+          // Relais is open source — point to the repository (no app-store listing).
+          const linkUrl = "https://github.com/entrevoix/relais";
 
           // 5. Generate QR Code
           const container = document.getElementById("qrcode-container");
@@ -222,7 +208,7 @@
 
           ctx.fillStyle = "#2D3436";
           ctx.font = 'bold 36px "Google Sans", sans-serif';
-          ctx.fillText("Google AI Edge Gallery", 200, footerY);
+          ctx.fillText("Relais", 200, footerY);
           ctx.fillStyle = "#B2BEC3";
           ctx.font = '28px "Google Sans", sans-serif';
           ctx.fillText("Scan to download the app", 200, footerY + 40);
