@@ -11,6 +11,30 @@ for a pipeline. So Gate 3 closes by **two complementary checks**:
    target phone whose captured artifact (CSV + logcat) is committed here. This
    mechanizes the "evidence, never assumption" discipline from `SPIKE-FINDINGS.md`.
 
+## Pre-staging the model (skip the first-run download)
+
+A fresh install otherwise downloads the ~3.66 GB model from HuggingFace on first
+start. To skip that, side-load the model into the node's app files dir: the node
+adopts a pre-staged copy at `…/files/relais/<model>.litertlm` instead of
+downloading (`RelaisModelProvisioner.ensureModel` fast path; gated to the default
+model id).
+
+```bash
+PKG=cc.grepon.relais
+DIR=/sdcard/Android/data/$PKG/files/relais
+adb shell mkdir -p "$DIR"
+adb push gemma-4-E4B-it.litertlm "$DIR/"
+# REQUIRED: a file pushed by adb is owned by `shell` with no "others" permission,
+# so the app (a different uid) reads it as 0 bytes and re-downloads anyway. Make it
+# app-readable:
+adb shell chmod 0755 "$DIR"
+adb shell chmod 0644 "$DIR/gemma-4-E4B-it.litertlm"
+```
+
+On the next start, logcat shows `Adopting pre-staged model at default location`
+(not `AGDownloadWorker`). The adopted path is then persisted, so later boots skip
+even the allowlist fetch.
+
 ## Running the real-device soak
 
 ```bash
