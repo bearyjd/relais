@@ -16,8 +16,6 @@
 
 plugins {
   alias(libs.plugins.android.application)
-  // Note: set apply to true to enable google-services (requires google-services.json).
-  alias(libs.plugins.google.services) apply false
   alias(libs.plugins.kotlin.android)
   alias(libs.plugins.kotlin.compose)
   alias(libs.plugins.kotlin.serialization)
@@ -109,10 +107,10 @@ dependencies {
   implementation(libs.hilt.android)
   implementation(libs.hilt.navigation.compose)
   implementation(libs.play.services.oss.licenses)
-  implementation(platform(libs.firebase.bom))
-  implementation(libs.firebase.analytics)
-  implementation(libs.firebase.messaging)
   implementation(libs.androidx.exifinterface)
+  // DocumentFile (SAF) was previously on the classpath transitively via Firebase; declare it
+  // explicitly now that Firebase is removed.
+  implementation("androidx.documentfile:documentfile:1.0.1")
   implementation(libs.moshi.kotlin)
   kapt(libs.hilt.android.compiler)
   testImplementation(libs.junit)

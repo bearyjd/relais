@@ -16,24 +16,22 @@
 
 package cc.grepon.relais
 
-import android.util.Log
-import com.google.firebase.Firebase
-import com.google.firebase.analytics.FirebaseAnalytics
-import com.google.firebase.analytics.analytics
+import android.os.Bundle
 
-private var hasLoggedAnalyticsWarning = false
+/**
+ * No-op analytics. Relais is a private, cloud-free appliance and ships **no telemetry** — Firebase
+ * Analytics was removed. This is kept as a typed no-op so the existing `firebaseAnalytics?.logEvent`
+ * call sites compile unchanged: [firebaseAnalytics] is always null, so every logEvent is a no-op
+ * (the body below never runs and exists only to type-check the calls).
+ */
+object NoopAnalytics {
+  fun logEvent(name: String, params: Bundle?) {
+    // Intentionally does nothing — Relais collects and transmits no analytics.
+  }
+}
 
-val firebaseAnalytics: FirebaseAnalytics?
-  get() =
-    runCatching { Firebase.analytics }
-      .onFailure { exception ->
-        // Firebase.analytics can throw an exception if goolgle-services is not set up, e.g.,
-        // missing google-services.json.
-        if (!hasLoggedAnalyticsWarning) {
-          Log.w("AGAnalyticsFirebase", "Firebase Analytics is not available", exception)
-        }
-      }
-      .getOrNull()
+/** Always null: analytics is disabled. The `?.` at every call site makes logEvent a no-op. */
+val firebaseAnalytics: NoopAnalytics? = null
 
 enum class GalleryEvent(val id: String) {
   CAPABILITY_SELECT(id = "capability_select"),
