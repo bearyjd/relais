@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package cc.grepon.relais.relais
+package cc.grepon.relais
 
 import android.content.Intent
 import android.os.Bundle
@@ -96,7 +96,7 @@ private val StopRed = Color(0xFFFF5247)
  * the `cmd` extra is gated behind the node's API key; the in-app buttons call [RelaisNodeService]
  * directly. Optional `--es modelId <id>` / `--es hfToken <t>` (also key-gated) switch the model.
  *
- *   adb shell am start -n <appId>/cc.grepon.relais.relais.RelaisControlActivity \
+ *   adb shell am start -n <appId>/cc.grepon.relais.RelaisControlActivity \
  *     --es cmd start --es token <apiKey> [--es modelId <allowlistId>] [--es hfToken <hfToken>]
  */
 class RelaisControlActivity : ComponentActivity() {

@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package cc.grepon.relais.relais
+package cc.grepon.relais
 
 import android.content.BroadcastReceiver
 import android.content.Context

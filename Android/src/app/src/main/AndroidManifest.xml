@@ -126,7 +126,7 @@
              Has its own LAUNCHER icon ("Relais Node") alongside the stock Gallery icon. The
              start/stop `cmd` intent extra is API-key gated (see RelaisControlActivity). -->
         <activity
-            android:name=".relais.RelaisControlActivity"
+            android:name=".RelaisControlActivity"
             android:exported="true"
             android:launchMode="singleTop"
             android:label="Relais Node">
@@ -138,13 +138,13 @@
 
         <!-- Relais node: headless resident multimodal LLM + LAN endpoint -->
         <service
-            android:name=".relais.RelaisNodeService"
+            android:name=".RelaisNodeService"
             android:foregroundServiceType="dataSync"
             android:exported="false" />
 
         <!-- Opt-in only (RelaisConfig.autoStartEnabled, default false) -->
         <receiver
-            android:name=".relais.RelaisBootReceiver"
+            android:name=".RelaisBootReceiver"
             android:exported="false">
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
@@ -153,7 +153,7 @@
 
         <!-- Watchdog: revives the node after a crash/OOM (START_STICKY alone insufficient) -->
         <receiver
-            android:name=".relais.RelaisWatchdogReceiver"
+            android:name=".RelaisWatchdogReceiver"
             android:exported="false" />
 
         <!-- For Firebase Analytics. -->

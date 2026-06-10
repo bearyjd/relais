@@ -16,7 +16,7 @@
  * with Relais. If not, see <https://www.gnu.org/licenses/>.
  */
 
-package cc.grepon.relais.relais
+package cc.grepon.relais
 
 import android.content.Context
 import android.os.PowerManager
