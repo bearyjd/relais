@@ -32,6 +32,7 @@ import com.google.ai.edge.litertlm.SamplerConfig
 import java.io.File
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 
 private const val TAG = "RelaisEngine"
 
@@ -96,6 +97,13 @@ object RelaisEngine {
   private val lock = Any()
 
   /**
+   * True while the node is provisioning/initializing in this process (e.g. a first-run multi-GB
+   * model download). The watchdog uses this to distinguish "still coming up" from "dead", so a slow
+   * first start is not mistaken for a failure (no backoff escalation, no premature alarm).
+   */
+  @Volatile var startupInProgress: Boolean = false
+
+  /**
    * Legacy hardcoded model location from the spike (manually side-loaded; see SPIKE-FINDINGS.md).
    * Now only a fallback — the node self-provisions to [Model.getPath]'s layout via
    * [RelaisModelProvisioner], and [ensureInitialized] defaults to that resolved path.
@@ -147,70 +155,101 @@ object RelaisEngine {
    * provided, each decoded delta is delivered as it streams (used for SSE / chunked HTTP).
    */
   @OptIn(ExperimentalApi::class)
-  fun generate(context: Context, request: RelaisRequest, onToken: ((String) -> Unit)? = null): RelaisResult {
-    val backend = BackendSelector.select(request.modalities, BackendSelector.aicoreAvailable(context))
+  fun generate(
+    context: Context,
+    request: RelaisRequest,
+    onToken: ((String) -> Unit)? = null,
+    shouldCancel: (() -> Boolean)? = null,
+  ): RelaisResult {
+    RelaisMetrics.incInFlight() // counts both queued (waiting on lock) and running -> queue_depth
+    val reqStartNs = System.nanoTime()
+    try {
+      val backend = BackendSelector.select(request.modalities, BackendSelector.aicoreAvailable(context))
 
-    // NPU path (Pixel 10+): Gemini Nano via AICore, image/text only. UNVERIFIED on Pixel 9 — never
-    // selected here because aicoreAvailable() is false.
-    if (backend == RelaisBackend.NPU_AICORE) {
-      val text = RelaisAicore.generate(request)
-      onToken?.invoke(text)
-      return RelaisResult(text = text, backend = backend, decodeTokensPerSec = 0.0)
-    }
-
-    ensureInitialized(context)
-    val e = engine ?: error("Engine not initialized")
-
-    val contents = buildList {
-      request.imagePng?.let { add(Content.ImageBytes(it)) }
-      request.audioWav?.let { add(Content.AudioBytes(it)) }
-      if (request.text.isNotBlank()) add(Content.Text(request.text))
-    }
-
-    synchronized(lock) {
-      val conversation =
-        e.createConversation(
-          ConversationConfig(samplerConfig = SamplerConfig(topK = 64, topP = 0.95, temperature = 1.0))
-        )
-      return try {
-        // Stream so we can measure decode throughput by wall clock: BenchmarkInfo only populates
-        // via the library's benchmark() path, not normal conversations (see SPIKE-FINDINGS.md / Q1).
-        val sb = StringBuilder()
-        var tokens = 0
-        var firstTokenNs = 0L
-        var lastTokenNs = 0L
-        val latch = CountDownLatch(1)
-        val error = arrayOfNulls<Throwable>(1)
-        conversation.sendMessageAsync(
-          Contents.of(contents),
-          object : MessageCallback {
-            override fun onMessage(message: Message) {
-              val now = System.nanoTime()
-              if (firstTokenNs == 0L) firstTokenNs = now
-              lastTokenNs = now
-              tokens++
-              val delta = message.toString()
-              sb.append(delta)
-              onToken?.invoke(delta)
-            }
-
-            override fun onDone() = latch.countDown()
-
-            override fun onError(throwable: Throwable) {
-              error[0] = throwable
-              latch.countDown()
-            }
-          },
-          emptyMap(),
-        )
-        if (!latch.await(120, TimeUnit.SECONDS)) error("inference timed out")
-        error[0]?.let { throw it }
-        val decodeSec = if (lastTokenNs > firstTokenNs) (lastTokenNs - firstTokenNs) / 1e9 else 0.0
-        val tokS = if (decodeSec > 0 && tokens > 1) (tokens - 1) / decodeSec else 0.0
-        RelaisResult(text = sb.toString(), backend = backend, decodeTokensPerSec = tokS)
-      } finally {
-        conversation.close()
+      // NPU path (Pixel 10+): Gemini Nano via AICore, image/text only. UNVERIFIED on Pixel 9 —
+      // never selected here because aicoreAvailable() is false.
+      if (backend == RelaisBackend.NPU_AICORE) {
+        val text = RelaisAicore.generate(request)
+        onToken?.invoke(text)
+        return RelaisResult(text = text, backend = backend, decodeTokensPerSec = 0.0)
       }
+
+      ensureInitialized(context)
+      val e = engine ?: error("Engine not initialized")
+
+      val contents = buildList {
+        request.imagePng?.let { add(Content.ImageBytes(it)) }
+        request.audioWav?.let { add(Content.AudioBytes(it)) }
+        if (request.text.isNotBlank()) add(Content.Text(request.text))
+      }
+
+      synchronized(lock) {
+        // Thermal cool-down spaces *actual* decode runs: applied under the lock, not per-request on
+        // the worker pool, so concurrent requests don't all sleep in parallel and then serialize.
+        ThermalGovernor.cooldownMs().takeIf { it > 0 }?.let { runCatching { Thread.sleep(it) } }
+        val conversation =
+          e.createConversation(
+            ConversationConfig(samplerConfig = SamplerConfig(topK = 64, topP = 0.95, temperature = 1.0))
+          )
+        return try {
+          // Stream so we can measure decode throughput by wall clock: BenchmarkInfo only populates
+          // via the library's benchmark() path, not normal conversations (SPIKE-FINDINGS.md / Q1).
+          val sb = StringBuilder()
+          var tokens = 0
+          var firstTokenNs = 0L
+          var lastTokenNs = 0L
+          val canceled = AtomicBoolean(false)
+          val latch = CountDownLatch(1)
+          val error = arrayOfNulls<Throwable>(1)
+          conversation.sendMessageAsync(
+            Contents.of(contents),
+            object : MessageCallback {
+              override fun onMessage(message: Message) {
+                val now = System.nanoTime()
+                if (firstTokenNs == 0L) firstTokenNs = now
+                lastTokenNs = now
+                tokens++
+                val delta = message.toString()
+                sb.append(delta)
+                if (canceled.get()) return
+                // Cooperative cancel: thermal-truncate (device-protective) or client disconnect
+                // (onToken throws on a broken pipe). Best-effort — it stops streaming to the client;
+                // native decode is bounded by maxNumTokens. True mid-decode native stop is a TODO
+                // pending a litertlm cancellation API (see SPIKE-FINDINGS / Gate 2 stopResponse).
+                if (shouldCancel?.invoke() == true) {
+                  canceled.set(true)
+                  return
+                }
+                try {
+                  onToken?.invoke(delta)
+                } catch (t: Throwable) {
+                  canceled.set(true)
+                }
+              }
+
+              override fun onDone() = latch.countDown()
+
+              override fun onError(throwable: Throwable) {
+                error[0] = throwable
+                latch.countDown()
+              }
+            },
+            emptyMap(),
+          )
+          if (!latch.await(120, TimeUnit.SECONDS)) error("inference timed out")
+          error[0]?.let { throw it }
+          val decodeSec = if (lastTokenNs > firstTokenNs) (lastTokenNs - firstTokenNs) / 1e9 else 0.0
+          val tokS = if (decodeSec > 0 && tokens > 1) (tokens - 1) / decodeSec else 0.0
+          RelaisMetrics.recordThroughput(tokens, tokS, backend.name)
+          ThermalGovernor.onDecodeThroughput(tokS)
+          RelaisResult(text = sb.toString(), backend = backend, decodeTokensPerSec = tokS)
+        } finally {
+          conversation.close()
+        }
+      }
+    } finally {
+      RelaisMetrics.recordLatency((System.nanoTime() - reqStartNs) / 1e9) // every outcome (HIGH-2)
+      RelaisMetrics.decInFlight()
     }
   }
 

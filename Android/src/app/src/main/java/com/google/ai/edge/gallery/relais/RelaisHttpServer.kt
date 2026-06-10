@@ -49,19 +49,33 @@ private const val TLS_KEYSTORE_FILE = "relais_tls.p12"
 private const val SOCKET_TIMEOUT_MS = 15_000 // read timeout: bounds slow/idle clients (slowloris)
 private const val MAX_CONNECTIONS = 16 // cap worker threads (single-engine node serializes anyway)
 private const val MAX_BODY_BYTES = 32 * 1024 * 1024 // 32 MB cap (base64 image/audio)
+private const val MAX_HEADER_LINES = 64 // bound header parsing (slowloris / header-flood)
+private const val MAX_HEADER_BYTES = 16 * 1024
 private const val DEFAULT_MODEL = "gemma-4-e4b-it"
 private const val RATE_LIMIT = 30 // requests
 private const val RATE_WINDOW_MS = 60_000L // per 60s, per client IP
+private const val MAX_TRACKED_IPS = 4096 // bound the rate-limiter map (memory-exhaustion DoS, H4)
 
-/** Fixed-window per-IP rate limiter. */
+/** Fixed-window per-IP rate limiter with stale-entry eviction (bounds the tracking map). */
 private class RateLimiter(private val limit: Int, private val windowMs: Long) {
   private val hits = HashMap<String, ArrayDeque<Long>>()
 
   @Synchronized
   fun allow(ip: String): Boolean {
     val now = System.currentTimeMillis()
+    // Evict stale/empty buckets so a source-address sweep (trivial over IPv6) can't grow the map
+    // without bound -> OOM -> watchdog restart loop (security H4). Threshold-triggered amortized sweep.
+    if (hits.size > MAX_TRACKED_IPS) {
+      val it = hits.entries.iterator()
+      while (it.hasNext()) {
+        val q = it.next().value
+        while (q.isNotEmpty() && now - q.first() > windowMs) q.removeFirst()
+        if (q.isEmpty()) it.remove()
+      }
+    }
     val q = hits.getOrPut(ip) { ArrayDeque() }
     while (q.isNotEmpty() && now - q.first() > windowMs) q.removeFirst()
+    RateLimiterStats.trackedIps = hits.size
     if (q.size >= limit) return false
     q.addLast(now)
     return true
@@ -71,15 +85,26 @@ private class RateLimiter(private val limit: Int, private val windowMs: Long) {
 /**
  * Dependency-free LAN endpoint for the multimodal node (Gate 3 + app-usable API).
  *
- * Binds 0.0.0.0:[port]. Routes through the resident [RelaisEngine].
- *   GET  /health                 -> {"status":"ok","ready":<bool>}            (no auth)
- *   POST /generate                {"text","image_b64?","audio_b64?"}          (auth)
- *   POST /v1/chat/completions     OpenAI-compatible, text+image, stream param (auth)
+ * Binds [bindAddr]:[port]. Routes through the resident [RelaisEngine].
+ *   GET  /health                 -> {"status","ready","thermal_state"}          (no auth)
+ *   GET  /metrics                 Prometheus text (or JSON via Accept)           (auth)
+ *   POST /generate                {"text","image_b64?","audio_b64?"}            (auth)
+ *   POST /v1/chat/completions     OpenAI-compatible, text+image, stream param   (auth)
  *
  * Auth: `Authorization: Bearer <key>` where key = [RelaisConfig.apiKey]. Bodies capped at
  * [MAX_BODY_BYTES]. Streaming uses SSE delimited by connection-close (no chunked framing).
+ * Under thermal backpressure ([ThermalGovernor.shouldShed]), inference endpoints return 503 +
+ * Retry-After rather than cooking the device.
+ *
+ * Network posture (security C1): the node runs HTTP on loopback (local app/dev only) and HTTPS on
+ * the LAN, so the bearer key is never sent in cleartext across the network. See [RelaisNodeService].
  */
-class RelaisHttpServer(private val context: Context, private val port: Int = 8080, private val tls: Boolean = false) {
+class RelaisHttpServer(
+  private val context: Context,
+  private val port: Int = 8080,
+  private val tls: Boolean = false,
+  private val bindAddr: String = "127.0.0.1", // safe default; callers opt into 0.0.0.0 for TLS (C1)
+) {
   private var serverSocket: ServerSocket? = null
   private val pool = Executors.newFixedThreadPool(MAX_CONNECTIONS)
   @Volatile private var running = false
@@ -92,9 +117,9 @@ class RelaisHttpServer(private val context: Context, private val port: Int = 808
     Thread(
         {
           try {
-            val socket = buildServerSocket().apply { reuseAddress = true; bind(InetSocketAddress("0.0.0.0", port)) }
+            val socket = buildServerSocket().apply { reuseAddress = true; bind(InetSocketAddress(bindAddr, port)) }
             serverSocket = socket
-            Log.i(TAG, "Listening on ${if (tls) "https" else "http"} 0.0.0.0:$port")
+            Log.i(TAG, "Listening on ${if (tls) "https" else "http"} $bindAddr:$port")
             while (running) {
               val client = socket.accept()
               pool.execute { handle(client) }
@@ -157,6 +182,7 @@ class RelaisHttpServer(private val context: Context, private val port: Int = 808
 
   private fun handle(client: java.net.Socket) {
     client.use { sock ->
+      var endpoint = "other"
       try {
         sock.soTimeout = SOCKET_TIMEOUT_MS // don't let an idle/slow client hold a worker thread
         val reader = BufferedReader(InputStreamReader(sock.getInputStream()))
@@ -165,41 +191,74 @@ class RelaisHttpServer(private val context: Context, private val port: Int = 808
         if (parts.size < 2) return
         val method = parts[0]
         val path = parts[1]
+        endpoint = endpointLabel(path)
+
+        // Records the request metric alongside the response (security M6: labels are normalized).
+        fun reply(status: Int, body: JSONObject, headers: List<String> = emptyList()) {
+          RelaisMetrics.recordRequest(endpoint, status)
+          respond(sock, status, body, headers)
+        }
 
         var contentLength = 0
         var authorization: String? = null
+        var accept: String? = null
+        var headerLines = 0
+        var headerBytes = 0
         while (true) {
           val line = reader.readLine() ?: break
           if (line.isEmpty()) break
+          headerLines++
+          headerBytes += line.length
+          if (headerLines > MAX_HEADER_LINES || headerBytes > MAX_HEADER_BYTES) {
+            reply(431, JSONObject().put("error", "header too large"))
+            return
+          }
           val lower = line.lowercase()
           when {
             lower.startsWith("content-length:") -> contentLength = line.substringAfter(":").trim().toIntOrNull() ?: 0
             lower.startsWith("authorization:") -> authorization = line.substringAfter(":").trim()
+            lower.startsWith("accept:") -> accept = lower.substringAfter(":").trim()
           }
         }
 
         // Health is open; everything else needs the API key + is rate-limited per client IP.
         if (!(method == "GET" && path.startsWith("/health"))) {
           if (!authorized(authorization)) {
-            respond(sock, 401, JSONObject().put("error", "unauthorized"))
+            reply(401, JSONObject().put("error", "unauthorized"))
             return
           }
           val ip = (sock.inetAddress?.hostAddress) ?: "unknown"
           if (!rateLimiter.allow(ip)) {
-            respond(sock, 429, JSONObject().put("error", "rate limit exceeded ($RATE_LIMIT/${RATE_WINDOW_MS / 1000}s)"))
+            reply(429, JSONObject().put("error", "rate limit exceeded ($RATE_LIMIT/${RATE_WINDOW_MS / 1000}s)"))
             return
           }
           if (contentLength > MAX_BODY_BYTES) {
-            respond(sock, 413, JSONObject().put("error", "request too large"))
+            reply(413, JSONObject().put("error", "request too large"))
             return
           }
         }
 
         when {
           method == "GET" && path.startsWith("/health") ->
-            respond(sock, 200, JSONObject().put("status", "ok").put("ready", RelaisEngine.isReady))
+            reply(
+              200,
+              JSONObject()
+                .put("status", "ok")
+                .put("ready", RelaisEngine.isReady)
+                .put("thermal_state", ThermalGovernor.statusValue),
+            )
+
+          method == "GET" && path.startsWith("/metrics") -> {
+            RelaisMetrics.recordRequest(endpoint, 200)
+            if (accept?.contains("application/json") == true) {
+              respond(sock, 200, RelaisMetrics.renderJson(context))
+            } else {
+              respondText(sock, 200, RelaisMetrics.renderProm(context), "text/plain; version=0.0.4")
+            }
+          }
 
           method == "POST" && path.startsWith("/generate") -> {
+            if (shedIfHot(::reply)) return
             val json = JSONObject(readBody(reader, contentLength))
             val request =
               RelaisRequest(
@@ -207,9 +266,8 @@ class RelaisHttpServer(private val context: Context, private val port: Int = 808
                 imagePng = json.optString("image_b64").takeIf { it.isNotEmpty() }?.let { decode(it) },
                 audioWav = json.optString("audio_b64").takeIf { it.isNotEmpty() }?.let { decode(it) },
               )
-            val result = RelaisEngine.generate(context, request)
-            respond(
-              sock,
+            val result = RelaisEngine.generate(context, request, shouldCancel = { ThermalGovernor.shouldTruncate() })
+            reply(
               200,
               JSONObject()
                 .put("response", result.text)
@@ -218,16 +276,33 @@ class RelaisHttpServer(private val context: Context, private val port: Int = 808
             )
           }
 
-          method == "POST" && path.startsWith("/v1/chat/completions") ->
+          method == "POST" && path.startsWith("/v1/chat/completions") -> {
+            if (shedIfHot(::reply)) return
             handleOpenAi(sock, JSONObject(readBody(reader, contentLength)))
+          }
 
-          else -> respond(sock, 404, JSONObject().put("error", "not found"))
+          else -> reply(404, JSONObject().put("error", "not found"))
         }
       } catch (e: Exception) {
         Log.e(TAG, "Request handling error", e)
-        runCatching { respond(sock, 500, JSONObject().put("error", e.message ?: "error")) }
+        RelaisMetrics.recordRequest(endpoint, 500)
+        // Generic client message; detail stays in logcat (don't leak internals to the caller).
+        runCatching { respond(sock, 500, JSONObject().put("error", "internal error")) }
       }
     }
+  }
+
+  /** If the device is thermally shedding, answer 503 + Retry-After and return true. */
+  private fun shedIfHot(reply: (Int, JSONObject, List<String>) -> Unit): Boolean {
+    if (!ThermalGovernor.shouldShed()) return false
+    RelaisMetrics.recordShed()
+    val retry = ThermalGovernor.retryAfterSeconds() + (0..4).random() // jitter avoids retry stampede
+    reply(
+      503,
+      JSONObject().put("error", "thermal backpressure; retry later").put("retry_after_seconds", retry),
+      listOf("Retry-After: $retry"),
+    )
+    return true
   }
 
   // --- OpenAI-compatible chat completions ---
@@ -239,7 +314,7 @@ class RelaisHttpServer(private val context: Context, private val port: Int = 808
     val id = "chatcmpl-" + System.currentTimeMillis()
 
     if (!stream) {
-      val result = RelaisEngine.generate(context, request)
+      val result = RelaisEngine.generate(context, request, shouldCancel = { ThermalGovernor.shouldTruncate() })
       val resp =
         JSONObject()
           .put("id", id)
@@ -250,11 +325,15 @@ class RelaisHttpServer(private val context: Context, private val port: Int = 808
               .put("index", 0)
               .put("message", JSONObject().put("role", "assistant").put("content", result.text))
               .put("finish_reason", "stop")))
+      RelaisMetrics.recordRequest("/v1/chat/completions", 200)
       respond(sock, 200, resp)
       return
     }
 
-    // Streaming: SSE delimited by connection close.
+    // Streaming: SSE delimited by connection close. Once the 200 header is committed, an inference
+    // failure must NOT unwind to the outer catch (that would write a second HTTP status into the
+    // stream and double-count the request) — post-commit errors become an SSE error event (HIGH-1).
+    RelaisMetrics.recordRequest("/v1/chat/completions", 200)
     val out = sock.getOutputStream()
     out.write(
       ("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\n" +
@@ -269,9 +348,20 @@ class RelaisHttpServer(private val context: Context, private val port: Int = 808
         .put("model", model).put("choices", JSONArray().put(choice))
       out.write("data: $chunk\n\n".toByteArray()); out.flush()
     }
-    RelaisEngine.generate(context, request) { delta -> sendChunk(delta, null) }
-    sendChunk(null, "stop")
-    out.write("data: [DONE]\n\n".toByteArray()); out.flush()
+    try {
+      // onToken throwing (broken pipe) and thermal-truncate both cooperatively stop the decode.
+      RelaisEngine.generate(
+        context,
+        request,
+        onToken = { delta -> sendChunk(delta, null) },
+        shouldCancel = { ThermalGovernor.shouldTruncate() },
+      )
+      sendChunk(null, "stop")
+      out.write("data: [DONE]\n\n".toByteArray()); out.flush()
+    } catch (e: Exception) {
+      Log.e(TAG, "stream error after headers committed", e)
+      runCatching { out.write("data: {\"error\":\"stream aborted\"}\n\n".toByteArray()); out.flush() }
+    }
   }
 
   /** Extracts text + first image + first audio from the last user message (string or parts array). */
@@ -307,32 +397,73 @@ class RelaisHttpServer(private val context: Context, private val port: Int = 808
 
   // --- helpers ---
 
+  private fun endpointLabel(path: String): String =
+    when {
+      path.startsWith("/health") -> "/health"
+      path.startsWith("/metrics") -> "/metrics"
+      path.startsWith("/generate") -> "/generate"
+      path.startsWith("/v1/chat/completions") -> "/v1/chat/completions"
+      else -> "other"
+    }
+
   private fun authorized(header: String?): Boolean {
     val token = header?.removePrefix("Bearer ")?.trim() ?: return false
     // Constant-time compare to avoid leaking the key via response-timing differences.
     return MessageDigest.isEqual(token.toByteArray(), apiKey.toByteArray())
   }
 
+  /**
+   * Reads up to [length] (capped) chars of body without pre-allocating the client-claimed size:
+   * a malicious large Content-Length no longer forces a multi-MB allocation per worker (security M1).
+   */
   private fun readBody(reader: BufferedReader, length: Int): String {
-    val buf = CharArray(length)
-    var read = 0
-    while (read < length) {
-      val r = reader.read(buf, read, length - read)
+    if (length <= 0) return ""
+    val cap = minOf(length, MAX_BODY_BYTES)
+    val sb = StringBuilder(minOf(cap, 64 * 1024))
+    val chunk = CharArray(8192)
+    var remaining = cap
+    while (remaining > 0) {
+      val r = reader.read(chunk, 0, minOf(chunk.size, remaining))
       if (r < 0) break
-      read += r
+      sb.append(chunk, 0, r)
+      remaining -= r
     }
-    return String(buf, 0, read)
+    return sb.toString()
   }
 
   private fun decode(b64: String): ByteArray = Base64.decode(b64, Base64.DEFAULT)
 
-  private fun respond(sock: java.net.Socket, status: Int, body: JSONObject) {
-    val payload = body.toString().toByteArray()
+  private fun reason(status: Int): String =
+    when (status) {
+      200 -> "OK"
+      401 -> "Unauthorized"
+      404 -> "Not Found"
+      413 -> "Payload Too Large"
+      429 -> "Too Many Requests"
+      431 -> "Request Header Fields Too Large"
+      500 -> "Internal Server Error"
+      503 -> "Service Unavailable"
+      else -> "ERR"
+    }
+
+  private fun respond(sock: java.net.Socket, status: Int, body: JSONObject, extraHeaders: List<String> = emptyList()) {
+    respondText(sock, status, body.toString(), "application/json", extraHeaders)
+  }
+
+  private fun respondText(
+    sock: java.net.Socket,
+    status: Int,
+    body: String,
+    contentType: String,
+    extraHeaders: List<String> = emptyList(),
+  ) {
+    val payload = body.toByteArray()
     val out: OutputStream = sock.getOutputStream()
-    out.write(
-      ("HTTP/1.1 $status ${if (status == 200) "OK" else "ERR"}\r\nContent-Type: application/json\r\n" +
-          "Content-Length: ${payload.size}\r\nConnection: close\r\n\r\n").toByteArray()
-    )
+    val head = StringBuilder("HTTP/1.1 $status ${reason(status)}\r\nContent-Type: $contentType\r\n")
+    head.append("Content-Length: ${payload.size}\r\nConnection: close\r\n")
+    extraHeaders.forEach { head.append(it).append("\r\n") }
+    head.append("\r\n")
+    out.write(head.toString().toByteArray())
     out.write(payload)
     out.flush()
   }

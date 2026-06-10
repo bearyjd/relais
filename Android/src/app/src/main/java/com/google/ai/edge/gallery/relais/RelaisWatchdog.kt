@@ -17,6 +17,9 @@
 package com.google.ai.edge.gallery.relais
 
 import android.app.AlarmManager
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.BroadcastReceiver
 import android.content.Context
@@ -25,18 +28,30 @@ import android.os.SystemClock
 import android.util.Log
 
 private const val TAG = "RelaisWatchdog"
-private const val INTERVAL_MS = 60_000L
+private const val PREFS = "relais"
+private const val KEY_STEP = "watchdog_fail_step"
+private const val BASE_INTERVAL_MS = 60_000L
+private const val MAX_INTERVAL_MS = 15 * 60_000L // 15 min ceiling
+private const val MAX_SHIFT = 8 // 60s << 8 == ~4h, clamped to MAX_INTERVAL_MS
+private const val NOTIFY_THRESHOLD = 10 // ~1.5h of sustained failure before warning the operator
+private const val NOTIF_CHANNEL = "relais_node"
+private const val NOTIF_ID = 4243
 
 /**
  * Crash/OOM recovery for the node. `START_STICKY` alone did NOT restart the foreground service
- * after an app-process crash (measured: no recovery in 250s). This self-rescheduling alarm fires
- * ~every 60s; if [RelaisConfig.shouldRun] is set it (re)starts the service — so a dead process is
- * resurrected on the next tick. Starting an already-running node is idempotent.
+ * after an app-process crash (measured: no recovery in 250s). This self-rescheduling exact alarm
+ * fires on a backoff schedule; if [RelaisConfig.shouldRun] is set it (re)starts the service — so a
+ * dead process is resurrected on the next tick. Starting an already-running node is idempotent.
+ *
+ * Backoff (security/Gate-3 M3): a chronically-failing init (corrupt model, persistent OOM) must not
+ * restart every 60s forever and drain the battery. The interval doubles per consecutive failure to
+ * a 15-min ceiling, resets to 60s once the engine is ready, and after [NOTIFY_THRESHOLD] sustained
+ * failures posts a sticky "needs attention" notification instead of silently hammering.
  */
 object RelaisWatchdog {
   fun schedule(context: Context) {
     val am = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
-    val at = SystemClock.elapsedRealtime() + INTERVAL_MS
+    val at = SystemClock.elapsedRealtime() + intervalFor(step(context))
     val pi = pendingIntent(context)
     // Exact alarms grant a temporary FGS-start exemption when they fire — required because a
     // background receiver otherwise hits ForegroundServiceStartNotAllowed on Android 12+.
@@ -49,6 +64,42 @@ object RelaisWatchdog {
 
   fun cancel(context: Context) {
     (context.getSystemService(Context.ALARM_SERVICE) as AlarmManager).cancel(pendingIntent(context))
+    setStep(context, 0)
+  }
+
+  /** Healthy tick — clear the backoff so the heartbeat returns to the base interval. */
+  fun reset(context: Context) = setStep(context, 0)
+
+  /** Record one more consecutive failure and return the new step. */
+  fun bumpStep(context: Context): Int {
+    val s = step(context) + 1
+    setStep(context, s)
+    return s
+  }
+
+  fun notifyStuck(context: Context) {
+    val mgr = context.getSystemService(NotificationManager::class.java) ?: return
+    mgr.createNotificationChannel(
+      NotificationChannel(NOTIF_CHANNEL, "Relais Node", NotificationManager.IMPORTANCE_LOW)
+    )
+    val n =
+      Notification.Builder(context, NOTIF_CHANNEL)
+        .setContentTitle("Relais node needs attention")
+        .setContentText("The node has failed to come up after repeated retries. Open Relais Node to check.")
+        .setSmallIcon(android.R.drawable.stat_notify_error)
+        .setOngoing(false)
+        .build()
+    mgr.notify(NOTIF_ID, n)
+  }
+
+  private fun intervalFor(step: Int): Long =
+    (BASE_INTERVAL_MS shl step.coerceIn(0, MAX_SHIFT)).coerceAtMost(MAX_INTERVAL_MS)
+
+  private fun step(context: Context): Int =
+    context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getInt(KEY_STEP, 0)
+
+  private fun setStep(context: Context, value: Int) {
+    context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putInt(KEY_STEP, value).apply()
   }
 
   private fun pendingIntent(context: Context): PendingIntent =
@@ -61,19 +112,31 @@ object RelaisWatchdog {
 }
 
 /** Receives the watchdog tick (in a fresh process if the app was killed) and revives the node. */
-class RelaisWatchdogReceiver : BroadcastReceiver {
-  constructor() : super()
-
+class RelaisWatchdogReceiver : BroadcastReceiver() {
   override fun onReceive(context: Context, intent: Intent) {
     if (!RelaisConfig.shouldRun(context)) return
-    RelaisWatchdog.schedule(context) // reschedule FIRST so a failed start never stops the heartbeat
-    if (!RelaisEngine.isReady) {
-      Log.i(TAG, "watchdog tick — node not ready, (re)starting")
-      try {
-        RelaisNodeService.start(context)
-      } catch (e: Exception) {
-        Log.e(TAG, "watchdog restart failed: ${e.message}")
-      }
+    if (RelaisEngine.isReady) {
+      RelaisWatchdog.reset(context) // healthy — clear backoff
+      RelaisWatchdog.schedule(context) // keep the heartbeat at the base interval
+      return
+    }
+    if (RelaisEngine.startupInProgress) {
+      // Provisioning/initializing in-process (e.g. first-run model download) — coming up, not dead.
+      // Keep the heartbeat at base; don't escalate backoff or post the "needs attention" alarm.
+      RelaisWatchdog.reset(context)
+      RelaisWatchdog.schedule(context)
+      return
+    }
+    // Not ready and not starting: escalate backoff, reschedule FIRST so a failed start never stops the heartbeat,
+    // then (re)start. Warn (once past threshold) instead of hammering silently forever.
+    val step = RelaisWatchdog.bumpStep(context)
+    RelaisWatchdog.schedule(context)
+    if (step >= NOTIFY_THRESHOLD) RelaisWatchdog.notifyStuck(context)
+    Log.i(TAG, "watchdog tick — node not ready (failure step $step), (re)starting")
+    try {
+      RelaisNodeService.start(context)
+    } catch (e: Exception) {
+      Log.e(TAG, "watchdog restart failed: ${e.message}")
     }
   }
 }
