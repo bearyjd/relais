@@ -68,9 +68,13 @@ class RelaisNodeService : Service() {
         .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "relais:node")
         .apply { setReferenceCounted(false); acquire() }
 
+    RelaisConfig.incrementRestartCount(applicationContext) // process/service starts; via /metrics (Gate 3)
+    ThermalGovernor.register(applicationContext) // thermal-aware backpressure (Gate 3)
+
     // Provision the model (download if missing) then initialize the resident engine off the main
     // thread; start the endpoint when ready.
     thread(name = "relais-init") {
+      RelaisEngine.startupInProgress = true // tell the watchdog "coming up", not "dead" (slow downloads)
       try {
         updateNotification("Provisioning model…")
         val modelPath =
@@ -78,15 +82,19 @@ class RelaisNodeService : Service() {
             updateNotification("Downloading model $pct%…")
           }
         RelaisEngine.ensureInitialized(applicationContext, modelPath)
-        httpServer = RelaisHttpServer(applicationContext, port = 8080).also { it.start() }
-        httpsServer = RelaisHttpServer(applicationContext, port = 8443, tls = true).also { it.start() }
+        // Security C1: plaintext HTTP is loopback-only (in-device app/dev); the LAN is served only
+        // over HTTPS, so the bearer key never crosses the network in cleartext.
+        httpServer = RelaisHttpServer(applicationContext, port = 8080, bindAddr = "127.0.0.1").also { it.start() }
+        httpsServer = RelaisHttpServer(applicationContext, port = 8443, tls = true, bindAddr = "0.0.0.0").also { it.start() }
         RelaisDiscovery.register(applicationContext) // advertise _relais._tcp for zero-config LAN discovery
-        updateNotification("Resident engine ready · http :8080 · https :8443")
-        Log.i(TAG, "Node up: engine resident, endpoints listening (http :8080, https :8443)")
-        Log.i(TAG, "API key: ${RelaisConfig.apiKey(applicationContext)}")
+        updateNotification("Resident engine ready · http 127.0.0.1:8080 · https :8443 (LAN)")
+        Log.i(TAG, "Node up: engine resident; http loopback :8080, https LAN :8443")
+        // Security H3: never log the API key — it is shown in the Relais Node control screen.
       } catch (e: Exception) {
         Log.e(TAG, "Node init failed", e)
         updateNotification("Init failed: ${e.message}")
+      } finally {
+        RelaisEngine.startupInProgress = false
       }
     }
   }
@@ -94,6 +102,7 @@ class RelaisNodeService : Service() {
   override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int = START_STICKY
 
   override fun onDestroy() {
+    ThermalGovernor.unregister()
     RelaisDiscovery.unregister()
     httpServer?.stop()
     httpsServer?.stop()

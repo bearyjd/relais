@@ -1,87 +1,131 @@
-# Google AI Edge Gallery ✨
+# Relais
 
-[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
-[![GitHub release (latest by date)](https://img.shields.io/github/v/release/google-ai-edge/gallery)](https://github.com/google-ai-edge/gallery/releases)
+**Turn a spare Android phone into an always-on AI appliance.**
 
-**Explore, Experience, and Evaluate the Future of On-Device Generative AI with Google AI Edge.**
+Relais runs an LLM directly on your phone's GPU using Google's
+[LiteRT-LM](https://github.com/google-ai-edge/LiteRT-LM) runtime and serves it
+over your LAN as a standard **OpenAI-compatible API** — `/v1/chat/completions`,
+streaming SSE, API-key auth, mDNS discovery. Point any OpenAI client at the
+phone's IP and it answers. Unlike Ollama, llama.cpp-server, or LM Studio — which
+need a desktop and can't reach a phone's neural silicon — Relais is **headless by
+design**: no chat UI to babysit, it auto-starts, survives Doze, draws a few
+watts, and sits on a shelf as private, cloud-free inference infrastructure.
 
-AI Edge Gallery is the premier destination for running the world's most powerful open-source Large Language Models (LLMs) on your mobile device. Experience high-performance Generative AI directly on your hardware—fully offline, private, and lightning-fast.
+Spare flagship in, OpenAI endpoint out.
 
-**Now Featuring: Gemma 4**
+> Relais is a fork of Google's [AI Edge Gallery](https://github.com/google-ai-edge/gallery),
+> rebuilt around being a network **service** instead of an app. Licensed under
+> **AGPL-3.0** (see [LICENSE](LICENSE) and [NOTICE](NOTICE)).
 
-The latest version brings official support for the newly released Gemma 4 family. As the centerpiece of this release, Gemma 4 allows you to test the cutting edge of on-device AI. Experience advanced reasoning, logic, and creative capabilities without ever sending your data to a server.
+---
 
+## What it is (and isn't)
 
-| **Install the app today from Google Play** | **Install the app today from App Store** |
-| :--- | :--- |
-| <a href='https://play.google.com/store/apps/details?id=com.google.ai.edge.gallery'><img alt='Get it on Google Play' height="120" src='https://play.google.com/intl/en_us/badges/static/images/badges/en_badge_web_generic.png'/></a> | <a href="https://apps.apple.com/us/app/google-ai-edge-gallery/id6749645337?itscg=30200&itsct=apps_box_badge&mttnsubad=6749645337" style="display: inline-block;"> <img src="https://toolbox.marketingtools.apple.com/api/v2/badges/download-on-the-app-store/black/en-us?releaseDate=1771977600" alt="Download on the App Store" style="width: 246px; height: 90px; vertical-align: middle; object-fit: contain;" /></a> |
+- **Is:** a headless LAN inference node. One resident model on the phone GPU,
+  exposed as an OpenAI-compatible HTTP API, hardened for always-on operation
+  (foreground service, wake lock, Doze survival, crash/OOM auto-recovery,
+  thermal backpressure, `/metrics`).
+- **Isn't:** the fastest way to run a model (a desktop GPU crushes a phone on
+  tokens/sec). Relais's value is *always-on, low-power, private, zero-marginal-cost*
+  — small-model and agent/automation workloads, not 70B frontier serving.
 
-For users without Google Play access, install the apk from the [**latest release**](https://github.com/google-ai-edge/gallery/releases/latest/)
+**Prior art, honestly:** [OlliteRT](https://github.com/NightMean/OlliteRT) does
+the same thing on the same runtime. Relais's bet is execution — Doze reliability,
+Pixel/Tensor tuning, a real security posture (TLS on the LAN, encrypted key at
+rest), and the control/observability surface.
 
+---
 
-## App Preview
+## Requirements
 
-<img width="480" alt="01" src="https://github.com/user-attachments/assets/a809ad78-aef4-4169-91ee-de7213cbb3bd" />
-<img width="480" alt="02" src="https://github.com/user-attachments/assets/1effd10d-f45a-4f7b-9435-f50f1bdd36b6" />
-<img width="480" alt="03" src="https://github.com/user-attachments/assets/e5089e41-2c18-4fbe-9011-ebe9e5a02044" />
-<img width="480" alt="04" src="https://github.com/user-attachments/assets/0f39d3ed-7403-4606-a7c6-b2c7e51ba6c1" />
-<img width="480" alt="05" src="https://github.com/user-attachments/assets/8c229e96-b598-4735-9f60-e96907e1d5d5" />
-<img width="480" alt="06" src="https://github.com/user-attachments/assets/ac9fb77b-81de-4197-9ed3-f6fe58290b3e" />
-<img width="480" alt="07" src="https://github.com/user-attachments/assets/bc86ba07-2eaf-49b1-980f-8a87a85c596f" />
-<img width="480" alt="08" src="https://github.com/user-attachments/assets/061564ed-030f-4630-810b-13a7863fce4c" />
+- A device LiteRT-LM supports on GPU. Developed and validated on a **Pixel 9 Pro
+  Fold** (Tensor G4), Android 12+ (`minSdk 31`).
+- For building: **JDK 17+**, Android Studio with **SDK 35**. No NDK required —
+  the inference engine ships as a prebuilt AAR.
 
-## ✨ Core Features
+## Clean-room bring-up
 
-* **Agent Skills**: Transform your LLM from a conversationalist into a proactive assistant. Use the Agent Skills tile to augment model capabilities with tools like Wikipedia for fact-grounding, interactive maps, and rich visual summary cards. You can even load modular skills from a URL or browse community contributions on GitHub Discussions.
+From a fresh clone to a serving node:
 
-* **AI Chat with Thinking Mode**: Engage in fluid, multi-turn conversations and toggle the new Thinking Mode to peek "under the hood." This feature allows you to see the model’s step-by-step reasoning process, which is perfect for understanding complex problem-solving. Note: Thinking Mode currently works with supported models, starting with the Gemma 4 family.
+```bash
+# 1. Clone
+git clone https://github.com/entrevoix/relais.git
+cd relais/Android/src
 
-* **Ask Image**: Use multimodal power to identify objects, solve visual puzzles, or get detailed descriptions using your device’s camera or photo gallery.
+# 2. Point the build at your SDK (or set sdk.dir in Android Studio)
+echo "sdk.dir=$ANDROID_HOME" > local.properties
 
-* **Audio Scribe**: Transcribe and translate voice recordings into text in real-time using high-efficiency on-device language models.
+# 3. Build + install the debug APK on a connected device
+./gradlew :app:assembleDebug
+adb install -r app/build/outputs/apk/debug/app-debug.apk
+```
 
-* **Prompt Lab**: A dedicated workspace to test different prompts and single-turn use cases with granular control over model parameters like temperature and top-k.
+Then on the phone:
 
-* **Mobile Actions**: Unlock offline device controls and automated tasks powered entirely by a finetune of FunctionGemma 270m.
+1. Open the **Relais Node** launcher icon.
+2. Tap **START**. On first run it downloads the default open model
+   (`litert-community/gemma-4-E4B-it-litert-lm`, ~3.7 GB — **no HuggingFace token
+   needed**) and initializes the resident engine.
+3. The panel shows status (`LIVE`), the LAN endpoint (`https://<phone-ip>:8443`),
+   and your **access key** (tap to copy).
 
-* **Tiny Garden**: A fun, experimental mini-game that uses natural language to plant and harvest a virtual garden using a finetune of FunctionGemma 270m.
+Reach it from any machine on the LAN:
 
-* **Model Management & Benchmark**: Gallery is a flexible sandbox for a wide variety of open-source models. Easily download models from the list or load your own custom models. Manage your model library effortlessly and run benchmark tests to understand exactly how each model performs on your specific hardware.
+```bash
+curl -k https://<phone-ip>:8443/v1/chat/completions \
+  -H "Authorization: Bearer <access-key>" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"gemma-4-e4b-it","messages":[{"role":"user","content":"reply one word: ping"}]}'
+```
 
-* **100% On-Device Privacy**: All model inferences happen directly on your device hardware. No internet is required, ensuring total privacy for your prompts, images, and sensitive data.
+> The LAN endpoint is HTTPS with a self-signed cert (`-k` for now). The plaintext
+> `http://127.0.0.1:8080` endpoint is **loopback-only** by design — see
+> [SECURITY.md](SECURITY.md). On untrusted networks, put the node behind a
+> WireGuard/Tailscale overlay.
 
-## 🏁 Get Started in Minutes!
+Discovery: the node advertises `_relais._tcp` over mDNS, so clients can find it by
+name after an IP change.
 
-1. **Check OS Requirement**: Android 12 and up, and iOS 17 and up.
-2.  **Download the App:**
-    - Install the app from [Google Play](https://play.google.com/store/apps/details?id=com.google.ai.edge.gallery) or [App Store](https://apps.apple.com/us/app/google-ai-edge-gallery/id6749645337).
-    - For users without Google Play access: install the apk from the [**latest release**](https://github.com/google-ai-edge/gallery/releases/latest/)
-3.  **Install & Explore:** For detailed installation instructions (including for corporate devices) and a full user guide, head over to our [**Project Wiki**](https://github.com/google-ai-edge/gallery/wiki)!
+## Works with
 
-## 🛠️ Technology Highlights
+Any OpenAI-compatible client — point its base URL at `https://<phone-ip>:8443/v1`
+and set the API key:
 
-*   **Google AI Edge:** Core APIs and tools for on-device ML.
-*   **LiteRT:** Lightweight runtime for optimized model execution.
-*   **Hugging Face Integration:** For model discovery and download.
+- **Open WebUI** — add an OpenAI connection.
+- **Editors / agents** — anything that speaks the OpenAI API.
+- **curl / scripts** — see above.
 
-## ⌨️ Development
+These are "works with," not dependencies. Relais does not call the cloud and is
+not coupled to any gateway.
 
-Check out the [development notes](DEVELOPMENT.md) for instructions about how to build the app locally.
+## Endpoints
 
-## 🤝 Feedback
+| Method | Path | Auth | Notes |
+|---|---|---|---|
+| GET | `/health` | none | `{status, ready, thermal_state}` |
+| GET | `/metrics` | key | Prometheus text (or JSON via `Accept: application/json`) |
+| POST | `/generate` | key | `{text, image_b64?, audio_b64?}` — native multimodal |
+| POST | `/v1/chat/completions` | key | OpenAI-compatible, `stream` supported |
 
-This is an **experimental Beta release**, and your input is crucial!
+## Operating it as an appliance
 
-*   🐞 **Found a bug?** [Report it here!](https://github.com/google-ai-edge/gallery/issues/new?assignees=&labels=bug&template=bug_report.md&title=%5BBUG%5D)
-*   💡 **Have an idea?** [Suggest a feature!](https://github.com/google-ai-edge/gallery/issues/new?assignees=&labels=enhancement&template=feature_request.md&title=%5BFEATURE%5D)
+- **Auto-start on boot:** opt-in in the control panel (off by default).
+- **Observability:** scrape `https://<phone-ip>:8443/metrics` with Prometheus
+  (bearer-token auth). Tokens/sec, latency histogram, thermal state, RSS, restart
+  count, queue depth.
+- **Thermal:** under sustained load the node sheds with `503 + Retry-After` rather
+  than melting; see `relais_thermal_status` / `relais_shed_total`.
+- **Endurance:** see [docs/soak](docs/soak) for the soak-test harness.
 
-## 📄 License
+## Security
 
-Licensed under the Apache License, Version 2.0. See the [LICENSE](LICENSE) file for details.
+See [SECURITY.md](SECURITY.md). Short version: trusted-LAN-safe by default
+(HTTPS on the LAN, encrypted key at rest, rate limiting); for untrusted networks
+use an overlay or cert pinning.
 
-## 🔗 Useful Links
+## License
 
-*   [**Project Wiki (Detailed Guides)**](https://github.com/google-ai-edge/gallery/wiki)
-*   [Hugging Face LiteRT Community](https://huggingface.co/litert-community)
-*   [LiteRT-LM](https://github.com/google-ai-edge/LiteRT-LM)
-*   [Google AI Edge Documentation](https://ai.google.dev/edge)
+AGPL-3.0. Relais is a network service, and AGPL's network-use clause keeps
+modified, network-served versions open. Files derived from Google AI Edge Gallery
+retain their Apache-2.0 headers; the work as a whole is AGPL-3.0. See
+[LICENSE](LICENSE) and [NOTICE](NOTICE).

@@ -1,0 +1,20 @@
+# Relais gitleaks configuration.
+# Extends the upstream default ruleset and allowlists known non-secret placeholders
+# so secret scanning does not false-positive on intentional configuration stubs.
+
+title = "Relais gitleaks config"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Known non-secret placeholders and local-only generated files"
+regexes = [
+  # HuggingFace OAuth stubs in ProjectConfig.kt / build.gradle.kts — intentional placeholders,
+  # filled in by the operator at build time, never real credentials.
+  '''REPLACE_WITH_YOUR_[A-Z_]+_IN_HUGGINGFACE_APP''',
+]
+paths = [
+  # SDK path, generated per-checkout, git-ignored. Never contains secrets.
+  '''Android/src/local\.properties''',
+]

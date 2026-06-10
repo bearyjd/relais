@@ -211,10 +211,10 @@ class RelaisControlActivity : ComponentActivity() {
 
             Divider()
             Readout("STATUS", if (ready) "engine resident" else if (running) "starting…" else "stopped")
-            Readout("HTTP", "$ip:8080")
-            Readout("HTTPS", "$ip:8443")
+            Readout("LAN (https)", "$ip:8443")
+            Readout("LOCAL (http)", "127.0.0.1:8080")
             Spacer(Modifier.height(2.dp))
-            AccessKeyChip(apiKey = RelaisConfig.apiKey(ctx), baseUrl = "http://$ip:8080/v1")
+            AccessKeyChip(apiKey = RelaisConfig.apiKey(ctx), baseUrl = "https://$ip:8443/v1")
             Divider()
 
             OutlinedTextField(
