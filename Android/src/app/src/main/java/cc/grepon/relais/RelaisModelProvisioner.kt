@@ -117,6 +117,18 @@ object RelaisModelProvisioner {
         Log.i(TAG, "Adopting pre-staged model at default location (no download): ${staged.path}")
         return remember(context, staged.absolutePath)
       }
+      // If the staging dir exists but no app-readable model does, an operator likely side-loaded a
+      // file the app can't read: an adb-pushed file is owned by `shell` with no "others" bit, so
+      // File.length() reads 0 from the app uid and we silently fall through to a multi-GB download.
+      // The app can't reliably stat the file itself in that state, so key the hint off the dir.
+      if (staged.parentFile?.exists() == true) {
+        Log.w(
+          TAG,
+          "Staging dir ${staged.parent} exists but no app-readable model — a side-loaded file may " +
+            "be unreadable to the app (check perms: chmod 0644 the model, 0755 its dir). " +
+            "Falling back to download.",
+        )
+      }
     }
     val model = resolveModel(context)
     val path = model.getPath(context)

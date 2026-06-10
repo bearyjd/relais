@@ -35,6 +35,10 @@ On the next start, logcat shows `Adopting pre-staged model at default location`
 (not `AGDownloadWorker`). The adopted path is then persisted, so later boots skip
 even the allowlist fetch.
 
+> Note: `chmod 0644` makes the model world-readable on shared external storage.
+> That's fine for open weights (e.g. the default Gemma) on a controlled dev/soak
+> device; avoid it for gated or licensed weights.
+
 ## Running the real-device soak
 
 ```bash
