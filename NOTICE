@@ -1,0 +1,66 @@
+Relais
+Copyright (C) 2026 Entrevoix / grepon.cc
+
+This product is licensed under the GNU Affero General Public License v3.0.
+See the LICENSE file for the full license text.
+
+
+================================================================================
+Derived work attribution
+================================================================================
+
+Relais is derived from Google AI Edge Gallery
+(https://github.com/google-ai-edge/gallery), Copyright Google LLC, originally
+licensed under the Apache License, Version 2.0.
+
+All files derived from that project retain their original Apache-2.0 license
+headers and Google LLC copyright notices, as required by Apache-2.0 section 4.
+A copy of the Apache License 2.0 is available at:
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+The combined and derivative work as a whole is distributed under the GNU Affero
+General Public License v3.0. The Apache License 2.0 is one-way compatible with
+the AGPL-3.0, which permits this combination; the original Apache-licensed files
+remain under Apache-2.0 while the work as a whole is offered under AGPL-3.0.
+
+
+================================================================================
+The inference engine is a dependency, not part of this fork
+================================================================================
+
+Relais is the application layer. The on-device inference engine, LiteRT-LM
+(com.google.ai.edge.litertlm), ships as a prebuilt binary Maven artifact under
+its own terms (Apache-2.0). Relais forks the app, not the engine, and depends on
+LiteRT-LM as an external, separately-licensed component.
+
+
+================================================================================
+Third-party dependencies
+================================================================================
+
+The following third-party components are used by Relais. Each is the property of
+its respective copyright holders and is used under its stated license.
+
+  Apache License 2.0:
+    - LiteRT-LM                     com.google.ai.edge.litertlm  (prebuilt AAR)
+    - ML Kit GenAI                  com.google.mlkit:genai-prompt
+    - AndroidX / Jetpack Compose    androidx.*
+    - Kotlin / kotlinx              org.jetbrains.kotlin*, org.jetbrains.kotlinx*
+    - Ktor                          io.ktor:*
+    - Gson                          com.google.code.gson:gson
+    - Moshi                         com.squareup.moshi:*
+    - Protobuf (javalite)           com.google.protobuf:protobuf-javalite
+    - Dagger / Hilt                 com.google.dagger:*, androidx.hilt:*
+    - Model Context Protocol SDK    io.modelcontextprotocol:kotlin-sdk
+    - Google Play services (TFLite, OSS licenses)  com.google.android.gms:*
+
+  Bouncy Castle Licence (an MIT-style permissive licence):
+    - Bouncy Castle (bcpkix)        org.bouncycastle:bcpkix-jdk15to18
+
+  Eclipse Public License 1.0:
+    - JUnit 4                       junit:junit:4.13.2
+
+No GPL/LGPL/AGPL-licensed third-party dependency is bundled into Relais; the
+AGPL-3.0 license of the work as a whole is Relais's own choice, not a
+requirement inherited from a dependency.

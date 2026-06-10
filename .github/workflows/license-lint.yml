@@ -1,0 +1,49 @@
+name: license-lint
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: ["**"]
+
+permissions:
+  contents: read
+
+# Enforces the license-header SPLIT invariant for the Apache->AGPL relicense:
+#   - files derived from Google AI Edge Gallery (Copyright ... Google LLC) MUST keep
+#     their Apache-2.0 header (Apache-2.0 sec.4 requires retaining origin notices);
+#   - net-new Relais files carry the AGPL-3.0 header.
+# Fails CI if any Google-origin file lost its Apache header.
+
+jobs:
+  headers:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Verify license-header split
+        run: |
+          set -euo pipefail
+          fail=0
+          google=0
+          agpl=0
+          other=0
+          while IFS= read -r f; do
+            if grep -q "Copyright .* Google LLC" "$f"; then
+              google=$((google + 1))
+              if ! grep -q "Apache License" "$f"; then
+                echo "::error file=$f::Google-origin file lost its Apache-2.0 header"
+                fail=1
+              fi
+            elif grep -q "GNU Affero" "$f"; then
+              agpl=$((agpl + 1))
+            else
+              other=$((other + 1))
+              echo "::warning file=$f::source file has no recognized license header"
+            fi
+          done < <(find Android/src/app/src/main -name '*.kt')
+          echo "Apache-2.0 (Google-origin) headers : $google"
+          echo "AGPL-3.0 (Relais) headers          : $agpl"
+          echo "No recognized header               : $other"
+          exit $fail
