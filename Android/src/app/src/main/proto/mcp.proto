@@ -15,9 +15,9 @@
 
 syntax = "proto3";
 
-package com.google.ai.edge.gallery.proto;
+package cc.grepon.relais.proto;
 
-option java_package = "com.google.ai.edge.gallery.proto";
+option java_package = "cc.grepon.relais.proto";
 option java_outer_classname = "McpProto";
 option java_multiple_files = true;
 
