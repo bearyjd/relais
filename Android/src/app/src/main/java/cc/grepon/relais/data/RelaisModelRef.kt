@@ -56,8 +56,12 @@ data class RelaisModelRef(
     /** Parses a persisted ref, returning null on absent/malformed JSON (never throws). */
     fun fromJson(json: String?): RelaisModelRef? =
       json?.let { runCatching { Gson().fromJson(it, RelaisModelRef::class.java) }.getOrNull() }
-        // Gson is lenient: a partial/garbage object can deserialize with null required fields.
-        // Treat an entry missing the essentials as unusable so callers fall back to the allowlist.
-        ?.takeIf { it.modelId.isNotBlank() && it.modelFile.isNotBlank() && it.commitHash.isNotBlank() }
+        // Gson fills fields by reflection and does NOT honor Kotlin non-null types: a partial/garbage
+        // object can deserialize with these "non-null" String fields actually null. Use isNullOrBlank
+        // (nullable receiver) so a null field fails validation instead of throwing the non-null
+        // intrinsic NPE — a corrupt ref must decode to null, never crash a headless boot.
+        ?.takeIf {
+          !it.modelId.isNullOrBlank() && !it.modelFile.isNullOrBlank() && !it.commitHash.isNullOrBlank()
+        }
   }
 }
