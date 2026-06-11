@@ -75,6 +75,11 @@ inline fun <reified T> getJsonResponse(url: String): JsonObjAndTextContent<T>? {
   try {
     val connection = URL(url).openConnection() as HttpURLConnection
     connection.requestMethod = "GET"
+    // HttpURLConnection has no default timeout — without these it blocks forever on a wedged network.
+    // The headless relais-init thread resolves the model allowlist through here, and the model
+    // selector fetches its catalog through here, so bound both so neither can hang indefinitely.
+    connection.connectTimeout = 15_000
+    connection.readTimeout = 30_000
     connection.connect()
 
     val responseCode = connection.responseCode

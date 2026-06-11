@@ -3,3 +3,6 @@
 # Self-signed TLS keystore is generated at runtime in AndroidKeyStore; never commit key material
 Android/src/app/src/main/res/raw/relais_keystore.p12
 *.p12
+
+# oh-my-claudecode local orchestration state (ephemeral; scattered through the tree by hooks)
+.omc/

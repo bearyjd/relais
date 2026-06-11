@@ -37,8 +37,13 @@ import cc.grepon.relais.data.KEY_MODEL_NAME
 import cc.grepon.relais.data.KEY_MODEL_TOTAL_BYTES
 import cc.grepon.relais.data.KEY_MODEL_UNZIPPED_DIR
 import cc.grepon.relais.data.KEY_MODEL_URL
+import cc.grepon.relais.data.AllowedModel
+import cc.grepon.relais.data.BuiltInTaskId
+import cc.grepon.relais.data.DefaultConfig
 import cc.grepon.relais.data.Model
 import cc.grepon.relais.data.ModelAllowlist
+import cc.grepon.relais.data.RelaisModelRef
+import cc.grepon.relais.data.RuntimeType
 import cc.grepon.relais.worker.DownloadWorker
 import java.io.File
 
@@ -68,15 +73,29 @@ object RelaisModelProvisioner {
   /** Last resolved/downloaded model path, cached so the engine can re-read it without a refetch. */
   @Volatile private var cachedPath: String? = null
 
+  /** The versioned allowlist URL keyed off the app version, e.g. `…/1_0_15.json`. */
+  fun allowlistUrl(): String =
+    "$ALLOWLIST_BASE_URL/${BuildConfig.VERSION_NAME.replace(".", "_")}.json"
+
   /**
-   * Fetches the allowlist and resolves the [RelaisConfig.modelId] entry to a [Model] (with download
-   * URL + on-disk path populated). Blocking network call. Throws with a clear message if the
-   * allowlist can't be fetched or the configured id isn't in it.
+   * Resolves the configured model to a [Model] (download URL + on-disk path populated). Prefers a
+   * persisted [RelaisModelRef] — which needs no network and works for non-allowlist HF models —
+   * and otherwise fetches the allowlist and matches [RelaisConfig.modelId]. Blocking. Throws with a
+   * clear message if the allowlist can't be fetched or the configured id isn't in it.
    */
   fun resolveModel(context: Context): Model {
     val modelId = RelaisConfig.modelId(context)
-    val version = BuildConfig.VERSION_NAME.replace(".", "_")
-    val url = "$ALLOWLIST_BASE_URL/$version.json"
+    // Ref fast path: a self-contained ref provisions any selected model offline. Gated to modelId
+    // agreement so a bare id change (adb `--es modelId`) bypasses a stale ref and re-resolves the
+    // new id via the allowlist below; RelaisConfig.setModelId also drops a diverged ref.
+    RelaisConfig.modelRef(context)?.takeIf { it.modelId == modelId }?.let { ref ->
+      Log.i(TAG, "Resolving from persisted ref (no allowlist): ${ref.modelId}/${ref.modelFile}")
+      // preProcess() populates totalBytes (= sizeInBytes + extras), needed for download progress %.
+      return modelFromRef(ref).also { it.preProcess() }
+    }
+    val url = allowlistUrl()
+    // getJsonResponse sets connect/read timeouts, so a wedged network fails this fast on the
+    // relais-init thread instead of hanging it indefinitely.
     Log.i(TAG, "Fetching allowlist $url to resolve modelId=$modelId")
     val allowlist =
       getJsonResponse<ModelAllowlist>(url)?.jsonObj
@@ -84,9 +103,35 @@ object RelaisModelProvisioner {
     val allowed =
       allowlist.models.firstOrNull { it.modelId == modelId }
         ?: error("Model id '$modelId' not found in allowlist $url")
-    // preProcess() populates totalBytes (= sizeInBytes + extras), needed for download progress %.
     return allowed.toModel().also { it.preProcess() }
   }
+
+  /**
+   * Builds a [Model] from a [RelaisModelRef] with no network. Reuses [AllowedModel.toModel] so the
+   * download URL and on-disk layout are byte-identical to the allowlist path — a curated ref and
+   * its allowlist entry resolve to the same file, so a model fetched one way is reused by the other.
+   * Typed as a LiteRT-LM chat model (the only kind the node serves); the empty/default config is
+   * fine because provisioning only needs the URL, file, version, and size.
+   *
+   * NOTE (Phase B): name = displayName is unique across curated allowlist entries, but two arbitrary
+   * HF repos can share a trailing segment (org-a vs org-b, both ".../gemma-2b") and so collide on the
+   * WorkManager unique-work key (enqueueUniqueWork(model.name, …)). Switch name to the full modelId
+   * before enabling arbitrary-repo provisioning. The on-disk path is unaffected — it keys on
+   * normalizedName + version, and version (= commit) differs.
+   */
+  private fun modelFromRef(ref: RelaisModelRef): Model =
+    AllowedModel(
+        name = ref.displayName,
+        modelId = ref.modelId,
+        modelFile = ref.modelFile,
+        commitHash = ref.commitHash,
+        description = "",
+        sizeInBytes = ref.sizeInBytes,
+        defaultConfig = DefaultConfig(null, null, null, null, null, null, null),
+        taskTypes = listOf(BuiltInTaskId.LLM_CHAT),
+        runtimeType = RuntimeType.LITERT_LM,
+      )
+      .toModel()
 
   /**
    * Returns the on-disk model path, downloading it via [DownloadWorker] if absent. Blocking — may

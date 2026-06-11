@@ -21,6 +21,7 @@ import android.content.SharedPreferences
 import android.util.Log
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
+import cc.grepon.relais.data.RelaisModelRef
 import java.util.UUID
 
 /** Node config: API key for the LAN endpoint and the opt-in boot auto-start flag. */
@@ -32,6 +33,7 @@ object RelaisConfig {
   private const val KEY_AUTOSTART = "auto_start"
   private const val KEY_SHOULD_RUN = "should_run"
   private const val KEY_MODEL_ID = "model_id"
+  private const val KEY_MODEL_REF = "model_ref"
   private const val KEY_HF_TOKEN = "hf_token"
   private const val KEY_MODEL_PATH = "model_path"
   private const val KEY_TLS_PASS = "tls_keystore_pass"
@@ -134,11 +136,52 @@ object RelaisConfig {
   fun setModelId(context: Context, value: String) {
     val p = prefs(context)
     val changed = p.getString(KEY_MODEL_ID, null) != value
-    p.edit().putString(KEY_MODEL_ID, value).apply()
-    // Switching models must invalidate the cached provisioned path, otherwise the offline
-    // fast-path in RelaisModelProvisioner.ensureModel would keep serving the previous model's
-    // file (it still exists on disk) and never resolve the new id.
-    if (changed) p.edit().remove(KEY_MODEL_PATH).apply()
+    val edit = p.edit().putString(KEY_MODEL_ID, value)
+    if (changed) {
+      // Switching models must invalidate the cached provisioned path, otherwise the offline
+      // fast-path in RelaisModelProvisioner.ensureModel would keep serving the previous model's
+      // file (it still exists on disk) and never resolve the new id.
+      edit.remove(KEY_MODEL_PATH)
+      // A bare id change (adb `--es modelId`, or the manual-id field) supersedes a persisted ref
+      // unless they name the same repo. Drop a now-stale ref so resolveModel falls back to the
+      // allowlist for the new id instead of serving the old ref's model.
+      val refId = RelaisModelRef.fromJson(p.getString(KEY_MODEL_REF, null))?.modelId
+      if (refId != null && refId != value) edit.remove(KEY_MODEL_REF)
+    }
+    edit.apply()
+  }
+
+  /**
+   * The persisted [RelaisModelRef] the operator selected, or null if none (legacy id-only config).
+   * Authoritative for provisioning only when its [RelaisModelRef.modelId] still matches [modelId] —
+   * see [RelaisModelProvisioner.resolveModel]. Null/malformed JSON decodes to null (the node then
+   * resolves via the allowlist), so a corrupt entry never bricks a headless boot.
+   */
+  fun modelRef(context: Context): RelaisModelRef? =
+    RelaisModelRef.fromJson(prefs(context).getString(KEY_MODEL_REF, null))
+
+  /**
+   * Persists [ref] as the selected model and keeps the legacy [KEY_MODEL_ID] coherent (set to the
+   * ref's id). Clears [KEY_MODEL_PATH] on any change so the staged-path fast-path can't serve the
+   * previously provisioned model. Writes the id directly (not via [setModelId]) so the stale-ref
+   * cleanup there never fires against the ref being set.
+   */
+  fun setModelRef(context: Context, ref: RelaisModelRef) {
+    val p = prefs(context)
+    val json = ref.toJson()
+    val changed =
+      p.getString(KEY_MODEL_REF, null) != json || p.getString(KEY_MODEL_ID, null) != ref.modelId
+    // One editor, one commit: a crash between two separate apply()s could persist the new ref+id
+    // while keeping the old KEY_MODEL_PATH, and ensureModel's fast-path would then serve the
+    // previous model's file for the new model. Mirrors setModelId's single-editor discipline.
+    val edit = p.edit().putString(KEY_MODEL_REF, json).putString(KEY_MODEL_ID, ref.modelId)
+    if (changed) edit.remove(KEY_MODEL_PATH)
+    edit.apply()
+  }
+
+  /** Drops the persisted ref (e.g. reverting to a pure allowlist id). Leaves [KEY_MODEL_ID] intact. */
+  fun clearModelRef(context: Context) {
+    prefs(context).edit().remove(KEY_MODEL_REF).apply()
   }
 
   /**

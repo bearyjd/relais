@@ -67,14 +67,16 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import java.net.Inet4Address
@@ -83,14 +85,8 @@ import kotlinx.coroutines.delay
 
 private const val TAG = "RelaisControl"
 
-// --- Relais brand palette: amber signal relay on near-black ---
-private val Amber = Color(0xFFFFB000)
-private val Charcoal = Color(0xFF0B0B0D)
-private val Panel = Color(0xFF16171A)
-private val Line = Color(0xFF2A2B30)
-private val Paper = Color(0xFFEDEAE3)
-private val Muted = Color(0xFF8A8780)
-private val StopRed = Color(0xFFFF5247)
+// Brand palette (Amber/Charcoal/Panel/Line/Paper/Muted/StopRed) lives in RelaisPalette.kt — the
+// single DESIGN.md-traceable source shared with the model selector.
 
 /**
  * Relais node control panel. Tapping the "Relais Node" launcher icon opens this; it shows whether
@@ -148,6 +144,8 @@ class RelaisControlActivity : ComponentActivity() {
           var ready by remember { mutableStateOf(RelaisEngine.isReady) }
           var running by remember { mutableStateOf(RelaisConfig.shouldRun(ctx)) }
           var modelId by remember { mutableStateOf(RelaisConfig.modelId(ctx)) }
+          var modelRef by remember { mutableStateOf(RelaisConfig.modelRef(ctx)) }
+          var showModelSheet by remember { mutableStateOf(false) }
           var hfToken by remember { mutableStateOf(RelaisConfig.hfToken(ctx) ?: "") }
           var savedNote by remember { mutableStateOf("") }
           val ip = remember { lanIpv4() }
@@ -231,14 +229,13 @@ class RelaisControlActivity : ComponentActivity() {
             AccessKeyChip(apiKey = RelaisConfig.apiKey(ctx), baseUrl = "https://$ip:8443/v1")
             Divider()
 
-            OutlinedTextField(
-              value = modelId,
-              onValueChange = { modelId = it; savedNote = "" },
-              label = { Text("MODEL ID", fontFamily = FontFamily.Monospace, fontSize = 11.sp) },
-              textStyle = TextStyle(fontFamily = FontFamily.Monospace, fontSize = 14.sp),
-              singleLine = true,
-              modifier = Modifier.fillMaxWidth(),
-            )
+            val modelDisplay = modelRef?.takeIf { it.modelId == modelId }?.displayName ?: modelId
+            // Block model changes while the node is STARTING (running but not yet ready): ensureModel
+            // may be mid-resolve/-download, and its terminal setModelPath() could resurrect the path a
+            // concurrent setModelRef() just cleared — leaving the next boot serving the superseded
+            // model. Changing while fully stopped or LIVE (path already settled) is safe.
+            val nodeBusy = running && !ready
+            ModelRow(value = modelDisplay, enabled = !nodeBusy) { showModelSheet = true }
             OutlinedTextField(
               value = hfToken,
               onValueChange = { hfToken = it; savedNote = "" },
@@ -249,16 +246,40 @@ class RelaisControlActivity : ComponentActivity() {
             )
             OutlinedButton(
               onClick = {
-                RelaisConfig.setModelId(ctx, modelId.trim())
                 RelaisConfig.setHfToken(ctx, hfToken.trim().ifBlank { null })
-                savedNote = "Saved. Restart to apply (an un-downloaded model downloads on Start)."
+                savedNote = "HF token saved. Restart to apply."
               },
               colors = ButtonDefaults.outlinedButtonColors(contentColor = Amber),
             ) {
-              Text("SAVE MODEL", fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold)
+              Text("SAVE HF TOKEN", fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold)
             }
             if (savedNote.isNotEmpty()) {
               Text(savedNote, color = Muted, fontFamily = FontFamily.Monospace, fontSize = 11.sp)
+            }
+
+            if (showModelSheet) {
+              RelaisModelSelectorSheet(
+                currentModelId = modelId,
+                onPickRef = { ref ->
+                  RelaisConfig.setModelRef(ctx, ref)
+                  modelRef = ref
+                  modelId = ref.modelId
+                  savedNote = "Selected ${ref.displayName}. Restart to apply."
+                  showModelSheet = false
+                },
+                onPickManualId = { id ->
+                  // Entering a raw id is an explicit "resolve this via the allowlist" intent, so
+                  // drop any curated ref first (even if the id matches the ref's repo) — otherwise
+                  // the pinned ref would keep overriding allowlist resolution.
+                  RelaisConfig.clearModelRef(ctx)
+                  RelaisConfig.setModelId(ctx, id)
+                  modelRef = null
+                  modelId = id
+                  savedNote = "Set model id $id. Restart to apply."
+                  showModelSheet = false
+                },
+                onDismiss = { showModelSheet = false },
+              )
             }
 
             Spacer(Modifier.height(4.dp))
@@ -300,6 +321,32 @@ private fun Readout(label: String, value: String) {
       fontSize = 13.sp,
       modifier = Modifier.weight(1f, fill = false),
     )
+  }
+}
+
+/** Tappable model row: muted MODEL label, current selection, amber ▸ — opens the model selector. */
+@Composable
+private fun ModelRow(value: String, enabled: Boolean = true, onClick: () -> Unit) {
+  Box(
+    Modifier.fillMaxWidth().clip(RoundedCornerShape(6.dp)).clickable(enabled = enabled) { onClick() }
+      .alpha(if (enabled) 1f else 0.5f).padding(vertical = 6.dp)
+  ) {
+    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+      Text("MODEL", color = Muted, fontFamily = FontFamily.Monospace, fontSize = 12.sp, letterSpacing = 1.sp)
+      Spacer(Modifier.width(16.dp))
+      Text(
+        value,
+        color = Paper,
+        fontFamily = FontFamily.Monospace,
+        fontSize = 13.sp,
+        textAlign = TextAlign.End,
+        maxLines = 1,
+        overflow = TextOverflow.Ellipsis,
+        modifier = Modifier.weight(1f),
+      )
+      Spacer(Modifier.width(10.dp))
+      Text("▸", color = Amber, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+    }
   }
 }
 
