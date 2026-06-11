@@ -101,6 +101,15 @@ class RelaisNodeService : Service() {
 
   override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int = START_STICKY
 
+  override fun onTaskRemoved(rootIntent: Intent?) {
+    // The node is headless and must outlive its control-panel task. If the task is removed (user
+    // swipe, or a recents sweep), keep running and make sure the watchdog heartbeat is armed. (A
+    // true force-stop still can't be recovered in-app — Android disables a stopped app's alarms and
+    // boot-receiver until it's explicitly relaunched; that's why the panel is excludeFromRecents.)
+    if (RelaisConfig.shouldRun(applicationContext)) RelaisWatchdog.schedule(applicationContext)
+    super.onTaskRemoved(rootIntent)
+  }
+
   override fun onDestroy() {
     ThermalGovernor.unregister()
     RelaisDiscovery.unregister()
