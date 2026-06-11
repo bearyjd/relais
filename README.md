@@ -110,6 +110,13 @@ not coupled to any gateway.
 ## Operating it as an appliance
 
 - **Auto-start on boot:** opt-in in the control panel (off by default).
+- **Unattended / force-stop resilience:** the control panel is excluded from the
+  recents switcher, so a "clear all recent apps" sweep won't force-stop the node.
+  For Doze survival, the panel shows a **POWER** readout — tap **ALLOW UNRESTRICTED**
+  to exempt the node from battery optimization. Caveat: a deliberate Settings →
+  *Force stop* (or a cleaner that force-stops every package) can't be auto-recovered
+  — Android disables a force-stopped app's alarms and boot-receiver until it's
+  launched again, so relaunch the node (or reboot with auto-start on) to recover.
 - **Observability:** scrape `https://<phone-ip>:8443/metrics` with Prometheus
   (bearer-token auth). Tokens/sec, latency histogram, thermal state, RSS, restart
   count, queue depth.

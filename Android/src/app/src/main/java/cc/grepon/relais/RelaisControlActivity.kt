@@ -16,8 +16,13 @@
 
 package cc.grepon.relais
 
+import android.annotation.SuppressLint
+import android.content.Context
 import android.content.Intent
+import android.net.Uri
 import android.os.Bundle
+import android.os.PowerManager
+import android.provider.Settings
 import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -146,10 +151,15 @@ class RelaisControlActivity : ComponentActivity() {
           var hfToken by remember { mutableStateOf(RelaisConfig.hfToken(ctx) ?: "") }
           var savedNote by remember { mutableStateOf("") }
           val ip = remember { lanIpv4() }
+          val powerManager = remember { ctx.getSystemService(Context.POWER_SERVICE) as PowerManager }
+          var batteryUnrestricted by remember {
+            mutableStateOf(powerManager.isIgnoringBatteryOptimizations(ctx.packageName))
+          }
           LaunchedEffect(Unit) {
             while (true) {
               ready = RelaisEngine.isReady
               running = RelaisConfig.shouldRun(ctx)
+              batteryUnrestricted = powerManager.isIgnoringBatteryOptimizations(ctx.packageName)
               delay(1000)
             }
           }
@@ -213,6 +223,10 @@ class RelaisControlActivity : ComponentActivity() {
             Readout("STATUS", if (ready) "engine resident" else if (running) "starting…" else "stopped")
             Readout("LAN (https)", "$ip:8443")
             Readout("LOCAL (http)", "127.0.0.1:8080")
+            Readout("POWER", if (batteryUnrestricted) "unrestricted" else "restricted")
+            if (!batteryUnrestricted) {
+              ActionLink("ALLOW UNRESTRICTED ›") { requestIgnoreBatteryOptimizations(ctx) }
+            }
             Spacer(Modifier.height(2.dp))
             AccessKeyChip(apiKey = RelaisConfig.apiKey(ctx), baseUrl = "https://$ip:8443/v1")
             Divider()
@@ -292,6 +306,36 @@ private fun Readout(label: String, value: String) {
 @Composable
 private fun Divider() {
   Box(Modifier.fillMaxWidth().height(1.dp).background(Line))
+}
+
+/** Amber tap affordance, e.g. "ALLOW UNRESTRICTED ›" — matches the "SHARE CONNECTION ›" idiom. */
+@Composable
+private fun ActionLink(label: String, onClick: () -> Unit) {
+  Box(Modifier.clip(RoundedCornerShape(6.dp)).clickable { onClick() }.padding(vertical = 4.dp)) {
+    Text(
+      label,
+      color = Amber,
+      fontFamily = FontFamily.Monospace,
+      fontWeight = FontWeight.Bold,
+      fontSize = 12.sp,
+    )
+  }
+}
+
+/**
+ * Opens the system "ignore battery optimizations" dialog so the always-on node survives
+ * Doze/app-standby. Falls back to the battery-optimization settings list on OEMs that don't honor
+ * the direct request action.
+ */
+@SuppressLint("BatteryLife")
+private fun requestIgnoreBatteryOptimizations(ctx: Context) {
+  val direct =
+    Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:${ctx.packageName}"))
+  runCatching { ctx.startActivity(direct) }
+    .onFailure {
+      runCatching { ctx.startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)) }
+        .onFailure { e -> Log.w(TAG, "Could not open battery-optimization settings: ${e.message}") }
+    }
 }
 
 /**
