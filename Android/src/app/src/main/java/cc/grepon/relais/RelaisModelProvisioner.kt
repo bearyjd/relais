@@ -94,9 +94,8 @@ object RelaisModelProvisioner {
       return modelFromRef(ref).also { it.preProcess() }
     }
     val url = allowlistUrl()
-    // KNOWN GAP: getJsonResponse sets no connect/read timeout, so a wedged network can block this on
-    // the relais-init thread until the OS socket timeout. To be bounded by connection timeouts in the
-    // Phase B Relais HTTP helper (the selector already bounds its own fetch with withTimeoutOrNull).
+    // getJsonResponse sets connect/read timeouts, so a wedged network fails this fast on the
+    // relais-init thread instead of hanging it indefinitely.
     Log.i(TAG, "Fetching allowlist $url to resolve modelId=$modelId")
     val allowlist =
       getJsonResponse<ModelAllowlist>(url)?.jsonObj

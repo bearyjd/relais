@@ -89,9 +89,10 @@ fun RelaisModelSelectorSheet(
   // an empty list on offline rather than throwing, so the worst case is the "enter an id" fallback.
   LaunchedEffect(Unit) {
     loading = true
-    // Bound the spinner: if the allowlist is slow/unreachable, fall through to the manual-id path
-    // rather than hang indefinitely. This resolves the UI only — it does not abort the blocking
-    // socket (that needs connection timeouts in the fetch helper; see RelaisModelCatalog).
+    // Bound the spinner: if the allowlist is slow/unreachable, fall through to the manual-id path.
+    // getJsonResponse already sets connect/read timeouts (≤30s); this tighter 8s bound just resolves
+    // the spinner sooner. (withTimeoutOrNull cancels the coroutine but can't interrupt the blocking
+    // socket — the connection timeouts are what ultimately free the IO thread.)
     curated =
       withTimeoutOrNull(8_000) { withContext(Dispatchers.IO) { RelaisModelCatalog.curatedModels() } }
         ?: emptyList()
