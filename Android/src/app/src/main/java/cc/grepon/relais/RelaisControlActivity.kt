@@ -260,11 +260,16 @@ class RelaisControlActivity : ComponentActivity() {
             if (showModelSheet) {
               RelaisModelSelectorSheet(
                 currentModelId = modelId,
+                // The saved token (not the editable field above): HF resolve and the later download
+                // both authenticate with the persisted token, so a gated repo needs SAVE HF TOKEN first.
+                hfToken = RelaisConfig.hfToken(ctx),
                 onPickRef = { ref ->
                   RelaisConfig.setModelRef(ctx, ref)
                   modelRef = ref
                   modelId = ref.modelId
-                  savedNote = "Selected ${ref.displayName}. Restart to apply."
+                  // Show the resolved file, not just the repo — an HF repo can hold several
+                  // .litertlm variants and the operator should see which one was chosen before Start.
+                  savedNote = "Selected ${ref.displayName} · ${ref.modelFile}. Restart to apply."
                   showModelSheet = false
                 },
                 onPickManualId = { id ->

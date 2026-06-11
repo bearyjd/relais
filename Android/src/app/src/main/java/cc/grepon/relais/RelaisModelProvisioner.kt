@@ -113,15 +113,19 @@ object RelaisModelProvisioner {
    * Typed as a LiteRT-LM chat model (the only kind the node serves); the empty/default config is
    * fine because provisioning only needs the URL, file, version, and size.
    *
-   * NOTE (Phase B): name = displayName is unique across curated allowlist entries, but two arbitrary
-   * HF repos can share a trailing segment (org-a vs org-b, both ".../gemma-2b") and so collide on the
-   * WorkManager unique-work key (enqueueUniqueWork(model.name, …)). Switch name to the full modelId
-   * before enabling arbitrary-repo provisioning. The on-disk path is unaffected — it keys on
-   * normalizedName + version, and version (= commit) differs.
+   * [Model.name] is the WorkManager unique-work key (`enqueueUniqueWork(model.name, …)`) and the
+   * basis of the on-disk dir (`normalizedName`). Two arbitrary HF repos can share a trailing segment
+   * (`org-a/gemma-2b` vs `org-b/gemma-2b`), so for HF refs the **full modelId** is the name — which
+   * makes the work key unique. (`normalizedName` maps every non-alphanumeric to `_`, so the modelId
+   * stays one safe dir segment, but it is NOT injective — `org-a/x` and `org_a/x` collide; on-disk
+   * separation of distinct repos rests on the `{name}/{version}/…` layout, and `version` = the
+   * commit, which differs.) Curated allowlist refs keep `displayName` so their `name`/path stay
+   * byte-identical to the allowlist entry's `toModel()` and the "fetched one way, reused the other"
+   * reuse holds.
    */
   private fun modelFromRef(ref: RelaisModelRef): Model =
     AllowedModel(
-        name = ref.displayName,
+        name = if (ref.source == RelaisModelRef.SOURCE_HUGGINGFACE) ref.modelId else ref.displayName,
         modelId = ref.modelId,
         modelFile = ref.modelFile,
         commitHash = ref.commitHash,
