@@ -97,6 +97,6 @@ class RelaisModelCatalogTest {
 
   @Test
   fun emptyAllowlistYieldsEmptyList() {
-    assertEquals(emptyList<RelaisModelRef>(), RelaisModelCatalog.curatedModelsFrom(ModelAllowlist(emptyList())))
+    assertTrue(RelaisModelCatalog.curatedModelsFrom(ModelAllowlist(emptyList())).isEmpty())
   }
 }

@@ -67,6 +67,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
@@ -229,7 +230,12 @@ class RelaisControlActivity : ComponentActivity() {
             Divider()
 
             val modelDisplay = modelRef?.takeIf { it.modelId == modelId }?.displayName ?: modelId
-            ModelRow(value = modelDisplay) { showModelSheet = true }
+            // Block model changes while the node is STARTING (running but not yet ready): ensureModel
+            // may be mid-resolve/-download, and its terminal setModelPath() could resurrect the path a
+            // concurrent setModelRef() just cleared — leaving the next boot serving the superseded
+            // model. Changing while fully stopped or LIVE (path already settled) is safe.
+            val nodeBusy = running && !ready
+            ModelRow(value = modelDisplay, enabled = !nodeBusy) { showModelSheet = true }
             OutlinedTextField(
               value = hfToken,
               onValueChange = { hfToken = it; savedNote = "" },
@@ -320,9 +326,10 @@ private fun Readout(label: String, value: String) {
 
 /** Tappable model row: muted MODEL label, current selection, amber ▸ — opens the model selector. */
 @Composable
-private fun ModelRow(value: String, onClick: () -> Unit) {
+private fun ModelRow(value: String, enabled: Boolean = true, onClick: () -> Unit) {
   Box(
-    Modifier.fillMaxWidth().clip(RoundedCornerShape(6.dp)).clickable { onClick() }.padding(vertical = 6.dp)
+    Modifier.fillMaxWidth().clip(RoundedCornerShape(6.dp)).clickable(enabled = enabled) { onClick() }
+      .alpha(if (enabled) 1f else 0.5f).padding(vertical = 6.dp)
   ) {
     Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
       Text("MODEL", color = Muted, fontFamily = FontFamily.Monospace, fontSize = 12.sp, letterSpacing = 1.sp)

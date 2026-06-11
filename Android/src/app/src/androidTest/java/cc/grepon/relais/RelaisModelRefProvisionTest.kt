@@ -93,4 +93,45 @@ class RelaisModelRefProvisionTest {
       savedPath?.let { RelaisConfig.setModelPath(ctx, it) }
     }
   }
+
+  /**
+   * Staleness guard (invariant: a bare id change supersedes a diverged ref). Setting a different
+   * model id must drop a ref that names another repo and invalidate the cached provisioned path, so
+   * adb `--es modelId` resolves the new id via the allowlist instead of serving the old ref's model.
+   * A same-repo id keeps its ref.
+   */
+  @Test
+  fun divergingModelIdDropsStaleRefButSameRepoKeepsIt() {
+    val ctx = InstrumentationRegistry.getInstrumentation().targetContext
+
+    val savedId = RelaisConfig.modelId(ctx)
+    val savedRef = RelaisConfig.modelRef(ctx)
+    val savedPath = RelaisConfig.modelPath(ctx)
+
+    try {
+      // Diverging id drops the ref and clears the cached path.
+      RelaisConfig.setModelRef(
+        ctx,
+        RelaisModelRef("acme/a", "a.litertlm", "c1", 1L, "a", RelaisModelRef.SOURCE_HUGGINGFACE),
+      )
+      RelaisConfig.setModelPath(ctx, "/tmp/a-provisioned") // simulate a provisioned path
+      RelaisConfig.setModelId(ctx, "other/b")
+      assertNull("diverged ref is dropped", RelaisConfig.modelRef(ctx))
+      assertNull("provisioned path invalidated on id change", RelaisConfig.modelPath(ctx))
+
+      // Same-repo id keeps the ref (the selector's coherent setModelRef path).
+      val keep = RelaisModelRef("keep/me", "m.litertlm", "c2", 2L, "me", RelaisModelRef.SOURCE_ALLOWLIST)
+      RelaisConfig.setModelRef(ctx, keep)
+      RelaisConfig.setModelId(ctx, "keep/me")
+      assertEquals("matching id keeps the ref", keep, RelaisConfig.modelRef(ctx))
+    } finally {
+      if (savedRef != null) {
+        RelaisConfig.setModelRef(ctx, savedRef)
+      } else {
+        RelaisConfig.clearModelRef(ctx)
+        RelaisConfig.setModelId(ctx, savedId)
+      }
+      savedPath?.let { RelaisConfig.setModelPath(ctx, it) }
+    }
+  }
 }

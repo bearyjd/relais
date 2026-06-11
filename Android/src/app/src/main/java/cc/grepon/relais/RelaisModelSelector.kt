@@ -56,6 +56,7 @@ import androidx.compose.ui.unit.sp
 import cc.grepon.relais.data.RelaisModelRef
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * Bottom-sheet model selector for the node control panel. Lists the curated, node-runnable models
@@ -88,7 +89,12 @@ fun RelaisModelSelectorSheet(
   // an empty list on offline rather than throwing, so the worst case is the "enter an id" fallback.
   LaunchedEffect(Unit) {
     loading = true
-    curated = withContext(Dispatchers.IO) { RelaisModelCatalog.curatedModels() }
+    // Bound the spinner: if the allowlist is slow/unreachable, fall through to the manual-id path
+    // rather than hang indefinitely. This resolves the UI only — it does not abort the blocking
+    // socket (that needs connection timeouts in the fetch helper; see RelaisModelCatalog).
+    curated =
+      withTimeoutOrNull(8_000) { withContext(Dispatchers.IO) { RelaisModelCatalog.curatedModels() } }
+        ?: emptyList()
     loading = false
   }
 
@@ -140,7 +146,12 @@ fun RelaisModelSelectorSheet(
         modifier = Modifier.fillMaxWidth(),
       )
       val trimmed = manualId.trim()
-      AmberAction(label = "USE THIS ID ›", enabled = trimmed.isNotEmpty()) {
+      // Reject blank or whitespace-containing input — a malformed id only fails opaquely on a
+      // headless node. Don't try to model HF's id grammar (it evolves); just keep obvious garbage out.
+      AmberAction(
+        label = "USE THIS ID ›",
+        enabled = trimmed.isNotEmpty() && !trimmed.contains(Regex("\\s")),
+      ) {
         onPickManualId(trimmed)
       }
     }

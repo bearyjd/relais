@@ -42,6 +42,10 @@ object RelaisModelCatalog {
    * Fetches the allowlist and returns the node-runnable curated models as refs. **Blocking** —
    * call off the main thread. Returns [emptyList] on offline / fetch failure (the caller then shows
    * an "offline — enter an id" affordance), never throwing, so opening the selector can't crash.
+   *
+   * KNOWN GAP: getJsonResponse sets no connect/read timeout, so a wedged network blocks until the OS
+   * socket timeout. The selector bounds its UI with withTimeoutOrNull; the durable fix is connection
+   * timeouts in the shared fetch helper (planned with the Phase B Relais HTTP client).
    */
   fun curatedModels(): List<RelaisModelRef> {
     val url = RelaisModelProvisioner.allowlistUrl()

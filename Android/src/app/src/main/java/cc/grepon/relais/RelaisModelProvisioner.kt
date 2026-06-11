@@ -94,6 +94,9 @@ object RelaisModelProvisioner {
       return modelFromRef(ref).also { it.preProcess() }
     }
     val url = allowlistUrl()
+    // KNOWN GAP: getJsonResponse sets no connect/read timeout, so a wedged network can block this on
+    // the relais-init thread until the OS socket timeout. To be bounded by connection timeouts in the
+    // Phase B Relais HTTP helper (the selector already bounds its own fetch with withTimeoutOrNull).
     Log.i(TAG, "Fetching allowlist $url to resolve modelId=$modelId")
     val allowlist =
       getJsonResponse<ModelAllowlist>(url)?.jsonObj
@@ -110,6 +113,12 @@ object RelaisModelProvisioner {
    * its allowlist entry resolve to the same file, so a model fetched one way is reused by the other.
    * Typed as a LiteRT-LM chat model (the only kind the node serves); the empty/default config is
    * fine because provisioning only needs the URL, file, version, and size.
+   *
+   * NOTE (Phase B): name = displayName is unique across curated allowlist entries, but two arbitrary
+   * HF repos can share a trailing segment (org-a vs org-b, both ".../gemma-2b") and so collide on the
+   * WorkManager unique-work key (enqueueUniqueWork(model.name, …)). Switch name to the full modelId
+   * before enabling arbitrary-repo provisioning. The on-disk path is unaffected — it keys on
+   * normalizedName + version, and version (= commit) differs.
    */
   private fun modelFromRef(ref: RelaisModelRef): Model =
     AllowedModel(
