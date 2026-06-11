@@ -132,7 +132,9 @@ class DownloadWorker(context: Context, params: WorkerParameters) :
 
             val connection = url.openConnection() as HttpURLConnection
             if (accessToken != null) {
-              Log.d(TAG, "Using access token: ${accessToken.subSequence(0, 10)}...")
+              // Never log the token — not even a prefix: logcat is readable via adb / READ_LOGS, and
+              // the old subSequence(0, 10) also threw IndexOutOfBounds on tokens shorter than 10 chars.
+              Log.d(TAG, "Using a Bearer access token for $modelName")
               connection.setRequestProperty("Authorization", "Bearer $accessToken")
             }
 
@@ -237,7 +239,12 @@ class DownloadWorker(context: Context, params: WorkerParameters) :
                 )
                 setForeground(
                   createForegroundInfo(
-                    progress = (downloadedBytes * 100 / totalBytes).toInt(),
+                    // Guard a non-positive totalBytes (a size-unknown HF ref resolves to -1): avoid a
+                    // divide-by-zero / negative notification progress. Mirrors the provisioner's
+                    // `totalBytes > 0` guard on its own progress callback.
+                    progress =
+                      if (totalBytes > 0L) (downloadedBytes * 100 / totalBytes).toInt().coerceIn(0, 100)
+                      else 0,
                     modelName = modelName,
                   )
                 )

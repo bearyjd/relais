@@ -103,6 +103,64 @@ inline fun <reified T> getJsonResponse(url: String): JsonObjAndTextContent<T>? {
   return null
 }
 
+/**
+ * Outcome of an authenticated JSON GET, kept distinct so a caller can tell an auth failure (a
+ * license-gated HuggingFace repo → HTTP 401/403) apart from a 404 / offline. Unlike
+ * [getJsonResponse]'s bare `null`, the HTTP status survives so the model selector can show
+ * "gated; set HF token" instead of a generic "couldn't resolve".
+ */
+sealed interface HttpJsonResult<out T> {
+  /** HTTP 200 with a body that parsed into [T]. */
+  data class Ok<T>(val body: JsonObjAndTextContent<T>) : HttpJsonResult<T>
+
+  /** Non-200 response; [code] is the HTTP status (e.g. 401/403 gated, 404 missing repo). */
+  data class HttpError(val code: Int) : HttpJsonResult<Nothing>
+
+  /** No usable HTTP response — offline, DNS/timeout failure, or a 200 whose body didn't parse. */
+  object Transport : HttpJsonResult<Nothing>
+}
+
+/**
+ * Authenticated variant of [getJsonResponse]: same [HttpURLConnection] + Gson path and the same
+ * connect/read timeouts, but sends `Authorization: Bearer <bearer>` when [bearer] is non-blank (HF
+ * gated repos require it; mirrors [cc.grepon.relais.worker.DownloadWorker]'s Bearer injection).
+ * Returns an [HttpJsonResult] rather than a bare `null` so the caller can distinguish a gated
+ * 401/403 from a 404 / offline. Never logs the token. Blocking — call off the main thread.
+ *
+ * For a JSON **array** body pass `T = Array<E>` (e.g. `getJsonResponseAuthed<Array<HfHit>>`): the
+ * reified `T::class.java` keeps the array's component type, where a bare `List<E>` would degrade to
+ * `List<LinkedTreeMap>`.
+ */
+inline fun <reified T> getJsonResponseAuthed(url: String, bearer: String?): HttpJsonResult<T> {
+  return try {
+    val connection = URL(url).openConnection() as HttpURLConnection
+    connection.requestMethod = "GET"
+    // Same bounds as getJsonResponse — HttpURLConnection has no default timeout, and the selector's
+    // HF resolve runs two of these back-to-back; neither must be able to hang the IO dispatcher.
+    connection.connectTimeout = 15_000
+    connection.readTimeout = 30_000
+    if (!bearer.isNullOrBlank()) {
+      connection.setRequestProperty("Authorization", "Bearer $bearer")
+    }
+    connection.connect()
+
+    val code = connection.responseCode
+    if (code == HttpURLConnection.HTTP_OK) {
+      val response = connection.inputStream.bufferedReader().use { it.readText() }
+      val jsonObj = parseJson<T>(response)
+      if (jsonObj != null) HttpJsonResult.Ok(JsonObjAndTextContent(jsonObj = jsonObj, textContent = response))
+      else HttpJsonResult.Transport
+    } else {
+      // Log the status (not the token) so a gated 401/403 is diagnosable from logcat.
+      Log.w("AGUtils", "Authed GET non-200: HTTP $code for $url")
+      HttpJsonResult.HttpError(code)
+    }
+  } catch (e: Exception) {
+    Log.e("AGUtils", "Authed GET failed for $url", e)
+    HttpJsonResult.Transport
+  }
+}
+
 /** Parses a JSON string into an object of type [T] using Gson. */
 inline fun <reified T> parseJson(response: String): T? {
   return try {

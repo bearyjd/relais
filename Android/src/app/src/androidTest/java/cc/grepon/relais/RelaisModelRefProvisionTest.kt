@@ -22,6 +22,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import cc.grepon.relais.data.RelaisModelRef
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -93,7 +94,9 @@ class RelaisModelRefProvisionTest {
       )
       assertEquals("model.litertlm", model.downloadFileName)
       assertEquals("abc123", model.version)
-      assertEquals("test-litert-lm", model.name)
+      // HF refs name the Model by the full modelId (not displayName) so two repos sharing a trailing
+      // segment can't collide on the WorkManager unique-work key — see modelFromRef + the test below.
+      assertEquals("acme/test-litert-lm", model.name)
       assertEquals(123_456_789L, model.sizeInBytes)
     } finally {
       // Restore: setModelRef keeps id+ref coherent; clearModelRef+setModelId restores the id-only
@@ -138,6 +141,59 @@ class RelaisModelRefProvisionTest {
       RelaisConfig.setModelRef(ctx, keep)
       RelaisConfig.setModelId(ctx, "keep/me")
       assertEquals("matching id keeps the ref", keep, RelaisConfig.modelRef(ctx))
+    } finally {
+      if (savedRef != null) {
+        RelaisConfig.setModelRef(ctx, savedRef)
+      } else {
+        RelaisConfig.clearModelRef(ctx)
+        RelaisConfig.setModelId(ctx, savedId)
+      }
+      savedPath?.let { RelaisConfig.setModelPath(ctx, it) }
+    }
+  }
+
+  /**
+   * Collision guard (Phase B). Two arbitrary HF repos can share a trailing segment
+   * (`org-a/gemma-2b` vs `org-b/gemma-2b`); if [Model.name] were the trailing-segment displayName
+   * they'd collide on the WorkManager unique-work key (`enqueueUniqueWork(model.name, …)`). HF refs
+   * therefore name the model by the full (unique) modelId, while curated allowlist refs keep their
+   * displayName so the on-disk path stays byte-identical to the allowlist's `toModel()`.
+   */
+  @Test
+  fun hfRefsNameByModelIdSoSharedTrailingSegmentsDontCollide() {
+    val ctx = InstrumentationRegistry.getInstrumentation().targetContext
+
+    val savedId = RelaisConfig.modelId(ctx)
+    val savedRef = RelaisConfig.modelRef(ctx)
+    val savedPath = RelaisConfig.modelPath(ctx)
+
+    try {
+      RelaisConfig.setModelRef(
+        ctx,
+        RelaisModelRef("org-a/gemma-2b", "m.litertlm", "c1", 1L, "gemma-2b", RelaisModelRef.SOURCE_HUGGINGFACE),
+      )
+      val a = RelaisModelProvisioner.resolveModel(ctx)
+      assertEquals("HF ref names by full modelId", "org-a/gemma-2b", a.name)
+
+      RelaisConfig.setModelRef(
+        ctx,
+        RelaisModelRef("org-b/gemma-2b", "m.litertlm", "c2", 1L, "gemma-2b", RelaisModelRef.SOURCE_HUGGINGFACE),
+      )
+      val b = RelaisModelProvisioner.resolveModel(ctx)
+      assertEquals("HF ref names by full modelId", "org-b/gemma-2b", b.name)
+      assertNotEquals("same trailing segment → distinct work keys", a.name, b.name)
+      // These two ids also normalize distinctly (org_a_… vs org_b_…). normalizedName is NOT injective
+      // in general (it maps every non-alphanumeric to _), so the durable cross-repo separation is the
+      // {name}/{version}/… layout keyed on the commit; this asserts the common case, not that proof.
+      assertNotEquals(a.normalizedName, b.normalizedName)
+
+      // A curated (allowlist) ref keeps displayName as the name → byte-identical to the allowlist path.
+      RelaisConfig.setModelRef(
+        ctx,
+        RelaisModelRef("litert-community/curated", "m.litertlm", "c3", 1L, "Curated Display", RelaisModelRef.SOURCE_ALLOWLIST),
+      )
+      val c = RelaisModelProvisioner.resolveModel(ctx)
+      assertEquals("allowlist ref keeps displayName", "Curated Display", c.name)
     } finally {
       if (savedRef != null) {
         RelaisConfig.setModelRef(ctx, savedRef)

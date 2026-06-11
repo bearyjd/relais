@@ -86,6 +86,27 @@ curl -k https://<phone-ip>:8443/v1/chat/completions \
 Discovery: the node advertises `_relais._tcp` over mDNS, so clients can find it by
 name after an IP change.
 
+## Choosing a model
+
+The control panel's **MODEL** row opens a selector with three ways to choose what
+the node serves:
+
+- **Curated** — the node-runnable LiteRT-LM chat models from the built-in
+  allowlist, with sizes. Tap one to select it.
+- **HuggingFace search** — type to search the Hub (or paste a full `org/repo` id
+  to resolve it directly). Relais resolves the repo's `.litertlm` file, commit, and
+  size and provisions it on the next start — so you can run any compatible repo,
+  not just the curated list. Repos with no `.litertlm` file are flagged as
+  incompatible.
+- **Manual id** — enter an allowlist repo id by hand (resolved via the allowlist on
+  start).
+
+Selecting a model takes effect on the next **START** (the panel shows
+*"Restart to apply"*). **Gated repos** (e.g. official `google/gemma-*`) are marked
+`token` — for HuggingFace search results this reflects the Hub's real `gated` flag.
+Paste a HuggingFace access token into **HF TOKEN** and **SAVE HF TOKEN** first, or the
+resolve/download will fail with a gated error. Open repos like the default need no token.
+
 ## Works with
 
 Any OpenAI-compatible client — point its base URL at `https://<phone-ip>:8443/v1`
