@@ -106,7 +106,7 @@ class RelaisNodeService : Service() {
     // swipe, or a recents sweep), keep running and make sure the watchdog heartbeat is armed. (A
     // true force-stop still can't be recovered in-app — Android disables a stopped app's alarms and
     // boot-receiver until it's explicitly relaunched; that's why the panel is excludeFromRecents.)
-    if (RelaisConfig.shouldRun(applicationContext)) RelaisWatchdog.schedule(applicationContext)
+    reArmWatchdogIfShouldRun(applicationContext)
     super.onTaskRemoved(rootIntent)
   }
 
@@ -157,6 +157,15 @@ class RelaisNodeService : Service() {
       RelaisConfig.setShouldRun(context, false)
       RelaisWatchdog.cancel(context)
       context.stopService(Intent(context, RelaisNodeService::class.java))
+    }
+
+    /**
+     * Re-arm the crash/OOM watchdog heartbeat iff the node is meant to be running. Extracted from
+     * [onTaskRemoved] — which can't be invoked on a bare Service instance — so the gate is
+     * instrumentable. Starting an already-scheduled watchdog is idempotent.
+     */
+    internal fun reArmWatchdogIfShouldRun(context: Context) {
+      if (RelaisConfig.shouldRun(context)) RelaisWatchdog.schedule(context)
     }
   }
 }
