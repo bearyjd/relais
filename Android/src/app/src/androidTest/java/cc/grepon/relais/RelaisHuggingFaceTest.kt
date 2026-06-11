@@ -29,6 +29,7 @@ import cc.grepon.relais.data.RelaisModelRef
 import com.google.gson.Gson
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -106,8 +107,24 @@ class RelaisHuggingFaceTest {
         """{"sha":"s1","siblings":[{"rfilename":"q8-model.litertlm"},{"rfilename":"a-model.litertlm"},{"rfilename":"m.litertlm"}]}"""
       )
     val ref = (RelaisHuggingFace.buildRef("acme/multi", info, emptyList()) as ResolveResult.Success).ref
-    // Lexicographically-first → same file every run, regardless of sibling order.
-    assertEquals("a-model.litertlm", ref.modelFile)
+    // Shortest name → the canonical build (suffixed variants are longer); deterministic run-to-run.
+    assertEquals("m.litertlm", ref.modelFile)
+  }
+
+  @Test
+  fun pickPrefersCanonicalBuildAndRejectsSubdirectories() {
+    // '-' (0x2D) sorts before '.' (0x2E), so a plain lexicographic pick would grab the "-web" variant
+    // — shortest-then-lexicographic picks the canonical base file the node actually runs.
+    assertEquals(
+      "gemma-4-E4B-it.litertlm",
+      RelaisHuggingFace.pickLiteRtLm(listOf("gemma-4-E4B-it-web.litertlm", "gemma-4-E4B-it.litertlm")),
+    )
+    // A nested .litertlm is rejected (DownloadWorker can't write into an un-mkdir'd subdir) → the
+    // top-level file wins, or null when only nested ones exist (→ resolve returns NoLiteRtLm).
+    assertEquals("root.litertlm", RelaisHuggingFace.pickLiteRtLm(listOf("weights/deep.litertlm", "root.litertlm")))
+    assertNull(RelaisHuggingFace.pickLiteRtLm(listOf("nested/only.litertlm")))
+    // Equal length → lexicographic tiebreak keeps it deterministic.
+    assertEquals("a.litertlm", RelaisHuggingFace.pickLiteRtLm(listOf("b.litertlm", "a.litertlm")))
   }
 
   @Test

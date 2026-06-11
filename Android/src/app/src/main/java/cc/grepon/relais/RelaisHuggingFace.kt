@@ -139,7 +139,9 @@ object RelaisHuggingFace {
    * Bearer for gated repos. Blocking.
    */
   fun resolve(modelId: String, token: String?): ResolveResult {
-    val infoUrl = "$API_BASE/api/models/$modelId"
+    // Encode each path segment (keep the org/repo slash) so a pasted id with ?/#/space can't alter
+    // the API request target. Real HF ids are unaffected; this only neutralizes garbage input.
+    val infoUrl = "$API_BASE/api/models/${encodeRepoPath(modelId)}"
     val info =
       when (val step = interpretInfo(modelId, token, getJsonResponseAuthed<HfInfo>(infoUrl, token))) {
         is InfoStep.Proceed -> step.info
@@ -220,18 +222,32 @@ object RelaisHuggingFace {
   }
 
   /**
-   * Deterministically picks one `.litertlm` file from [files]: the lexicographically-first, so a
-   * repo with several variants always resolves to the same file run-to-run. Returns null when none
-   * is present (the repo isn't a node-runnable LiteRT-LM model).
+   * Picks one `.litertlm` file from [files], deterministically and biased toward the **canonical**
+   * build. Returns null when none qualifies (the repo isn't a node-runnable LiteRT-LM model).
+   *
+   * Two rules learned the hard way:
+   *  - **Top-level only** (`!contains('/')`): a nested path would make [DownloadWorker] open a file
+   *    in a subdir it never mkdir'd and fail a multi-GB download deep in FileOutputStream. Reject it
+   *    here so resolve returns [ResolveResult.NoLiteRtLm] instead of a doomed download.
+   *  - **Shortest name, then lexicographic**: the base file is usually the shortest name; backend or
+   *    quant variants add suffixes (`-web`, `-seq128`). A plain lexicographic pick is actively wrong
+   *    — `'-'` (0x2D) sorts before `'.'` (0x2E), so it would pick `gemma-web.litertlm` over the
+   *    canonical `gemma.litertlm`. Shortest-first picks the canonical file the node actually runs.
    */
   internal fun pickLiteRtLm(files: List<String>): String? =
-    files.filter { it.endsWith(".litertlm", ignoreCase = true) }.minOrNull()
+    files
+      .filter { it.endsWith(".litertlm", ignoreCase = true) && !it.contains('/') }
+      .minWithOrNull(compareBy({ it.length }, { it }))
 
   // ---- Network helper ---------------------------------------------------------------------------
 
-  /** Fetches the recursive repo tree at [sha]; [emptyList] on any failure (size is best-effort). */
+  /**
+   * Fetches the repo tree root at [sha] for the picked file's size; [emptyList] on any failure (size
+   * is best-effort). Non-recursive: [pickLiteRtLm] only accepts top-level files, so the root listing
+   * already contains the entry whose size we need — no point pulling a fat repo's whole tree.
+   */
   private fun fetchTree(modelId: String, sha: String, token: String?): List<HfTreeEntry> {
-    val url = "$API_BASE/api/models/$modelId/tree/$sha?recursive=true"
+    val url = "$API_BASE/api/models/${encodeRepoPath(modelId)}/tree/$sha"
     return when (val r = getJsonResponseAuthed<Array<HfTreeEntry>>(url, token)) {
       is HttpJsonResult.Ok -> r.body.jsonObj.toList()
       else -> {
@@ -240,4 +256,8 @@ object RelaisHuggingFace {
       }
     }
   }
+
+  /** Percent-encodes each path segment of a repo id, preserving the `org/repo` slash. */
+  private fun encodeRepoPath(modelId: String): String =
+    modelId.split('/').joinToString("/") { URLEncoder.encode(it, "UTF-8") }
 }
