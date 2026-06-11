@@ -49,6 +49,20 @@ class RelaisModelRefProvisionTest {
     assertNull("missing required fields are rejected", RelaisModelRef.fromJson("""{"displayName":"x"}"""))
   }
 
+  /**
+   * Locks the blank/null rejection contract fromJson relies on. Gson does not honor Kotlin non-null
+   * types, so a required field can be absent, JSON-null, empty, or whitespace at runtime — each must
+   * decode to null (never throw), or a corrupt model_ref pref crashes the headless node-init thread.
+   * Guards against a future refactor that drops the blank half of the check (e.g. != null only).
+   */
+  @Test
+  fun fromJsonRejectsBlankAndNullRequiredFields() {
+    assertNull("empty required fields", RelaisModelRef.fromJson("""{"modelId":"","modelFile":"","commitHash":""}"""))
+    assertNull("whitespace-only field", RelaisModelRef.fromJson("""{"modelId":"  ","modelFile":"x","commitHash":"y"}"""))
+    assertNull("explicit JSON nulls", RelaisModelRef.fromJson("""{"modelId":null,"modelFile":null,"commitHash":null}"""))
+    assertNull("one field present, others absent", RelaisModelRef.fromJson("""{"modelId":"acme/x"}"""))
+  }
+
   @Test
   fun resolveModelBuildsFromRefWithoutNetwork() {
     val ctx = InstrumentationRegistry.getInstrumentation().targetContext
