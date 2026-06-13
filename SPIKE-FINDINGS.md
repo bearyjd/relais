@@ -15,6 +15,52 @@
 
 ---
 
+## Tensor G5 / Pixel 10 — `gemma-4-E4B` does NOT run; the runtime IS usable (2026-06-12)
+
+> Corrects the TL;DR "portable across Pixel 9 and Pixel 10" assumption. Verified on the **Pixel 10
+> Pro Fold (`rango`, Tensor G5)** against the **Pixel 9 Pro Fold (`comet`, Tensor G4)**.
+
+**Finding:** the multimodal **`gemma-4-E4B-it.litertlm`** model **initializes** (`ready:true`) on Tensor
+G5 but **SIGSEGVs natively** (null-pointer deref in `liblitertlm_jni.so`) on the **first inference**.
+A **different, text-only** model (**`Qwen3-0.6B`**) **serves fine on the same G5 device**. So it is a
+**model × SoC bug inside LiteRT-LM**, not a Relais bug, not the model file, and not a runtime version.
+
+Discriminator matrix (all on `rango` / G5 unless noted):
+
+| Model | Engine config | litertlm | Result |
+|---|---|---|---|
+| gemma-4-E4B | full (vision=GPU, audio=CPU) | 0.11.0 & 0.13.1 | **SIGSEGV** on 1st inference (CPU+GPU) |
+| gemma-4-E4B | **text-only** (no vision/audio) | 0.13.1 | **SIGSEGV** (so not the multimodal backends) |
+| gemma-4-E4B | full | 0.11.0 | serves on **G4** (`comet`) — byte-identical model |
+| **Qwen3-0.6B** | text-only | 0.13.1 (direct) & 0.11.0 (node) | **serves on G5** — coherent output, ~3.5 tok/s |
+
+- **Version-independent:** reproduced on `0.11.0` AND `0.13.1` (latest), different native BuildIds
+  (`c2c2717…` vs `cae57ec…`), identical null-deref. A version bump is **not** the fix (H5 refuted).
+- **Backend- and config-independent:** crashes on `Backend.GPU()` and `Backend.CPU()`, and with a
+  text-only engine config (no vision/audio backend). So it is the **model's compute graph on G5**.
+- Model is exonerated by checksum (sha256 `0b2a8980…bd52e0`, byte-identical to the G4-serving file).
+- A native SIGSEGV **cannot** be caught (no throwable reaches `onError`); remediation must avoid the
+  crashing path, not try/catch it.
+
+**Also surfaced (a real Relais bug, now fixed):** `RelaisEngine` hardcoded `visionBackend`/`audioBackend`,
+so `Engine.initialize()` (litertlm 0.11) or `createConversation()` (0.13) **rejected every text-only
+model** with `NOT_FOUND: TF_LITE_*_ENCODER_*` — the node could not serve Qwen3-class models at all.
+
+**Remediation (shipped — `RelaisEngine.kt`):**
+1. **Adaptive engine config** — try the full multimodal config; on a missing image/audio encoder fall
+   back to a text-only engine (model-agnostic; a non-encoder error is rethrown, so a multimodal model
+   is never silently downgraded). Lets the node serve text-only models on **both** SoCs.
+2. **Pixel-10 / G5 pre-flight gate** — refuse the known-incompatible `gemma-4-E4B` on Pixel 10 with a
+   clear error (pick a G5-compatible model) instead of crash-looping.
+
+**Verified on hardware:** G5 (`rango`) — Qwen3 serves via the real node path; gemma gated cleanly, no
+SIGSEGV. G4 (`comet`) — gemma still builds the **full multimodal** engine and serves (no regression).
+
+**Open:** upstream LiteRT-LM bug to file (gemma-4-E4B null-deref at first inference on Tensor G5; serves
+on G4; Qwen3 serves on G5). Single G5 unit available, so all-Pixel-10 vs single-unit-fault unconfirmed.
+
+---
+
 ## Q1 — Can the active backend be read back programmatically? **NO.**
 Decompiled `litertlm-android:0.11.0`. The public API exposes **no resolved/active-backend getter**:
 - `Engine.getEngineConfig().backend` only **echoes the requested `Backend`** you constructed — not what the runtime resolved. If the native layer silently falls back, this still reports the request. Reading it proves nothing.
