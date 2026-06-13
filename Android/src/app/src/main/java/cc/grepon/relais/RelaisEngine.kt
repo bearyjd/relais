@@ -29,11 +29,15 @@ import com.google.ai.edge.litertlm.ExperimentalApi
 import com.google.ai.edge.litertlm.ExperimentalFlags
 import com.google.ai.edge.litertlm.Message
 import com.google.ai.edge.litertlm.MessageCallback
+import com.google.ai.edge.litertlm.OpenApiTool
 import com.google.ai.edge.litertlm.SamplerConfig
+import com.google.ai.edge.litertlm.ToolCall
+import com.google.ai.edge.litertlm.tool
 import java.io.File
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import org.json.JSONObject
 
 private const val TAG = "RelaisEngine"
 private const val MAX_NUM_TOKENS = 1024
@@ -96,6 +100,12 @@ data class RelaisRequest(
    * replayed turn-by-turn, so a multi-turn request costs one decode rather than one per turn.
    */
   val history: List<ParsedTurn> = emptyList(),
+  /** OpenAI `tools` to advertise to the model. Empty for the non-tool path. */
+  val tools: List<ToolSpec> = emptyList(),
+  /** OpenAI `tool_choice`. Carried through; only [ToolChoice.None] suppresses tools (HTTP layer). */
+  val toolChoice: ToolChoice = ToolChoice.Auto,
+  /** Trailing tool-result turn (from a `role:"tool"` run) that drives a tool round-trip. */
+  val toolResults: List<ToolResult> = emptyList(),
 ) {
   val modalities: RequestModalities
     get() = RequestModalities(hasImage = imagePng != null, hasAudio = audioWav != null)
@@ -117,6 +127,12 @@ data class RelaisResult(
    * RelaisResult.finishReason + cancel-state threading across both HTTP paths).
    */
   val completionTokens: Int,
+  /**
+   * Tool calls the model emitted on the blocking tool path (empty on the streaming/text paths).
+   * Populated only when [RelaisRequest.tools]/[RelaisRequest.toolResults] route through the
+   * dedicated blocking tool branch in [RelaisEngine.generate].
+   */
+  val toolCalls: List<ParsedToolCall> = emptyList(),
 )
 
 /**
@@ -307,6 +323,13 @@ object RelaisEngine {
       ensureInitialized(context)
       val e = engine ?: error("Engine not initialized")
 
+      // Tool path: a request advertising tools OR carrying tool results round-trips through the
+      // BLOCKING sendMessage API (not streaming) so reply.toolCalls is populated. Same lock +
+      // thermal-cooldown + RelaisMetrics scaffolding as the streaming path below.
+      if (request.tools.isNotEmpty() || request.toolResults.isNotEmpty()) {
+        return generateWithTools(e, request, backend)
+      }
+
       val contents = buildList {
         request.imagePng?.let { add(Content.ImageBytes(it)) }
         request.audioWav?.let { add(Content.AudioBytes(it)) }
@@ -398,6 +421,102 @@ object RelaisEngine {
     }
   }
 
+  /**
+   * Blocking tool round-trip against the resident engine. Advertises [RelaisRequest.tools] to the
+   * model (automaticToolCalling=false so the node — not the engine — runs tools), seeds system +
+   * history, then sends ONE live message:
+   *  - tool results present -> a TOOL message carrying each [Content.ToolResponse] (the round-trip
+   *    where the model integrates tool output into a final answer);
+   *  - otherwise -> the live USER message (the first turn, where the model may request a tool).
+   *
+   * Returns the reply text plus any [ParsedToolCall]s the model emitted. Uses the same lock +
+   * thermal-cooldown discipline as the streaming path; runs no per-token callback (the blocking
+   * sendMessage returns the full reply Message at once). Throughput is not measured here (no
+   * per-token wall clock), so decodeTokensPerSec/completionTokens are 0.
+   */
+  @OptIn(ExperimentalApi::class)
+  private fun generateWithTools(
+    e: Engine,
+    request: RelaisRequest,
+    backend: RelaisBackend,
+  ): RelaisResult {
+    synchronized(lock) {
+      ThermalGovernor.cooldownMs().takeIf { it > 0 }?.let { runCatching { Thread.sleep(it) } }
+      val sampler = SamplerConfig(topK = 64, topP = 0.95, temperature = 1.0)
+      val providers = request.tools.map { tool(openApiToolOf(it.functionJson)) }
+      val initialMessages = request.history.mapNotNull { it.toResidentMessage() }
+      val config =
+        if (request.systemPrompt != null) {
+          ConversationConfig(
+            systemInstruction = Contents.of(request.systemPrompt),
+            initialMessages = initialMessages,
+            tools = providers,
+            automaticToolCalling = false,
+            samplerConfig = sampler,
+          )
+        } else {
+          ConversationConfig(
+            initialMessages = initialMessages,
+            tools = providers,
+            automaticToolCalling = false,
+            samplerConfig = sampler,
+          )
+        }
+      val conversation = e.createConversation(config)
+      return try {
+        val liveMessage =
+          if (request.toolResults.isNotEmpty()) {
+            Message.tool(Contents.of(request.toolResults.map { Content.ToolResponse(it.name, it.content) }))
+          } else {
+            val items = buildList {
+              request.imagePng?.let { add(Content.ImageBytes(it)) }
+              request.audioWav?.let { add(Content.AudioBytes(it)) }
+              if (request.text.isNotBlank()) add(Content.Text(request.text))
+            }
+            Message.user(Contents.of(items))
+          }
+        val reply = conversation.sendMessage(liveMessage, emptyMap())
+        val mapped = reply.toolCalls.mapIndexed { index, tc ->
+          val argumentsJson = runCatching { JSONObject(tc.arguments).toString() }.getOrElse { ex ->
+            Log.w(TAG, "Failed to serialize arguments for tool '${tc.name}'; using {}: $ex")
+            "{}"
+          }
+          ParsedToolCall(
+            id = "call_" + java.util.UUID.randomUUID().toString().replace("-", "").take(24),
+            name = tc.name,
+            argumentsJson = argumentsJson,
+          )
+        }
+        val text = reply.contents.contents.filterIsInstance<Content.Text>().joinToString("") { it.text }
+        RelaisResult(
+          text = text,
+          backend = backend,
+          decodeTokensPerSec = 0.0,
+          completionTokens = 0,
+          toolCalls = mapped,
+        )
+      } finally {
+        conversation.close()
+      }
+    }
+  }
+
+  /**
+   * Wraps an OpenAI `function` object ([functionJson]) as an [OpenApiTool] for the LiteRT-LM
+   * `tool(...)` bridge. [OpenApiTool.execute] is only invoked when automaticToolCalling=true; the
+   * node always runs with it OFF (tools execute client-side), so execute() should never fire — it
+   * logs a warning and returns an empty object defensively.
+   */
+  private fun openApiToolOf(functionJson: String): OpenApiTool =
+    object : OpenApiTool {
+      override fun getToolDescriptionJsonString(): String = functionJson
+
+      override fun execute(paramsJsonString: String): String {
+        Log.w(TAG, "OpenApiTool.execute() called unexpectedly (automaticToolCalling is off); returning {}")
+        return "{}"
+      }
+    }
+
   fun shutdown() {
     synchronized(lock) {
       try {
@@ -412,12 +531,24 @@ object RelaisEngine {
 
   /**
    * Maps a parsed OpenAI history turn to a LiteRT-LM [Message] with the correct role, for seeding a
-   * conversation via [ConversationConfig.initialMessages]. Assistant turns become a MODEL message;
-   * everything else (the parser only emits "user"/"assistant" into history) becomes a USER message.
-   * Returns null for an empty turn (no text and no media) so no blank turn is seeded.
+   * conversation via [ConversationConfig.initialMessages]. Roles map as:
+   *  - "tool": a TOOL message carrying the result text as a [Content.ToolResponse] (null if the
+   *    function name couldn't be resolved — a nameless tool response can't be addressed).
+   *  - "assistant" with tool calls: a MODEL message carrying the calls (so the model sees its own
+   *    prior tool requests); content is empty when the assistant turn had no text.
+   *  - "assistant" (no calls): a MODEL message.
+   *  - everything else: a USER message.
+   * Returns null for an empty turn (no text and no media and no tool calls) so no blank turn seeds.
    */
   @OptIn(ExperimentalApi::class)
   private fun ParsedTurn.toResidentMessage(): Message? {
+    if (role == "tool") {
+      return toolName?.let { Message.tool(Contents.of(listOf(Content.ToolResponse(it, text)))) }
+    }
+    if (role == "assistant" && toolCalls.isNotEmpty()) {
+      val contents = if (text.isBlank()) Contents.of(emptyList()) else Contents.of(text)
+      return Message.model(contents, toolCalls.map { ToolCall(it.name, jsonToMap(it.argumentsJson)) }, emptyMap())
+    }
     val items = buildList {
       imagePng?.let { add(Content.ImageBytes(it)) }
       audioWav?.let { add(Content.AudioBytes(it)) }
@@ -427,4 +558,17 @@ object RelaisEngine {
     val contents = Contents.of(items)
     return if (role == "assistant") Message.model(contents) else Message.user(contents)
   }
+
+  /** Parses a JSON-object string into a `Map<String, Any?>` for [ToolCall.arguments]; {} on failure. */
+  private fun jsonToMap(json: String): Map<String, Any?> =
+    runCatching {
+      val obj = JSONObject(json)
+      buildMap {
+        val keys = obj.keys()
+        while (keys.hasNext()) {
+          val key = keys.next()
+          put(key, obj.get(key))
+        }
+      }
+    }.getOrDefault(emptyMap())
 }
