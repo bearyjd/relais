@@ -93,7 +93,22 @@ data class RelaisRequest(
 }
 
 /** Result of one inference. */
-data class RelaisResult(val text: String, val backend: RelaisBackend, val decodeTokensPerSec: Double)
+data class RelaisResult(
+  val text: String,
+  val backend: RelaisBackend,
+  val decodeTokensPerSec: Double,
+  /**
+   * Raw decode token count from the onMessage callback loop (completion_tokens in OpenAI usage).
+   * Zero for the NPU/AICore path which does not expose per-token callbacks (UNVERIFIED path).
+   *
+   * NOTE: on a cooperative cancel (thermal truncate via [ThermalGovernor.shouldTruncate] or broken
+   * pipe in the onToken lambda) this counter reflects all tokens the engine DECODED — which may
+   * exceed the tokens the client actually received in its SSE stream. A future
+   * finish_reason="length" signal will make this visible to callers; deferred (needs
+   * RelaisResult.finishReason + cancel-state threading across both HTTP paths).
+   */
+  val completionTokens: Int,
+)
 
 /**
  * Modality-aware backend selector (Gate 4).
@@ -272,10 +287,12 @@ object RelaisEngine {
 
       // NPU path (Pixel 10+): Gemini Nano via AICore, image/text only. UNVERIFIED on Pixel 9 —
       // never selected here because aicoreAvailable() is false.
+      // completionTokens = 0: AICore does not expose per-token callbacks; usage block will show
+      // completion_tokens = 0 for this path until a token-counting API is available.
       if (backend == RelaisBackend.NPU_AICORE) {
         val text = RelaisAicore.generate(request)
         onToken?.invoke(text)
-        return RelaisResult(text = text, backend = backend, decodeTokensPerSec = 0.0)
+        return RelaisResult(text = text, backend = backend, decodeTokensPerSec = 0.0, completionTokens = 0)
       }
 
       ensureInitialized(context)
@@ -346,7 +363,7 @@ object RelaisEngine {
           val tokS = if (decodeSec > 0 && tokens > 1) (tokens - 1) / decodeSec else 0.0
           RelaisMetrics.recordThroughput(tokens, tokS, backend.name)
           ThermalGovernor.onDecodeThroughput(tokS)
-          RelaisResult(text = sb.toString(), backend = backend, decodeTokensPerSec = tokS)
+          RelaisResult(text = sb.toString(), backend = backend, decodeTokensPerSec = tokS, completionTokens = tokens)
         } finally {
           conversation.close()
         }
