@@ -35,6 +35,7 @@ import java.security.cert.X509Certificate
 import java.util.Calendar
 import java.util.Date
 import java.util.concurrent.Executors
+import java.util.concurrent.Semaphore
 import javax.net.ssl.KeyManagerFactory
 import javax.net.ssl.SSLContext
 import org.bouncycastle.asn1.x500.X500Name
@@ -112,6 +113,8 @@ class RelaisHttpServer(
   @Volatile private var running = false
   private val apiKey by lazy { RelaisConfig.apiKey(context) }
   private val rateLimiter = RateLimiter(RATE_LIMIT, RATE_WINDOW_MS)
+  // Fair semaphore: FIFO among admitted threads; tryAcquire() is the runtime embodiment of admit().
+  private val admissionGate = Semaphore(QUEUE_CAPACITY, /* fair = */ true)
 
   fun start() {
     if (running) return
@@ -260,22 +263,28 @@ class RelaisHttpServer(
           }
 
           method == "POST" && path.startsWith("/generate") -> {
-            if (shedIfHot(::reply)) return
-            val json = JSONObject(readBody(reader, contentLength))
-            val request =
-              RelaisRequest(
-                text = json.optString("text", ""),
-                imagePng = json.optString("image_b64").takeIf { it.isNotEmpty() }?.let { decode(it) },
-                audioWav = json.optString("audio_b64").takeIf { it.isNotEmpty() }?.let { decode(it) },
+            if (shedIfHot(::reply)) return         // thermal 503 wins first
+            if (rejectIfQueueFull(::reply)) return  // admission 429 second
+            // Permit acquired — release in finally so a crash or timeout never leaks a slot.
+            try {
+              val json = JSONObject(readBody(reader, contentLength))
+              val request =
+                RelaisRequest(
+                  text = json.optString("text", ""),
+                  imagePng = json.optString("image_b64").takeIf { it.isNotEmpty() }?.let { decode(it) },
+                  audioWav = json.optString("audio_b64").takeIf { it.isNotEmpty() }?.let { decode(it) },
+                )
+              val result = RelaisEngine.generate(context, request, shouldCancel = { ThermalGovernor.shouldTruncate() })
+              reply(
+                200,
+                JSONObject()
+                  .put("response", result.text)
+                  .put("backend", result.backend.name)
+                  .put("decode_tok_s", result.decodeTokensPerSec),
               )
-            val result = RelaisEngine.generate(context, request, shouldCancel = { ThermalGovernor.shouldTruncate() })
-            reply(
-              200,
-              JSONObject()
-                .put("response", result.text)
-                .put("backend", result.backend.name)
-                .put("decode_tok_s", result.decodeTokensPerSec),
-            )
+            } finally {
+              admissionGate.release()
+            }
           }
 
           method == "GET" && path.startsWith("/v1/models") -> {
@@ -285,8 +294,15 @@ class RelaisHttpServer(
           }
 
           method == "POST" && path.startsWith("/v1/chat/completions") -> {
-            if (shedIfHot(::reply)) return
-            handleOpenAi(sock, JSONObject(readBody(reader, contentLength)))
+            if (shedIfHot(::reply)) return         // thermal 503 wins first
+            if (rejectIfQueueFull(::reply)) return  // admission 429 second (before SSE 200 header)
+            // Permit acquired — release in finally; handleOpenAi may commit the SSE 200 header
+            // before returning, so post-commit errors are handled inside handleOpenAi itself.
+            try {
+              handleOpenAi(sock, JSONObject(readBody(reader, contentLength)))
+            } finally {
+              admissionGate.release()
+            }
           }
 
           else -> reply(404, JSONObject().put("error", "not found"))
@@ -309,6 +325,32 @@ class RelaisHttpServer(
       503,
       JSONObject().put("error", "thermal backpressure; retry later").put("retry_after_seconds", retry),
       listOf("Retry-After: $retry"),
+    )
+    return true
+  }
+
+  /**
+   * If the admission queue is full, answer 429 + Retry-After, record the counter, and return true.
+   * Must be called AFTER [shedIfHot] — thermal 503 takes precedence over queue 429.
+   */
+  private fun rejectIfQueueFull(reply: (Int, JSONObject, List<String>) -> Unit): Boolean {
+    if (admissionGate.tryAcquire()) return false // admitted — caller must release in a finally
+    // Derive depth from the gate's own state: availablePermits()==0 at saturation, so
+    // QUEUE_CAPACITY - 0 == QUEUE_CAPACITY, giving admit(QUEUE_CAPACITY, QUEUE_CAPACITY) -> the
+    // load-scaled Retry-After. Using RelaisMetrics.queueDepth() instead would be decoupled from
+    // the gate and could read below capacity, collapsing to the MIN_RETRY_AFTER floor (bug fix).
+    val depth = QUEUE_CAPACITY - admissionGate.availablePermits()
+    val decision = admit(depth, QUEUE_CAPACITY)
+    val retryAfter = if (decision is AdmissionDecision.Reject) decision.retryAfterSeconds
+                     else MIN_RETRY_AFTER
+    RelaisMetrics.recordQueueReject()
+    reply(
+      429,
+      JSONObject()
+        .put("error", "admission queue full; retry later")
+        .put("code", "queue_full")
+        .put("retry_after_seconds", retryAfter),
+      listOf("Retry-After: $retryAfter"),
     )
     return true
   }
