@@ -44,6 +44,7 @@ object RelaisMetrics {
   private val requestCounts = ConcurrentHashMap<String, AtomicLong>()
   private val tokensTotal = AtomicLong(0)
   private val shedTotal = AtomicLong(0)
+  private val queueRejectedTotal = AtomicLong(0)
   private val errorsTotal = AtomicLong(0)
   private val inFlight = AtomicInteger(0)
 
@@ -65,9 +66,14 @@ object RelaisMetrics {
 
   fun recordShed() = shedTotal.incrementAndGet()
 
+  fun recordQueueReject() = queueRejectedTotal.incrementAndGet()
+
   fun incInFlight() = inFlight.incrementAndGet()
 
   fun decInFlight() = inFlight.decrementAndGet()
+
+  /** Current queue depth (queued + running); used by the admission gate for Retry-After scaling. */
+  fun queueDepth(): Int = inFlight.get()
 
   /**
    * Records inference wall-clock latency for **every** outcome — success, timeout, or error. The
@@ -141,6 +147,10 @@ object RelaisMetrics {
     line("# TYPE relais_shed_total counter")
     line("relais_shed_total ${shedTotal.get()}")
 
+    line("# HELP relais_queue_rejected_total Requests rejected (429) because the admission queue was full.")
+    line("# TYPE relais_queue_rejected_total counter")
+    line("relais_queue_rejected_total ${queueRejectedTotal.get()}")
+
     line("# HELP relais_tokens_generated_total Total decoded tokens served.")
     line("# TYPE relais_tokens_generated_total counter")
     line("relais_tokens_generated_total ${tokensTotal.get()}")
@@ -203,6 +213,7 @@ object RelaisMetrics {
       .put("tokens_generated_total", tokensTotal.get())
       .put("errors_total", errorsTotal.get())
       .put("shed_total", shedTotal.get())
+      .put("queue_rejected_total", queueRejectedTotal.get())
       .put("decode_tokens_per_second", lastDecodeTokS)
       .put("inference_p50_seconds", p50)
       .put("inference_p95_seconds", p95)
