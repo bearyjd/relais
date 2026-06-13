@@ -253,6 +253,37 @@ class RelaisHttpServer(
                 .put("thermal_state", ThermalGovernor.statusValue),
             )
 
+          method == "GET" && path == "/" -> {
+            // Auth-gated (bearer required — same gate as /metrics; /health is the only open route).
+            // Reads only already-collected metrics; no state change. Scriptless + escaped; strict
+            // security headers added via extraHeaders (CSP no script-src, nosniff, X-Frame DENY).
+            RelaisMetrics.recordRequest(endpoint, 200)
+            val metricsJson = RelaisMetrics.renderJson(context)
+            val dashStatus = assembleDashboardStatus(
+              engineReady = RelaisEngine.isReady,
+              startupInProgress = RelaisEngine.startupInProgress,
+              thermalStatus = ThermalGovernor.statusValue,
+              decodeTokensPerSec = metricsJson.optDouble("decode_tokens_per_second", 0.0),
+              currentModelId = RelaisConfig.modelId(context),
+              uptimeSeconds = metricsJson.optDouble("uptime_seconds", 0.0),
+              queueDepth = RelaisMetrics.queueDepth(),
+              errorsTotal = metricsJson.optLong("errors_total", 0L),
+              shedTotal = metricsJson.optLong("shed_total", 0L),
+              recentRequests = RelaisMetrics.recentRequests(),
+            )
+            val html = renderDashboardHtml(dashStatus)
+            respondText(
+              sock, 200, html, "text/html; charset=utf-8",
+              listOf(
+                // Scriptless page — no script-src at all; default-src 'none' blocks everything else.
+                "Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'",
+                "X-Content-Type-Options: nosniff",
+                "X-Frame-Options: DENY",
+                "Referrer-Policy: no-referrer",
+              ),
+            )
+          }
+
           method == "GET" && path.startsWith("/metrics") -> {
             RelaisMetrics.recordRequest(endpoint, 200)
             if (accept?.contains("application/json") == true) {
@@ -464,6 +495,7 @@ class RelaisHttpServer(
   private fun endpointLabel(path: String): String =
     when {
       path.startsWith("/health") -> "/health"
+      path == "/" -> "/"
       path.startsWith("/metrics") -> "/metrics"
       path.startsWith("/generate") -> "/generate"
       path.startsWith("/v1/chat/completions") -> "/v1/chat/completions"

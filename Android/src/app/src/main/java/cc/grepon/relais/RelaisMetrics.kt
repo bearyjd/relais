@@ -51,6 +51,12 @@ object RelaisMetrics {
   @Volatile private var lastDecodeTokS = 0.0
   @Volatile private var lastBackend = "none"
 
+  // Bounded ring buffer for the dashboard recent-request log (last 20 entries).
+  // Security M6: only normalized endpoint labels enter here — never raw paths, IPs, keys, or FS paths.
+  private const val REQUEST_LOG_CAPACITY = 20
+  private val requestLog = ArrayDeque<RequestLogEntry>(REQUEST_LOG_CAPACITY)
+  private val requestLogLock = Any()
+
   // Inference-latency histogram (seconds). Fixed buckets; quantiles computed at query time
   // (Prometheus convention) — precomputed p50/p95 live only in the JSON/HUD view.
   private val bucketBoundsSec = doubleArrayOf(0.5, 1.0, 2.0, 5.0, 10.0, 20.0, 30.0, 60.0, 120.0)
@@ -62,6 +68,26 @@ object RelaisMetrics {
   fun recordRequest(endpoint: String, status: Int) {
     requestCounts.getOrPut("$endpoint $status") { AtomicLong(0) }.incrementAndGet()
     if (status >= 500) errorsTotal.incrementAndGet()
+    // Append to bounded recent-request log for the dashboard (security M6: endpoint is already
+    // a normalized label — no raw path, IP, key, or FS path ever enters this buffer).
+    // ageSeconds stores the unix epoch second at record time; recentRequests() converts to age.
+    val nowSec = System.currentTimeMillis() / 1000L
+    synchronized(requestLogLock) {
+      if (requestLog.size >= REQUEST_LOG_CAPACITY) requestLog.removeFirst()
+      requestLog.addLast(RequestLogEntry(endpoint = endpoint, status = status, ageSeconds = nowSec))
+    }
+  }
+
+  /**
+   * Returns a snapshot of the recent-request log (up to [REQUEST_LOG_CAPACITY] entries),
+   * with [RequestLogEntry.ageSeconds] expressed as seconds-ago relative to now.
+   * Synchronized; O(n) bounded copy — safe to call from the HTTP handler thread.
+   */
+  fun recentRequests(): List<RequestLogEntry> {
+    val nowSec = System.currentTimeMillis() / 1000L
+    return synchronized(requestLogLock) {
+      requestLog.map { it.copy(ageSeconds = (nowSec - it.ageSeconds).coerceAtLeast(0L)) }
+    }
   }
 
   fun recordShed() = shedTotal.incrementAndGet()
