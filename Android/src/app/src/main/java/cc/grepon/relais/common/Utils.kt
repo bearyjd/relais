@@ -412,6 +412,8 @@ fun readFileToByteBuffer(file: File): ByteBuffer? {
   }
 }
 
+// Matches all Pixel 10 family models (10, 10 Pro, 10 Pro Fold, 10 Pro XL) and, acceptably, any
+// future "Pixel 100"/"10a" — keyed off Build.MODEL; revisit if a non-G5 "Pixel 10x" ships.
 fun isPixel10(): Boolean {
   return Build.MODEL != null && Build.MODEL.lowercase().contains("pixel 10")
 }

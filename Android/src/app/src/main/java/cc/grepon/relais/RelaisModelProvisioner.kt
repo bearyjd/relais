@@ -26,6 +26,7 @@ import androidx.work.WorkInfo
 import androidx.work.WorkManager
 import cc.grepon.relais.BuildConfig
 import cc.grepon.relais.common.getJsonResponse
+import cc.grepon.relais.common.isPixel10
 import cc.grepon.relais.data.KEY_MODEL_COMMIT_HASH
 import cc.grepon.relais.data.KEY_MODEL_DOWNLOAD_ACCESS_TOKEN
 import cc.grepon.relais.data.KEY_MODEL_DOWNLOAD_ERROR_MESSAGE
@@ -70,6 +71,40 @@ private const val ALLOWLIST_BASE_URL =
  * from a background thread.
  */
 object RelaisModelProvisioner {
+
+  /**
+   * Pinned G5-compatible default for a fresh Pixel 10. Gemma 4 E2B-it is verified to provision
+   * and serve (HTTP 200) on Tensor G5 (rango). Substituted BEFORE the G5 gate fires so the gate
+   * never sees E4B on a fresh Pixel 10.
+   *
+   * Values resolved via the HF API (commit 361a4010, LFS size 2 588 147 712 bytes) and pinned here
+   * so no network is needed to select the default on first boot.
+   */
+  internal val G5_DEFAULT_REF =
+    RelaisModelRef(
+      modelId = "litert-community/gemma-4-E2B-it-litert-lm",
+      modelFile = "gemma-4-E2B-it.litertlm",
+      commitHash = "361a4010ad6d88fc5c86e148e333c0342b99763d",
+      sizeInBytes = 2_588_147_712L,
+      displayName = "Gemma 4 E2B-it (Tensor G5)",
+      source = RelaisModelRef.SOURCE_HUGGINGFACE,
+    )
+
+  /**
+   * Pure decision function: returns [G5_DEFAULT_REF] iff this is a fresh Pixel 10 whose operator
+   * has not yet chosen a model and whose configured id is still the untouched [RelaisConfig.DEFAULT_MODEL_ID].
+   * Returns null in all other cases — non-Pixel-10 behavior is byte-identical to before.
+   *
+   * Unit-testable with no Context or Android SDK.
+   */
+  internal fun deviceDefaultRef(
+    isPixel10: Boolean,
+    hasPersistedRef: Boolean,
+    currentModelId: String,
+  ): RelaisModelRef? =
+    if (isPixel10 && !hasPersistedRef && currentModelId == RelaisConfig.DEFAULT_MODEL_ID)
+      G5_DEFAULT_REF
+    else null
 
   /** Last resolved/downloaded model path, cached so the engine can re-read it without a refetch. */
   @Volatile private var cachedPath: String? = null
@@ -161,7 +196,16 @@ object RelaisModelProvisioner {
    * license-gated repo, set [RelaisConfig.setHfToken] first or the download 401s.
    */
   fun ensureModel(context: Context, onProgress: (Int) -> Unit = {}): String {
-    // Capture the id at entry so we can detect a mid-provision operator change (issue #11).
+    // Fresh Pixel 10 (Tensor G5): substitute the G5-compatible default before ANY provisioning,
+    // so the E4B default never reaches the G5 gate — even via a persisted path or a pre-staged
+    // E4B file. setModelRef clears the stale modelPath and sets modelId=E2B, so the fast-paths
+    // below skip and the ref fast-path in resolveModel provisions E2B. Self-healing if apply() races.
+    deviceDefaultRef(isPixel10(), RelaisConfig.modelRef(context) != null, RelaisConfig.modelId(context))?.let { ref ->
+      Log.i(TAG, "Fresh Pixel 10: defaulting to G5-compatible ${ref.modelId}")
+      RelaisConfig.setModelRef(context, ref)
+    }
+    // Capture the id AFTER substitution so the issue-#11 drift guard doesn't see false drift
+    // (the id is now E2B, and idAtStart must match for the persist gate to pass).
     val idAtStart = RelaisConfig.modelId(context)
     // Offline-safe fast path: a previously provisioned file still on disk needs no network. This
     // lets a rebooted / watchdog-restarted node boot without the allowlist when nothing to download.
