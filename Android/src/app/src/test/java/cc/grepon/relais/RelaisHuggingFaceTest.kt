@@ -18,7 +18,6 @@
 
 package cc.grepon.relais
 
-import androidx.test.ext.junit.runners.AndroidJUnit4
 import cc.grepon.relais.RelaisHuggingFace.HfInfo
 import cc.grepon.relais.RelaisHuggingFace.HfTreeEntry
 import cc.grepon.relais.RelaisHuggingFace.InfoStep
@@ -32,7 +31,6 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
-import org.junit.runner.RunWith
 
 /**
  * HuggingFace resolve guard. Drives the network-free seam [RelaisHuggingFace.buildRef] (plus
@@ -44,7 +42,6 @@ import org.junit.runner.RunWith
  * response must decode to nulls and degrade to an Error/NoLiteRtLm result — never throw the non-null
  * intrinsic NPE (the class of bug that bit [RelaisModelRef.fromJson]).
  */
-@RunWith(AndroidJUnit4::class)
 class RelaisHuggingFaceTest {
 
   private val gson = Gson()

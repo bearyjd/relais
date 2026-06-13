@@ -24,8 +24,6 @@ import com.google.gson.Gson
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
-import org.junit.runner.RunWith
-import androidx.test.ext.junit.runners.AndroidJUnit4
 
 /**
  * Curated-source filter guard: only node-runnable models — LiteRT-LM, LLM-chat, not disabled —
@@ -33,7 +31,6 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
  * parses a committed fixture; never touches the network (the seam takes an already-fetched
  * allowlist), so it documents the filter independently of the live allowlist contents.
  */
-@RunWith(AndroidJUnit4::class)
 class RelaisModelCatalogTest {
 
   // Fixture shaped like the real allowlist, covering each filter branch exactly once.
