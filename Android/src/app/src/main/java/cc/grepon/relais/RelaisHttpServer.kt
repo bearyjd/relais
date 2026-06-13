@@ -333,6 +333,8 @@ class RelaisHttpServer(
               .put("index", 0)
               .put("message", JSONObject().put("role", "assistant").put("content", result.text))
               .put("finish_reason", "stop")))
+          .put("usage", buildUsageObject(request.text, result.completionTokens))
+          .put("x_relais_usage_note", "prompt_tokens_estimated")
       RelaisMetrics.recordRequest("/v1/chat/completions", 200)
       respond(sock, 200, resp)
       return
@@ -358,13 +360,25 @@ class RelaisHttpServer(
     }
     try {
       // onToken throwing (broken pipe) and thermal-truncate both cooperatively stop the decode.
-      RelaisEngine.generate(
+      // Capture result so completionTokens is available for the final usage chunk.
+      val result = RelaisEngine.generate(
         context,
         request,
         onToken = { delta -> sendChunk(delta, null) },
         shouldCancel = { ThermalGovernor.shouldTruncate() },
       )
-      sendChunk(null, "stop")
+      // Final chunk: finish_reason="stop" + usage block (always included for client compatibility).
+      // OpenAI spec allows usage on the terminal chunk; we always emit it regardless of
+      // stream_options.include_usage — intermediate chunks carry no usage field.
+      val finalChunk = JSONObject().put("id", id).put("object", "chat.completion.chunk")
+        .put("model", model)
+        .put("choices", JSONArray().put(
+          JSONObject().put("index", 0)
+            .put("delta", JSONObject())
+            .put("finish_reason", "stop")))
+        .put("usage", buildUsageObject(request.text, result.completionTokens))
+        .put("x_relais_usage_note", "prompt_tokens_estimated")
+      out.write("data: $finalChunk\n\n".toByteArray()); out.flush()
       out.write("data: [DONE]\n\n".toByteArray()); out.flush()
     } catch (e: Exception) {
       Log.e(TAG, "stream error after headers committed", e)
@@ -483,6 +497,46 @@ class RelaisHttpServer(
     pool.shutdownNow()
     Log.i(TAG, "Stopped")
   }
+}
+
+// ---------------------------------------------------------------------------
+// OpenAI usage-block helpers (Feature 02)
+// ---------------------------------------------------------------------------
+
+/**
+ * Estimates the prompt token count from [text] using a word-boundary heuristic
+ * (trim + split on whitespace runs). LiteRT-LM does not expose a detached prompt tokenizer
+ * via sendMessageAsync (SPIKE-FINDINGS.md / Q1); this is a best-effort approximation only.
+ *
+ * IMPORTANT: [text] is the last user message only — [parseOpenAiRequest] discards system
+ * messages and prior conversation turns, so multi-turn or system-prompt-heavy requests will
+ * under-count until the multi-turn parser is extended to concatenate all context text.
+ * Do not treat this value as exact. The top-level `x_relais_usage_note` field on the response
+ * documents this approximation to callers.
+ */
+internal fun estimatePromptTokens(text: String): Int =
+  if (text.isBlank()) 0 else text.trim().split(Regex("\\s+")).size
+
+/**
+ * Assembles the OpenAI-schema-clean `usage` object for a completed inference.
+ *
+ * Returns an object with exactly the three standard OpenAI fields:
+ * - `prompt_tokens`: word-boundary ESTIMATE — see [estimatePromptTokens].
+ * - `completion_tokens`: exact engine counter (onMessage callback count). Zero for AICore.
+ * - `total_tokens`: always exactly `prompt_tokens + completion_tokens`.
+ *
+ * The estimation signal is intentionally NOT placed inside this object to avoid tripping
+ * strict OpenAI-schema validators. Callers must attach `x_relais_usage_note` as a top-level
+ * extension field on the enclosing response or chunk object.
+ *
+ * Pure function (no Context, no Android types) — unit-testable on the JVM.
+ */
+internal fun buildUsageObject(promptText: String, completionTokens: Int): org.json.JSONObject {
+  val promptTokens = estimatePromptTokens(promptText)
+  return org.json.JSONObject()
+    .put("prompt_tokens", promptTokens)
+    .put("completion_tokens", completionTokens)
+    .put("total_tokens", promptTokens + completionTokens)
 }
 
 // Stable epoch for the "created" field required by strict OpenAI clients (e.g. older openai-python).
