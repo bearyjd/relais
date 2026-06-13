@@ -20,6 +20,7 @@ package cc.grepon.relais
 
 import android.util.Log
 import cc.grepon.relais.common.getJsonResponse
+import kotlinx.coroutines.CancellationException
 import cc.grepon.relais.data.AllowedModel
 import cc.grepon.relais.data.BuiltInTaskId
 import cc.grepon.relais.data.ModelAllowlist
@@ -59,24 +60,33 @@ object RelaisModelCatalog {
 
   /** Pure filter+map over an already-fetched allowlist — the network-free seam tests exercise. */
   internal fun curatedModelsFrom(allowlist: ModelAllowlist): List<RelaisModelRef> =
-    allowlist.models.filter { isNodeRunnable(it) }.map { it.toRef() }
+    allowlist.models.mapNotNull { m ->
+      // Gson ignores Kotlin non-null types: taskTypes/modelFile/name can be null at runtime.
+      // Wrap the entire filter+map per entry so one malformed entry drops rather than aborting.
+      runCatching { if (isNodeRunnable(m)) m.toRef() else null }
+        .getOrElse { if (it is CancellationException) throw it else null }
+    }
 
   /**
    * A model is node-runnable when it isn't disabled, serves an LLM-chat task, and runs on LiteRT-LM.
    * [AllowedModel.runtimeType] is optional in the allowlist JSON, so a null type is inferred from a
    * `.litertlm` file extension rather than excluded — older entries predate the explicit field.
+   *
+   * taskTypes/modelFile may be null at runtime (Gson reflection) — see [curatedModelsFrom].
    */
   private fun isNodeRunnable(m: AllowedModel): Boolean {
     if (m.disabled == true) return false
-    if (!m.taskTypes.contains(BuiltInTaskId.LLM_CHAT)) return false
+    // taskTypes can be null (Gson reflection); null means no LLM_CHAT task → not runnable.
+    if (m.taskTypes?.contains(BuiltInTaskId.LLM_CHAT) != true) return false
     // A RelaisModelRef captures only the top-level file/commit/size. For a per-SOC entry,
     // AllowedModel.toModel() swaps in the device-SOC variant's file/commit/size, so a ref built
     // from the top-level fields would resolve to a different (or wrong) on-disk path + URL than the
     // allowlist path — breaking the "fetched one way, reused the other" guarantee. Exclude until the
     // ref can carry the SOC-resolved file. (No curated model uses this today; this is future-proofing.)
     if (m.socToModelFiles?.isNotEmpty() == true) return false
+    // modelFile can be null (Gson reflection); a null file is not a valid .litertlm entry.
     return m.runtimeType == RuntimeType.LITERT_LM ||
-      (m.runtimeType == null && m.modelFile.endsWith(".litertlm"))
+      (m.runtimeType == null && m.modelFile?.endsWith(".litertlm") == true)
   }
 
   private fun AllowedModel.toRef(): RelaisModelRef =

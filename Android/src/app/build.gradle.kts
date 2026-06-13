@@ -66,6 +66,14 @@ android {
     compose = true
     buildConfig = true
   }
+  testOptions {
+    unitTests {
+      // Unmocked android.* returns defaults in JVM unit tests (lets AllowedModel.toModel() run
+      // without Robolectric). Tradeoff: masks accidental unmocked-Android calls — migrate
+      // Android-touching tests to Robolectric (PR5).
+      isReturnDefaultValues = true
+    }
+  }
 }
 
 dependencies {

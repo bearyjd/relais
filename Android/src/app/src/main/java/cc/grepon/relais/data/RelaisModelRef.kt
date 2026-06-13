@@ -61,7 +61,10 @@ data class RelaisModelRef(
         // (nullable receiver) so a null field fails validation instead of throwing the non-null
         // intrinsic NPE — a corrupt ref must decode to null, never crash a headless boot.
         ?.takeIf {
-          !it.modelId.isNullOrBlank() && !it.modelFile.isNullOrBlank() && !it.commitHash.isNullOrBlank()
+          !it.modelId.isNullOrBlank() &&
+            !it.modelFile.isNullOrBlank() &&
+            !it.commitHash.isNullOrBlank() &&
+            !it.displayName.isNullOrBlank()
         }
   }
 }
