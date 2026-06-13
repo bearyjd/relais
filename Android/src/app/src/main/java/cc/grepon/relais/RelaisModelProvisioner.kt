@@ -46,6 +46,7 @@ import cc.grepon.relais.data.RelaisModelRef
 import cc.grepon.relais.data.RuntimeType
 import cc.grepon.relais.worker.DownloadWorker
 import java.io.File
+import kotlinx.coroutines.CancellationException
 
 private const val TAG = "RelaisModelProvisioner"
 
@@ -103,8 +104,25 @@ object RelaisModelProvisioner {
     val allowed =
       allowlist.models.firstOrNull { it.modelId == modelId }
         ?: error("Model id '$modelId' not found in allowlist $url")
-    return allowed.toModel().also { it.preProcess() }
+    return safeToModel(allowed, modelId, url).also { it.preProcess() }
   }
+
+  /**
+   * Wraps [AllowedModel.toModel] so that a null field left by Gson (which ignores Kotlin non-null
+   * types) surfaces as an [IllegalStateException] — the existing `error(...)` contract — instead of
+   * escaping as a raw [NullPointerException] on the `relais-init` thread. The boot path's upstream
+   * handler already catches [IllegalStateException] and shows "Init failed: …"; a raw NPE bypasses
+   * it and triggers a watchdog restart loop.
+   *
+   * Exposed as `internal` so the pure-JVM unit test can exercise the wrapping decision directly,
+   * without needing a [Context] or network.
+   */
+  internal fun safeToModel(allowed: AllowedModel, modelId: String, url: String): Model =
+    runCatching { allowed.toModel() }
+      .getOrElse { e ->
+        if (e is CancellationException) throw e
+        error("Allowlist entry for '$modelId' is malformed ($url): ${e.message}")
+      }
 
   /**
    * Builds a [Model] from a [RelaisModelRef] with no network. Reuses [AllowedModel.toModel] so the
