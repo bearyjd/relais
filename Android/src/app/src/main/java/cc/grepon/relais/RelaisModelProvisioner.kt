@@ -161,6 +161,8 @@ object RelaisModelProvisioner {
    * license-gated repo, set [RelaisConfig.setHfToken] first or the download 401s.
    */
   fun ensureModel(context: Context, onProgress: (Int) -> Unit = {}): String {
+    // Capture the id at entry so we can detect a mid-provision operator change (issue #11).
+    val idAtStart = RelaisConfig.modelId(context)
     // Offline-safe fast path: a previously provisioned file still on disk needs no network. This
     // lets a rebooted / watchdog-restarted node boot without the allowlist when nothing to download.
     RelaisConfig.modelPath(context)?.let { saved ->
@@ -182,7 +184,7 @@ object RelaisModelProvisioner {
       // 0-byte stub isn't adopted and then fails opaquely later in Engine init.
       if (staged.length() > 0L) {
         Log.i(TAG, "Adopting pre-staged model at default location (no download): ${staged.path}")
-        return remember(context, staged.absolutePath)
+        return remember(context, staged.absolutePath, persistForId = idAtStart)
       }
       // If the staging dir exists but no app-readable model does, an operator likely side-loaded a
       // file the app can't read: an adb-pushed file is owned by `shell` with no "others" bit, so
@@ -201,20 +203,47 @@ object RelaisModelProvisioner {
     val path = model.getPath(context)
     if (File(path).exists()) {
       Log.i(TAG, "Model already present, skipping download: $path")
-      return remember(context, path)
+      return remember(context, path, persistForId = idAtStart)
     }
     model.accessToken = RelaisConfig.hfToken(context)
     Log.i(TAG, "Model absent; downloading ${model.name} from ${model.url} -> $path")
     download(context, model, onProgress)
     require(File(path).exists()) { "Download reported success but file is missing: $path" }
     Log.i(TAG, "Model provisioned: $path")
-    return remember(context, path)
+    return remember(context, path, persistForId = idAtStart)
   }
 
-  /** Caches the resolved path in-memory and persists it for offline restarts. */
-  private fun remember(context: Context, path: String): String {
+  /**
+   * True iff a freshly provisioned path may be persisted: no drift, or drift unknown.
+   *
+   * When [provisionedForId] is null the caller opted out of drift detection (preserves legacy
+   * behavior). When set, the path is only persisted if the current model id still matches the one
+   * captured at the start of provisioning — guarding against the race in issue #11 where the
+   * operator changes the model mid-download and the stale path would otherwise poison the next boot.
+   */
+  internal fun shouldPersistPath(provisionedForId: String?, currentId: String): Boolean =
+    provisionedForId == null || provisionedForId == currentId
+
+  /**
+   * Caches the resolved path in-memory (always — it's what this boot actually provisioned) and
+   * persists it to [RelaisConfig] only if the model id hasn't drifted since provisioning started.
+   * Pass [persistForId] = the id captured at [ensureModel] entry to enable the drift guard;
+   * omit it (null) to always persist (legacy / callers without an id snapshot).
+   */
+  internal fun remember(context: Context, path: String, persistForId: String? = null): String {
     cachedPath = path
-    RelaisConfig.setModelPath(context, path)
+    // Read the current id once: it drives the gate AND the drift warning, and re-reading risks a
+    // TOCTOU mismatch between the decision and the logged value.
+    val currentId = RelaisConfig.modelId(context)
+    if (shouldPersistPath(persistForId, currentId)) {
+      RelaisConfig.setModelPath(context, path)
+    } else {
+      Log.w(
+        TAG,
+        "Model id changed mid-provision (now $currentId, provisioned for $persistForId); " +
+          "not persisting stale path",
+      )
+    }
     return path
   }
 
