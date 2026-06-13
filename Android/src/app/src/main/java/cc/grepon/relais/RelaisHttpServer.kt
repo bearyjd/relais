@@ -394,12 +394,20 @@ class RelaisHttpServer(
     val request = parseOpenAiRequest(body)
     val id = "chatcmpl-" + System.currentTimeMillis()
 
+    // Tool path: a request advertising tools OR replying with tool results uses the dedicated
+    // BLOCKING tool completion (native LiteRT-LM tool API), not the streaming/text paths.
+    if (request.tools.isNotEmpty() || request.toolResults.isNotEmpty()) {
+      handleToolCompletion(sock, request, model, id, stream)
+      return
+    }
+
     if (!stream) {
       val result = RelaisEngine.generate(context, request, shouldCancel = { ThermalGovernor.shouldTruncate() })
       val resp =
         JSONObject()
           .put("id", id)
           .put("object", "chat.completion")
+          .put("created", System.currentTimeMillis() / 1000)
           .put("model", model)
           .put("choices", JSONArray().put(
             JSONObject()
@@ -444,6 +452,7 @@ class RelaisHttpServer(
       // OpenAI spec allows usage on the terminal chunk; we always emit it regardless of
       // stream_options.include_usage — intermediate chunks carry no usage field.
       val finalChunk = JSONObject().put("id", id).put("object", "chat.completion.chunk")
+        .put("created", System.currentTimeMillis() / 1000)
         .put("model", model)
         .put("choices", JSONArray().put(
           JSONObject().put("index", 0)
@@ -455,6 +464,70 @@ class RelaisHttpServer(
       out.write("data: [DONE]\n\n".toByteArray()); out.flush()
     } catch (e: Exception) {
       Log.e(TAG, "stream error after headers committed", e)
+      runCatching { out.write("data: {\"error\":\"stream aborted\"}\n\n".toByteArray()); out.flush() }
+    }
+  }
+
+  /**
+   * Blocking OpenAI tool-completion path (native LiteRT-LM tool API). Handles both the first turn
+   * (tools advertised -> model may emit `tool_calls`, finish_reason="tool_calls") and the round-trip
+   * (tool results supplied -> model produces a final answer, finish_reason="stop"). No SSE deltas:
+   * even in stream mode the body is a single chunk, because the blocking sendMessage returns the
+   * whole reply at once. Both stream and non-stream commit a 200 before producing the body, so
+   * post-header errors in the stream path become an SSE error event (mirrors [handleOpenAi]).
+   */
+  private fun handleToolCompletion(
+    sock: java.net.Socket,
+    request: RelaisRequest,
+    model: String,
+    id: String,
+    stream: Boolean,
+  ) {
+    if (!stream) {
+      val result = RelaisEngine.generate(context, request, shouldCancel = { ThermalGovernor.shouldTruncate() })
+      val (message, finishReason) = buildToolAssistantMessage(result, streaming = false)
+      val resp =
+        JSONObject()
+          .put("id", id)
+          .put("object", "chat.completion")
+          .put("created", System.currentTimeMillis() / 1000)
+          .put("model", model)
+          .put("choices", JSONArray().put(
+            JSONObject()
+              .put("index", 0)
+              .put("message", message)
+              .put("finish_reason", finishReason)))
+          .put("usage", buildUsageObject(request.text, result.completionTokens))
+          .put("x_relais_usage_note", "prompt_tokens_estimated")
+      RelaisMetrics.recordRequest("/v1/chat/completions", 200)
+      respond(sock, 200, resp)
+      return
+    }
+
+    // Streaming: one chunk only. Commit the 200 SSE header, then emit a single delta carrying the
+    // full assistant message (with tool_calls when present), then [DONE]. Post-header errors become
+    // an SSE error event (the outer catch would double-count + double-write a status otherwise).
+    RelaisMetrics.recordRequest("/v1/chat/completions", 200)
+    val out = sock.getOutputStream()
+    out.write(
+      ("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\n" +
+          "Connection: close\r\n\r\n").toByteArray()
+    )
+    out.flush()
+    try {
+      val result = RelaisEngine.generate(context, request, shouldCancel = { ThermalGovernor.shouldTruncate() })
+      val (message, finishReason) = buildToolAssistantMessage(result, streaming = true)
+      val chunk = JSONObject().put("id", id).put("object", "chat.completion.chunk")
+        .put("created", System.currentTimeMillis() / 1000)
+        .put("model", model)
+        .put("choices", JSONArray().put(
+          JSONObject().put("index", 0)
+            .put("delta", message)
+            .put("finish_reason", finishReason)))
+      out.write("data: $chunk\n\n".toByteArray()); out.flush()
+      out.write("data: [DONE]\n\n".toByteArray()); out.flush()
+    } catch (e: Exception) {
+      Log.e(TAG, "tool stream error after headers committed", e)
       runCatching { out.write("data: {\"error\":\"stream aborted\"}\n\n".toByteArray()); out.flush() }
     }
   }
@@ -476,12 +549,18 @@ class RelaisHttpServer(
       dataUriBytes = { url -> dataUriBytes(url) },
       decode = { b64 -> decode(b64) },
     )
+    val toolChoice = parseToolChoice(body)
+    // tool_choice:"none" forbids tool use -> don't advertise tools at all.
+    val tools = if (toolChoice == ToolChoice.None) emptyList() else parseTools(body)
     return RelaisRequest(
       text = parsed.lastUserText,
       imagePng = parsed.lastUserImage,
       audioWav = parsed.lastUserAudio,
       systemPrompt = parsed.systemPrompt,
       history = parsed.history,
+      tools = tools,
+      toolChoice = toolChoice,
+      toolResults = parsed.liveToolResults,
     )
   }
 
@@ -588,6 +667,38 @@ class RelaisHttpServer(
  */
 internal fun estimatePromptTokens(text: String): Int =
   if (text.isBlank()) 0 else text.trim().split(Regex("\\s+")).size
+
+/**
+ * Builds the assistant message JSON + finish_reason for a tool completion. When the model emitted
+ * tool calls, content is null and `tool_calls[]` is populated (finish_reason="tool_calls");
+ * otherwise it is a plain text answer (finish_reason="stop").
+ *
+ * [streaming] controls whether each tool_call object also carries an `index` field (0-based) — the
+ * OpenAI streaming contract requires clients to accumulate streamed delta fragments by `index`; that
+ * field must NOT appear in the non-streaming `message.tool_calls[]` form.
+ *
+ * Pure function (no Context, no Android types) — unit-testable on the JVM ([ToolResponseShapingTest]).
+ */
+internal fun buildToolAssistantMessage(result: RelaisResult, streaming: Boolean = false): Pair<JSONObject, String> =
+  if (result.toolCalls.isNotEmpty()) {
+    val calls = JSONArray()
+    result.toolCalls.forEachIndexed { i, call ->
+      val entry = JSONObject()
+        .put("id", call.id)
+        .put("type", "function")
+        .put("function", JSONObject().put("name", call.name).put("arguments", call.argumentsJson))
+      if (streaming) entry.put("index", i)
+      calls.put(entry)
+    }
+    val message = JSONObject()
+      .put("role", "assistant")
+      .put("content", JSONObject.NULL)
+      .put("tool_calls", calls)
+    message to "tool_calls"
+  } else {
+    val message = JSONObject().put("role", "assistant").put("content", result.text)
+    message to "stop"
+  }
 
 /**
  * Assembles the OpenAI-schema-clean `usage` object for a completed inference.
