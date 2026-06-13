@@ -127,6 +127,9 @@ dependencies {
   testImplementation(libs.junit)
   testImplementation(libs.com.google.code.gson)
   testImplementation(libs.robolectric)
+  // Real org.json implementation for JVM unit tests: Android stubs return null for put() under
+  // isReturnDefaultValues=true, which breaks buildModelsResponse. This jar provides the real impl.
+  testImplementation("org.json:json:20240303")
   testImplementation(libs.androidx.junit)
   androidTestImplementation(libs.androidx.junit)
   androidTestImplementation(libs.androidx.espresso.core)

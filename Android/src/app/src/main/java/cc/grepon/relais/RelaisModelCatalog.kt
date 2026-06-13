@@ -28,6 +28,7 @@ import cc.grepon.relais.data.RelaisModelRef
 import cc.grepon.relais.data.RuntimeType
 
 private const val TAG = "RelaisModelCatalog"
+private const val CURATED_TTL_MS = 5 * 60 * 1_000L // 5-minute TTL for the allowlist cache
 
 /**
  * Curated model source for the selector: the same allowlist the provisioner resolves against,
@@ -39,15 +40,30 @@ private const val TAG = "RelaisModelCatalog"
  */
 object RelaisModelCatalog {
 
+  // TTL cache for the last successful (non-empty) allowlist fetch. Avoids a blocking network round-
+  // trip on every GET /v1/models call. Only a successful non-empty result is cached: an offline/
+  // unreachable result leaves cachedRefs null so the next call retries rather than serving stale
+  // emptiness for up to 5 minutes.
+  @Volatile private var cachedRefs: List<RelaisModelRef>? = null
+  @Volatile private var cacheTimeMs: Long = 0L
+
   /**
    * Fetches the allowlist and returns the node-runnable curated models as refs. **Blocking** —
    * call off the main thread. Returns [emptyList] on offline / fetch failure (the caller then shows
    * an "offline — enter an id" affordance), never throwing, so opening the selector can't crash.
    *
+   * Results are cached for [CURATED_TTL_MS] (5 min) so repeated calls (e.g. GET /v1/models) do not
+   * incur a network round-trip per request. Only a successful non-empty fetch populates the cache —
+   * an offline failure leaves the cache unpopulated and retries immediately next call.
+   *
    * getJsonResponse sets connect/read timeouts, so a wedged network fails fast rather than hanging;
    * the selector additionally bounds its own fetch with withTimeoutOrNull for a snappier spinner.
    */
   fun curatedModels(): List<RelaisModelRef> {
+    val now = System.currentTimeMillis()
+    cachedRefs?.let { cached ->
+      if (now - cacheTimeMs < CURATED_TTL_MS) return cached
+    }
     val url = RelaisModelProvisioner.allowlistUrl()
     val allowlist =
       getJsonResponse<ModelAllowlist>(url)?.jsonObj
@@ -55,7 +71,14 @@ object RelaisModelCatalog {
           Log.w(TAG, "Allowlist unreachable ($url); curated list empty (offline?)")
           return emptyList()
         }
-    return curatedModelsFrom(allowlist)
+    val refs = curatedModelsFrom(allowlist)
+    // Only cache a successful non-empty result — do not poison the cache with an empty list,
+    // so an offline response retries next call rather than serving emptiness for 5 minutes.
+    if (refs.isNotEmpty()) {
+      cachedRefs = refs
+      cacheTimeMs = now
+    }
+    return refs
   }
 
   /** Pure filter+map over an already-fetched allowlist — the network-free seam tests exercise. */
