@@ -1,0 +1,376 @@
+/*
+ * Copyright (C) 2026 Entrevoix / grepon.cc
+ *
+ * This file is part of Relais.
+ *
+ * Relais is free software: you can redistribute it and/or modify it under the
+ * terms of the GNU Affero General Public License as published by the Free
+ * Software Foundation, either version 3 of the License, or (at your option) any
+ * later version.
+ *
+ * Relais is distributed in the hope that it will be useful, but WITHOUT ANY
+ * WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR
+ * A PARTICULAR PURPOSE. See the GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License along
+ * with Relais. If not, see <https://www.gnu.org/licenses/>.
+ */
+
+package cc.grepon.relais
+
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
+import org.junit.Test
+
+/**
+ * Hermetic JVM tests for the pure dashboard functions (no Context, no Android).
+ *
+ * Tests:
+ *  1. Status-label mapping (LIVE / STARTING / OFFLINE)
+ *  2. Thermal-label mapping (0..6 -> name, out-of-range -> UNKNOWN)
+ *  3. Field pass-through (assembler doesn't drop or reorder values)
+ *  4. escapeHtml helper (XSS guard: < > & " ' all escaped)
+ *  5. Render smoke (RELAIS wordmark, amber #FFB000, scriptless, no model-switch endpoint injected)
+ */
+class RelaisDashboardTest {
+
+  // ---------------------------------------------------------------------------
+  // Fixtures
+  // ---------------------------------------------------------------------------
+
+  private val sampleRequests = listOf(
+    RequestLogEntry(endpoint = "/v1/chat/completions", status = 200, ageSeconds = 5L),
+    RequestLogEntry(endpoint = "/generate", status = 503, ageSeconds = 12L),
+  )
+
+  private fun liveStatus() = assembleDashboardStatus(
+    engineReady = true,
+    startupInProgress = false,
+    thermalStatus = 0,
+    decodeTokensPerSec = 5.63,
+    currentModelId = "litert-community/gemma-4-E4B-it-litert-lm",
+    uptimeSeconds = 120.0,
+    queueDepth = 0,
+    errorsTotal = 0L,
+    shedTotal = 0L,
+    recentRequests = sampleRequests,
+  )
+
+  private fun startingStatus() = assembleDashboardStatus(
+    engineReady = false,
+    startupInProgress = true,
+    thermalStatus = 0,
+    decodeTokensPerSec = 0.0,
+    currentModelId = "litert-community/gemma-4-E4B-it-litert-lm",
+    uptimeSeconds = 10.0,
+    queueDepth = 0,
+    errorsTotal = 0L,
+    shedTotal = 0L,
+    recentRequests = emptyList(),
+  )
+
+  private fun offlineStatus() = assembleDashboardStatus(
+    engineReady = false,
+    startupInProgress = false,
+    thermalStatus = 0,
+    decodeTokensPerSec = 0.0,
+    currentModelId = "litert-community/gemma-4-E4B-it-litert-lm",
+    uptimeSeconds = 0.0,
+    queueDepth = 0,
+    errorsTotal = 0L,
+    shedTotal = 0L,
+    recentRequests = emptyList(),
+  )
+
+  // ---------------------------------------------------------------------------
+  // 1. Status-label mapping
+  // ---------------------------------------------------------------------------
+
+  @Test
+  fun `engineReady true and not starting yields LIVE and live=true`() {
+    val s = liveStatus()
+    assertEquals("LIVE", s.statusLabel)
+    assertTrue("live must be true when engine is ready", s.live)
+  }
+
+  @Test
+  fun `engineReady false and startupInProgress true yields STARTING and live=false`() {
+    val s = startingStatus()
+    assertEquals("STARTING", s.statusLabel)
+    assertFalse("live must be false when not ready", s.live)
+  }
+
+  @Test
+  fun `engineReady false and startupInProgress false yields OFFLINE and live=false`() {
+    val s = offlineStatus()
+    assertEquals("OFFLINE", s.statusLabel)
+    assertFalse("live must be false when offline", s.live)
+  }
+
+  @Test
+  fun `engineReady true wins over startupInProgress true (impossible state, but robust)`() {
+    // If somehow both are true, engineReady wins → LIVE.
+    val s = assembleDashboardStatus(
+      engineReady = true,
+      startupInProgress = true,
+      thermalStatus = 0,
+      decodeTokensPerSec = 0.0,
+      currentModelId = "x",
+      uptimeSeconds = 0.0,
+      queueDepth = 0,
+      errorsTotal = 0L,
+      shedTotal = 0L,
+      recentRequests = emptyList(),
+    )
+    assertEquals("LIVE", s.statusLabel)
+    assertTrue(s.live)
+  }
+
+  // ---------------------------------------------------------------------------
+  // 2. Thermal-label mapping
+  // ---------------------------------------------------------------------------
+
+  @Test
+  fun `thermalLabel maps all standard Android THERMAL_STATUS values`() {
+    assertEquals("NONE", thermalLabel(0))
+    assertEquals("LIGHT", thermalLabel(1))
+    assertEquals("MODERATE", thermalLabel(2))
+    assertEquals("SEVERE", thermalLabel(3))
+    assertEquals("CRITICAL", thermalLabel(4))
+    assertEquals("EMERGENCY", thermalLabel(5))
+    assertEquals("SHUTDOWN", thermalLabel(6))
+  }
+
+  @Test
+  fun `thermalLabel returns UNKNOWN for out-of-range values without crashing`() {
+    assertEquals("UNKNOWN", thermalLabel(99))
+    assertEquals("UNKNOWN", thermalLabel(-1))
+    assertEquals("UNKNOWN", thermalLabel(7))
+    assertEquals("UNKNOWN", thermalLabel(Int.MAX_VALUE))
+  }
+
+  // ---------------------------------------------------------------------------
+  // 3. Field pass-through
+  // ---------------------------------------------------------------------------
+
+  @Test
+  fun `assembler passes all scalar fields through unmodified`() {
+    val s = assembleDashboardStatus(
+      engineReady = true,
+      startupInProgress = false,
+      thermalStatus = 3,
+      decodeTokensPerSec = 7.77,
+      currentModelId = "litert-community/test-model",
+      uptimeSeconds = 999.5,
+      queueDepth = 2,
+      errorsTotal = 4L,
+      shedTotal = 1L,
+      recentRequests = sampleRequests,
+    )
+    assertEquals(7.77, s.decodeTokensPerSec, 0.001)
+    assertEquals("litert-community/test-model", s.currentModelId)
+    assertEquals(999.5, s.uptimeSeconds, 0.001)
+    assertEquals(2, s.queueDepth)
+    assertEquals(4L, s.errorsTotal)
+    assertEquals(1L, s.shedTotal)
+    assertEquals(2, s.recentRequests.size)
+    assertEquals("/v1/chat/completions", s.recentRequests[0].endpoint)
+    assertEquals(200, s.recentRequests[0].status)
+    assertEquals(5L, s.recentRequests[0].ageSeconds)
+    assertEquals("/generate", s.recentRequests[1].endpoint)
+    assertEquals(503, s.recentRequests[1].status)
+  }
+
+  @Test
+  fun `thermalLabel derived from thermalStatus in assembled status`() {
+    val s = assembleDashboardStatus(
+      engineReady = true, startupInProgress = false, thermalStatus = 2,
+      decodeTokensPerSec = 0.0, currentModelId = "x", uptimeSeconds = 0.0,
+      queueDepth = 0, errorsTotal = 0L, shedTotal = 0L, recentRequests = emptyList(),
+    )
+    assertEquals("MODERATE", s.thermalLabel)
+  }
+
+  // ---------------------------------------------------------------------------
+  // 4. escapeHtml — XSS guard
+  // ---------------------------------------------------------------------------
+
+  @Test
+  fun `escapeHtml escapes all five dangerous characters`() {
+    // Test each character in isolation so escaped entities don't alias raw characters.
+    assertEquals("&amp;", escapeHtml("&"))
+    assertEquals("&lt;", escapeHtml("<"))
+    assertEquals("&gt;", escapeHtml(">"))
+    assertEquals("&quot;", escapeHtml("\""))
+    assertEquals("&#39;", escapeHtml("'"))
+
+    // Combined: verify the combined output contains all five entity forms.
+    val input = """a"b'c<d>e&f"""
+    val escaped = escapeHtml(input)
+    assertTrue("&amp; present", escaped.contains("&amp;"))
+    assertTrue("&lt; present", escaped.contains("&lt;"))
+    assertTrue("&gt; present", escaped.contains("&gt;"))
+    assertTrue("&quot; present", escaped.contains("&quot;"))
+    assertTrue("&#39; present", escaped.contains("&#39;"))
+    // The raw dangerous chars must not appear as unescaped sequences.
+    assertFalse("raw < must not appear", escaped.contains("<"))
+    assertFalse("raw > must not appear", escaped.contains(">"))
+    assertFalse("raw \" must not appear", escaped.contains("\""))
+    assertFalse("raw ' must not appear", escaped.contains("'"))
+    // & appears only as part of &amp;, &lt;, etc. — verify no bare & followed by a non-entity char.
+    // The simplest check: strip all known entities and assert no & remains.
+    val stripped = escaped
+      .replace("&amp;", "").replace("&lt;", "").replace("&gt;", "")
+      .replace("&quot;", "").replace("&#39;", "")
+    assertFalse("no bare & after removing all entities", stripped.contains("&"))
+  }
+
+  @Test
+  fun `escapeHtml converts a script-injection model id to fully escaped output`() {
+    val malicious = """a"/><script>alert(1)</script>"""
+    val escaped = escapeHtml(malicious)
+    assertFalse("raw < must not appear in escaped output", escaped.contains("<"))
+    assertFalse("raw > must not appear in escaped output", escaped.contains(">"))
+    assertFalse("raw \" must not appear in escaped output", escaped.contains("\""))
+    assertFalse("escaped output must not contain <script", escaped.contains("<script"))
+  }
+
+  @Test
+  fun `escapeHtml is a no-op on safe plain text`() {
+    val safe = "litert-community/gemma-4-E4B-it-litert-lm"
+    assertEquals(safe, escapeHtml(safe))
+  }
+
+  @Test
+  fun `escapeHtml on empty string returns empty string`() {
+    assertEquals("", escapeHtml(""))
+  }
+
+  // ---------------------------------------------------------------------------
+  // 5. Render smoke — DESIGN.md compliance + scriptless invariant
+  // ---------------------------------------------------------------------------
+
+  @Test
+  fun `renderDashboardHtml contains RELAIS wordmark`() {
+    val html = renderDashboardHtml(liveStatus())
+    assertTrue("RELAIS wordmark must appear in rendered HTML", html.contains("RELAIS"))
+  }
+
+  @Test
+  fun `renderDashboardHtml contains amber accent color from DESIGN dot md`() {
+    val html = renderDashboardHtml(liveStatus())
+    assertTrue("amber accent #FFB000 must appear (DESIGN.md token)", html.contains("#FFB000"))
+  }
+
+  @Test
+  fun `renderDashboardHtml contains near-black background from DESIGN dot md`() {
+    val html = renderDashboardHtml(liveStatus())
+    assertTrue("near-black background #0B0B0D must appear (DESIGN.md token)", html.contains("#0B0B0D"))
+  }
+
+  @Test
+  fun `renderDashboardHtml contains the status label`() {
+    assertTrue(renderDashboardHtml(liveStatus()).contains("LIVE"))
+    assertTrue(renderDashboardHtml(startingStatus()).contains("STARTING"))
+    assertTrue(renderDashboardHtml(offlineStatus()).contains("OFFLINE"))
+  }
+
+  @Test
+  fun `renderDashboardHtml contains the current model id (escaped)`() {
+    val html = renderDashboardHtml(liveStatus())
+    // The model id is safe text; escaped version equals original.
+    assertTrue("model id must appear in rendered page", html.contains("gemma-4-E4B-it-litert-lm"))
+  }
+
+  @Test
+  fun `renderDashboardHtml contains no script tag (scriptless invariant)`() {
+    val html = renderDashboardHtml(liveStatus())
+    assertFalse("page must be scriptless: no <script tag allowed", html.contains("<script"))
+  }
+
+  @Test
+  fun `renderDashboardHtml with injected model id does not contain raw script tag`() {
+    val maliciousStatus = assembleDashboardStatus(
+      engineReady = true,
+      startupInProgress = false,
+      thermalStatus = 0,
+      decodeTokensPerSec = 1.0,
+      currentModelId = """</td><script>alert(1)</script>""",
+      uptimeSeconds = 0.0,
+      queueDepth = 0,
+      errorsTotal = 0L,
+      shedTotal = 0L,
+      recentRequests = listOf(
+        RequestLogEntry("""<script>evil()</script>""", 200, 1L),
+      ),
+    )
+    val html = renderDashboardHtml(maliciousStatus)
+    assertFalse("XSS: <script must not appear in rendered output", html.contains("<script"))
+  }
+
+  @Test
+  fun `renderDashboardHtml uses monospace font (DESIGN dot md typography)`() {
+    val html = renderDashboardHtml(liveStatus())
+    assertTrue("monospace font must be declared (DESIGN.md)", html.contains("monospace"))
+  }
+
+  @Test
+  fun `renderDashboardHtml contains no model-switch form or select-model action (read-only scope)`() {
+    val html = renderDashboardHtml(liveStatus())
+    // Per task scope: no model-switch endpoint. The page is read-only display.
+    assertFalse(
+      "no /select-model form: model switching is deferred to a separate PR",
+      html.contains("/select-model"),
+    )
+  }
+
+  // ---------------------------------------------------------------------------
+  // 6. Status-class branch: 5xx → "stop", 4xx → "warn", 2xx → neither
+  // ---------------------------------------------------------------------------
+
+  @Test
+  fun `renderDashboardHtml applies stop class for 5xx and warn for 4xx request log entries`() {
+    val status = assembleDashboardStatus(
+      engineReady = true,
+      startupInProgress = false,
+      thermalStatus = 0,
+      decodeTokensPerSec = 1.0,
+      currentModelId = "litert-community/test",
+      uptimeSeconds = 0.0,
+      queueDepth = 0,
+      errorsTotal = 0L,  // keep 0 so the errors-total row doesn't also emit class="... stop"
+      shedTotal = 0L,    // likewise for shedTotal / warn
+      recentRequests = listOf(
+        RequestLogEntry("/generate", 503, 2L),
+        RequestLogEntry("/v1/chat/completions", 429, 5L),
+        RequestLogEntry("/v1/chat/completions", 200, 8L),
+      ),
+    )
+    val html = renderDashboardHtml(status)
+
+    // 5xx entry must carry the "stop" CSS class.
+    assertTrue(
+      "503 entry must have class=\"value stop\"",
+      html.contains("""class="value stop""""),
+    )
+    // 4xx entry must carry the "warn" CSS class.
+    assertTrue(
+      "429 entry must have class=\"value warn\"",
+      html.contains("""class="value warn""""),
+    )
+    // 2xx entry must NOT carry "stop" or "warn".
+    // Extract the region after </style> to avoid matching CSS rule definitions (.stop / .warn).
+    val bodyRegion = html.substringAfter("</style>")
+    // The only cells with "stop"/"warn" class qualifiers must be the 503 and 429 rows respectively.
+    assertEquals("exactly one stop-class cell in body (from the 503)",
+      1, bodyRegion.split("""class="value stop"""").size - 1)
+    assertEquals("exactly one warn-class cell in body (from the 429)",
+      1, bodyRegion.split("""class="value warn"""").size - 1)
+    // The 200 cell must not carry stop or warn — confirm the escaped "200" text appears
+    // in a cell that has neither qualifier.
+    assertTrue("200 status text must appear in rendered body", bodyRegion.contains(">200<"))
+    assertFalse("200 cell must not have stop class", bodyRegion.contains("""class="value stop">200"""))
+    assertFalse("200 cell must not have warn class", bodyRegion.contains("""class="value warn">200"""))
+  }
+}
