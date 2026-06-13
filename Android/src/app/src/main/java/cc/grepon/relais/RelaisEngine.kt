@@ -87,6 +87,15 @@ data class RelaisRequest(
   val text: String,
   val imagePng: ByteArray? = null,
   val audioWav: ByteArray? = null,
+  /** System prompt extracted from the OpenAI messages[] array. Null for the /generate path. */
+  val systemPrompt: String? = null,
+  /**
+   * Prior conversation turns (oldest first) extracted from the OpenAI messages[] array.
+   * Empty for the /generate path. Seeded into the LiteRT-LM conversation as
+   * [ConversationConfig.initialMessages] in [RelaisEngine.generate] — prefilled as context, not
+   * replayed turn-by-turn, so a multi-turn request costs one decode rather than one per turn.
+   */
+  val history: List<ParsedTurn> = emptyList(),
 ) {
   val modalities: RequestModalities
     get() = RequestModalities(hasImage = imagePng != null, hasAudio = audioWav != null)
@@ -308,10 +317,25 @@ object RelaisEngine {
         // Thermal cool-down spaces *actual* decode runs: applied under the lock, not per-request on
         // the worker pool, so concurrent requests don't all sleep in parallel and then serialize.
         ThermalGovernor.cooldownMs().takeIf { it > 0 }?.let { runCatching { Thread.sleep(it) } }
-        val conversation =
-          e.createConversation(
-            ConversationConfig(samplerConfig = SamplerConfig(topK = 64, topP = 0.95, temperature = 1.0))
-          )
+        // Seed the system prompt + prior history into the conversation at creation via
+        // ConversationConfig (systemInstruction + initialMessages). LiteRT-LM prefills these as
+        // context; only the live user message below triggers a decode — so a multi-turn request
+        // costs ONE generation, not one per history turn. (The prior replaySend path ran a full
+        // generate-and-discard per turn — ~22 s/turn; a 2-exchange history hit the per-turn timeout
+        // and 500'd. Validated on rango / Tensor-G5 / E2B: system honored, history recalled, one decode.)
+        val sampler = SamplerConfig(topK = 64, topP = 0.95, temperature = 1.0)
+        val initialMessages = request.history.mapNotNull { it.toResidentMessage() }
+        val conversationConfig =
+          if (request.systemPrompt != null) {
+            ConversationConfig(
+              systemInstruction = Contents.of(request.systemPrompt),
+              initialMessages = initialMessages,
+              samplerConfig = sampler,
+            )
+          } else {
+            ConversationConfig(initialMessages = initialMessages, samplerConfig = sampler)
+          }
+        val conversation = e.createConversation(conversationConfig)
         return try {
           // Stream so we can measure decode throughput by wall clock: BenchmarkInfo only populates
           // via the library's benchmark() path, not normal conversations (SPIKE-FINDINGS.md / Q1).
@@ -384,5 +408,23 @@ object RelaisEngine {
         engine = null
       }
     }
+  }
+
+  /**
+   * Maps a parsed OpenAI history turn to a LiteRT-LM [Message] with the correct role, for seeding a
+   * conversation via [ConversationConfig.initialMessages]. Assistant turns become a MODEL message;
+   * everything else (the parser only emits "user"/"assistant" into history) becomes a USER message.
+   * Returns null for an empty turn (no text and no media) so no blank turn is seeded.
+   */
+  @OptIn(ExperimentalApi::class)
+  private fun ParsedTurn.toResidentMessage(): Message? {
+    val items = buildList {
+      imagePng?.let { add(Content.ImageBytes(it)) }
+      audioWav?.let { add(Content.AudioBytes(it)) }
+      if (text.isNotBlank()) add(Content.Text(text))
+    }
+    if (items.isEmpty()) return null
+    val contents = Contents.of(items)
+    return if (role == "assistant") Message.model(contents) else Message.user(contents)
   }
 }
