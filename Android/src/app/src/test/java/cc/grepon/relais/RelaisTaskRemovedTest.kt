@@ -21,22 +21,28 @@ package cc.grepon.relais
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
-import androidx.test.ext.junit.runners.AndroidJUnit4
-import androidx.test.platform.app.InstrumentationRegistry
+import androidx.test.core.app.ApplicationProvider
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Test
 import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
+import org.robolectric.annotation.Config
 
 /**
- * Task-removal hardening: [RelaisNodeService.onTaskRemoved] must re-arm the crash/OOM watchdog
- * heartbeat so a swiped-away / recents-swept node keeps its recovery alarm — but only when the
- * operator means the node to run ([RelaisConfig.shouldRun]). We assert the real AlarmManager
+ * Task-removal hardening: [RelaisNodeService.reArmWatchdogIfShouldRun] must re-arm the crash/OOM
+ * watchdog heartbeat so a swiped-away / recents-swept node keeps its recovery alarm — but only when
+ * the operator means the node to run ([RelaisConfig.shouldRun]). We assert the real AlarmManager
  * PendingIntent the watchdog uses, reconstructed identically here (requestCode 0,
  * [RelaisWatchdogReceiver], IMMUTABLE); `FLAG_NO_CREATE` returns non-null only if that intent
  * currently exists, and [PendingIntent.cancel] gives each case a known-clear baseline.
+ *
+ * Ported from androidTest (PR5) — uses Robolectric shadows for AlarmManager and PendingIntent.
+ * Robolectric's ShadowPendingIntent honors FLAG_NO_CREATE (returns null when no matching intent
+ * exists) and FLAG_UPDATE_CURRENT, faithfully modelling the real Android behavior under test.
  */
-@RunWith(AndroidJUnit4::class)
+@RunWith(RobolectricTestRunner::class)
+@Config(sdk = [34])
 class RelaisTaskRemovedTest {
 
   private fun watchdogPi(ctx: Context, flags: Int): PendingIntent? =
@@ -54,8 +60,8 @@ class RelaisTaskRemovedTest {
 
   @Test
   fun reArmsWatchdogOnlyWhenShouldRun() {
-    val ctx = InstrumentationRegistry.getInstrumentation().targetContext
-    val savedRun = RelaisConfig.shouldRun(ctx) // targetContext = real prefs; restore in finally
+    val ctx = ApplicationProvider.getApplicationContext<android.app.Application>()
+    val savedRun = RelaisConfig.shouldRun(ctx)
     try {
       // Stopped node: task removal must NOT arm the watchdog (don't revive a node the operator stopped).
       clearWatchdogPi(ctx)

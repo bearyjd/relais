@@ -18,14 +18,15 @@
 
 package cc.grepon.relais
 
-import androidx.test.ext.junit.runners.AndroidJUnit4
-import androidx.test.platform.app.InstrumentationRegistry
+import androidx.test.core.app.ApplicationProvider
 import cc.grepon.relais.data.RelaisModelRef
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
 import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
+import org.robolectric.annotation.Config
 
 /**
  * Ref provisioning guard: a persisted [RelaisModelRef] lets [RelaisModelProvisioner.resolveModel]
@@ -34,10 +35,11 @@ import org.junit.runner.RunWith
  * round-trip.
  *
  * Hermetic + offline: a ref whose id matches the configured id makes resolveModel take the ref fast
- * path before any allowlist fetch. Snapshots and restores the real prefs (targetContext) so an
- * operator's configured model survives the test unchanged.
+ * path before any allowlist fetch. Snapshots and restores the real prefs so an operator's configured
+ * model survives the test unchanged. Ported from androidTest (PR5) — uses Robolectric for Context.
  */
-@RunWith(AndroidJUnit4::class)
+@RunWith(RobolectricTestRunner::class)
+@Config(sdk = [34])
 class RelaisModelRefProvisionTest {
 
   @Test
@@ -66,7 +68,7 @@ class RelaisModelRefProvisionTest {
 
   @Test
   fun resolveModelBuildsFromRefWithoutNetwork() {
-    val ctx = InstrumentationRegistry.getInstrumentation().targetContext
+    val ctx = ApplicationProvider.getApplicationContext<android.app.Application>()
 
     val savedId = RelaisConfig.modelId(ctx)
     val savedRef = RelaisConfig.modelRef(ctx)
@@ -119,7 +121,7 @@ class RelaisModelRefProvisionTest {
    */
   @Test
   fun divergingModelIdDropsStaleRefButSameRepoKeepsIt() {
-    val ctx = InstrumentationRegistry.getInstrumentation().targetContext
+    val ctx = ApplicationProvider.getApplicationContext<android.app.Application>()
 
     val savedId = RelaisConfig.modelId(ctx)
     val savedRef = RelaisConfig.modelRef(ctx)
@@ -161,7 +163,7 @@ class RelaisModelRefProvisionTest {
    */
   @Test
   fun hfRefsNameByModelIdSoSharedTrailingSegmentsDontCollide() {
-    val ctx = InstrumentationRegistry.getInstrumentation().targetContext
+    val ctx = ApplicationProvider.getApplicationContext<android.app.Application>()
 
     val savedId = RelaisConfig.modelId(ctx)
     val savedRef = RelaisConfig.modelRef(ctx)
