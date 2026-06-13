@@ -57,6 +57,9 @@ private const val DEFAULT_MODEL = "gemma-4-e4b-it"
 private const val RATE_LIMIT = 30 // requests
 private const val RATE_WINDOW_MS = 60_000L // per 60s, per client IP
 private const val MAX_TRACKED_IPS = 4096 // bound the rate-limiter map (memory-exhaustion DoS, H4)
+// Structured output (response_format): at most MAX+1 inference calls per request. Latency-bounded;
+// constrained decoding is not a hard guarantee so we validate + repair + retry. (feature-05)
+private const val MAX_STRUCTURED_OUTPUT_RETRIES = 2
 
 /** Fixed-window per-IP rate limiter with stale-entry eviction (bounds the tracking map). */
 private class RateLimiter(private val limit: Int, private val windowMs: Long) {
@@ -401,6 +404,19 @@ class RelaisHttpServer(
       return
     }
 
+    // Structured output (response_format): json_object / json_schema run a validate + repair + retry
+    // loop (json_schema reuses the native tool path — schema as a tool, args become content).
+    val format = RelaisStructuredOutput.parseResponseFormat(body)
+    if (format == null) {
+      RelaisMetrics.recordRequest("/v1/chat/completions", 400)
+      respond(sock, 400, JSONObject().put("error", "unsupported response_format"))
+      return
+    }
+    if (format !is RelaisStructuredOutput.ResponseFormat.Text) {
+      handleStructuredCompletion(sock, request, model, id, stream, format)
+      return
+    }
+
     if (!stream) {
       val result = RelaisEngine.generate(context, request, shouldCancel = { ThermalGovernor.shouldTruncate() })
       val resp =
@@ -529,6 +545,96 @@ class RelaisHttpServer(
     } catch (e: Exception) {
       Log.e(TAG, "tool stream error after headers committed", e)
       runCatching { out.write("data: {\"error\":\"stream aborted\"}\n\n".toByteArray()); out.flush() }
+    }
+  }
+
+  /**
+   * Structured-output (`response_format`) completion. Non-streaming only (v1; stream+format -> 400).
+   *  - json_schema: advertise the caller's schema as a single native tool; the model's tool-call
+   *    arguments become the response content (the native path emits clean schema-conforming JSON).
+   *  - json_object: prompt the model for JSON only.
+   * Both validate the candidate; on failure attempt a prose/fence repair, then retry with a
+   * correction nudge up to [MAX_STRUCTURED_OUTPUT_RETRIES]. Exhaustion -> HTTP 422.
+   */
+  private fun handleStructuredCompletion(
+    sock: java.net.Socket,
+    request: RelaisRequest,
+    model: String,
+    id: String,
+    stream: Boolean,
+    format: RelaisStructuredOutput.ResponseFormat,
+  ) {
+    if (stream) {
+      RelaisMetrics.recordRequest("/v1/chat/completions", 400)
+      respond(sock, 400, JSONObject().put("error", "stream and response_format cannot be combined"))
+      return
+    }
+    val isSchema = format is RelaisStructuredOutput.ResponseFormat.JsonSchema
+    var lastCandidate: String? = null
+    var attempt = 0
+    while (true) {
+      // On retry, show the model its own prior output so it can correct (small models reproduce the
+      // same error if just told "try again"). lastCandidate holds the previous attempt's raw output.
+      val nudge =
+        if (attempt == 0) ""
+        else "\n\nYour previous reply was:\n${lastCandidate ?: "(no output)"}\n\nThat was not valid for the " +
+          "requested format. Reply with ONLY a single valid JSON value, no prose, no code fences."
+      val req =
+        if (format is RelaisStructuredOutput.ResponseFormat.JsonSchema) {
+          request.copy(
+            tools = listOf(ToolSpec(format.name, RelaisStructuredOutput.schemaToFunctionJson(format.name, format.schema))),
+            toolChoice = ToolChoice.Required,
+            toolResults = emptyList(),
+            text = request.text + "\n\n(Respond by calling the `${format.name}` function with the structured result.)" + nudge,
+          )
+        } else {
+          request.copy(
+            systemPrompt = (request.systemPrompt ?: "") + "\nRespond with ONLY valid JSON. No prose, no markdown fences.",
+            text = request.text + nudge,
+          )
+        }
+      val result = RelaisEngine.generate(context, req, shouldCancel = { ThermalGovernor.shouldTruncate() })
+      val candidate = if (isSchema) result.toolCalls.firstOrNull()?.argumentsJson else result.text
+      lastCandidate = candidate
+      val repairedCandidate = candidate?.let { RelaisStructuredOutput.repairOutput(it) }
+
+      val resolved: Pair<String, Boolean>? = when { // (content, wasRepaired)
+        candidate != null && RelaisStructuredOutput.isValidOutput(candidate, format) -> candidate to false
+        repairedCandidate != null && RelaisStructuredOutput.isValidOutput(repairedCandidate, format) -> repairedCandidate to true
+        else -> null
+      }
+
+      if (resolved != null) {
+        val choice = JSONObject()
+          .put("index", 0)
+          .put("message", JSONObject().put("role", "assistant").put("content", resolved.first))
+          .put("finish_reason", "stop")
+        if (resolved.second) choice.put("x_relais_structured_output_repaired", true)
+        val resp = JSONObject()
+          .put("id", id)
+          .put("object", "chat.completion")
+          .put("created", System.currentTimeMillis() / 1000)
+          .put("model", model)
+          .put("choices", JSONArray().put(choice))
+          .put("usage", buildUsageObject(request.text, result.completionTokens))
+          .put("x_relais_usage_note", "prompt_tokens_estimated")
+        RelaisMetrics.recordRequest("/v1/chat/completions", 200)
+        respond(sock, 200, resp)
+        return
+      }
+
+      if (!RelaisStructuredOutput.shouldRetry(attempt, MAX_STRUCTURED_OUTPUT_RETRIES, repairedCandidate, format)) {
+        RelaisMetrics.recordRequest("/v1/chat/completions", 422)
+        respond(
+          sock,
+          422,
+          JSONObject()
+            .put("error", "model failed to produce valid JSON after ${MAX_STRUCTURED_OUTPUT_RETRIES + 1} attempts")
+            .put("last_output", lastCandidate ?: ""),
+        )
+        return
+      }
+      attempt++
     }
   }
 
