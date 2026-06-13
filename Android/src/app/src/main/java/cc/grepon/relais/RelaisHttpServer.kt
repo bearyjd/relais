@@ -19,6 +19,7 @@ package cc.grepon.relais
 import android.content.Context
 import android.util.Base64
 import android.util.Log
+import cc.grepon.relais.data.RelaisModelRef
 import java.io.BufferedReader
 import java.io.File
 import java.io.InputStreamReader
@@ -88,6 +89,7 @@ private class RateLimiter(private val limit: Int, private val windowMs: Long) {
  * Binds [bindAddr]:[port]. Routes through the resident [RelaisEngine].
  *   GET  /health                 -> {"status","ready","thermal_state"}          (no auth)
  *   GET  /metrics                 Prometheus text (or JSON via Accept)           (auth)
+ *   GET  /v1/models               OpenAI-compatible model list                   (auth)
  *   POST /generate                {"text","image_b64?","audio_b64?"}            (auth)
  *   POST /v1/chat/completions     OpenAI-compatible, text+image, stream param   (auth)
  *
@@ -276,6 +278,12 @@ class RelaisHttpServer(
             )
           }
 
+          method == "GET" && path.startsWith("/v1/models") -> {
+            val refs = RelaisModelCatalog.curatedModels()
+            val fallback = RelaisConfig.modelId(context)
+            reply(200, buildModelsResponse(refs, fallback))
+          }
+
           method == "POST" && path.startsWith("/v1/chat/completions") -> {
             if (shedIfHot(::reply)) return
             handleOpenAi(sock, JSONObject(readBody(reader, contentLength)))
@@ -403,6 +411,7 @@ class RelaisHttpServer(
       path.startsWith("/metrics") -> "/metrics"
       path.startsWith("/generate") -> "/generate"
       path.startsWith("/v1/chat/completions") -> "/v1/chat/completions"
+      path.startsWith("/v1/models") -> "/v1/models"
       else -> "other"
     }
 
@@ -474,4 +483,41 @@ class RelaisHttpServer(
     pool.shutdownNow()
     Log.i(TAG, "Stopped")
   }
+}
+
+// Stable epoch for the "created" field required by strict OpenAI clients (e.g. older openai-python).
+// A fixed constant keeps buildModelsResponse pure and deterministic — no System.currentTimeMillis().
+private const val MODEL_CREATED_EPOCH = 0L
+
+/**
+ * Pure mapping function (no Context dependency) — shapes the OpenAI-compatible GET /v1/models
+ * response from the curated catalog refs and a fallback model id. When [refs] is empty (offline),
+ * returns a single-entry list containing only the currently-provisioned [fallbackId] so the
+ * response is always non-empty. Internal so the unit test can call it directly on the JVM.
+ *
+ * Each entry includes a stable `created` epoch so strict OpenAI clients (older openai-python) that
+ * require the field do not reject the response.
+ */
+internal fun buildModelsResponse(refs: List<RelaisModelRef>, fallbackId: String): JSONObject {
+  val data = JSONArray()
+  if (refs.isEmpty()) {
+    data.put(
+      JSONObject()
+        .put("id", fallbackId)
+        .put("object", "model")
+        .put("owned_by", "node")
+        .put("created", MODEL_CREATED_EPOCH)
+    )
+  } else {
+    refs.forEach { ref ->
+      data.put(
+        JSONObject()
+          .put("id", ref.modelId)
+          .put("object", "model")
+          .put("owned_by", ref.source)
+          .put("created", MODEL_CREATED_EPOCH)
+      )
+    }
+  }
+  return JSONObject().put("object", "list").put("data", data)
 }
