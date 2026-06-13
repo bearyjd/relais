@@ -459,32 +459,30 @@ class RelaisHttpServer(
     }
   }
 
-  /** Extracts text + first image + first audio from the last user message (string or parts array). */
+  /**
+   * Extracts the full conversation from the OpenAI messages[] array.
+   * Delegates to [buildPromptParts] (pure function, tested in OpenAiRequestParserTest) and
+   * maps the result to a [RelaisRequest] with system prompt + history + final user turn.
+   *
+   * The [request.text] field is always the final user message text so that
+   * [buildUsageObject](request.text, ...) in [handleOpenAi] keeps working correctly.
+   */
   private fun parseOpenAiRequest(body: JSONObject): RelaisRequest {
     val messages = body.optJSONArray("messages") ?: JSONArray()
-    var text = ""
-    var image: ByteArray? = null
-    var audio: ByteArray? = null
-    for (i in messages.length() - 1 downTo 0) {
-      val msg = messages.optJSONObject(i) ?: continue
-      if (msg.optString("role") != "user") continue
-      when (val content = msg.opt("content")) {
-        is String -> text = content
-        is JSONArray ->
-          for (j in 0 until content.length()) {
-            val part = content.optJSONObject(j) ?: continue
-            when (part.optString("type")) {
-              "text" -> text = part.optString("text")
-              "image_url" ->
-                image = part.optJSONObject("image_url")?.optString("url")?.let { dataUriBytes(it) } ?: image
-              "input_audio" ->
-                audio = part.optJSONObject("input_audio")?.optString("data")?.let { decode(it) } ?: audio
-            }
-          }
-      }
-      break
-    }
-    return RelaisRequest(text = text, imagePng = image, audioWav = audio)
+    // Pass android.util.Base64-backed lambdas explicitly — the default lambdas in buildPromptParts
+    // use java.util.Base64 (for JVM-testability); production always runs on Android so we override.
+    val parsed = buildPromptParts(
+      messages = messages,
+      dataUriBytes = { url -> dataUriBytes(url) },
+      decode = { b64 -> decode(b64) },
+    )
+    return RelaisRequest(
+      text = parsed.lastUserText,
+      imagePng = parsed.lastUserImage,
+      audioWav = parsed.lastUserAudio,
+      systemPrompt = parsed.systemPrompt,
+      history = parsed.history,
+    )
   }
 
   private fun dataUriBytes(url: String): ByteArray? =

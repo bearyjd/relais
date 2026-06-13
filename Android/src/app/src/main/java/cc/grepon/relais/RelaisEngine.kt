@@ -87,6 +87,14 @@ data class RelaisRequest(
   val text: String,
   val imagePng: ByteArray? = null,
   val audioWav: ByteArray? = null,
+  /** System prompt extracted from the OpenAI messages[] array. Null for the /generate path. */
+  val systemPrompt: String? = null,
+  /**
+   * Prior conversation turns (oldest first) extracted from the OpenAI messages[] array.
+   * Empty for the /generate path. History is replayed into the LiteRT-LM session before
+   * the live user message via [replaySend] in [RelaisEngine.generate].
+   */
+  val history: List<ParsedTurn> = emptyList(),
 ) {
   val modalities: RequestModalities
     get() = RequestModalities(hasImage = imagePng != null, hasAudio = audioWav != null)
@@ -313,6 +321,25 @@ object RelaisEngine {
             ConversationConfig(samplerConfig = SamplerConfig(topK = 64, topP = 0.95, temperature = 1.0))
           )
         return try {
+          // Replay system prompt + history into the conversation BEFORE the live user message.
+          // sendMessageAsync is cumulative within a Conversation: each call adds a turn.
+          // The model infers role from turn order (odd=user, even=model).
+          if (request.systemPrompt != null) {
+            // LiteRT-LM has no Content.System type; wrap in <system>...</system> which all
+            // Gemma and Qwen3 chat templates recognize.
+            replaySend(conversation, Content.Text("<system>\n${request.systemPrompt}\n</system>"))
+          }
+          for (turn in request.history) {
+            val turnContents = buildList {
+              turn.imagePng?.let { add(Content.ImageBytes(it)) }
+              turn.audioWav?.let { add(Content.AudioBytes(it)) }
+              if (turn.text.isNotBlank()) add(Content.Text(turn.text))
+            }
+            if (turnContents.isNotEmpty()) {
+              replaySend(conversation, *turnContents.toTypedArray())
+            }
+          }
+
           // Stream so we can measure decode throughput by wall clock: BenchmarkInfo only populates
           // via the library's benchmark() path, not normal conversations (SPIKE-FINDINGS.md / Q1).
           val sb = StringBuilder()
@@ -384,5 +411,31 @@ object RelaisEngine {
         engine = null
       }
     }
+  }
+
+  /**
+   * Sends a single replay turn into [conversation] and blocks until the model responds.
+   * Used to populate system prompt and prior history turns before the live user message.
+   * The model's reply is discarded — only the session state (KV cache) is needed.
+   *
+   * On-device note: this adds N round-trips through the LiteRT-LM decode loop before the live
+   * message. Each replay consumes context-window tokens. The overflow policy in [buildPromptParts]
+   * bounds total history so that system + history + live message ≤ MAX_NUM_TOKENS.
+   */
+  @OptIn(ExperimentalApi::class)
+  private fun replaySend(conversation: com.google.ai.edge.litertlm.Conversation, vararg contentItems: Content) {
+    val latch = CountDownLatch(1)
+    val err = arrayOfNulls<Throwable>(1)
+    conversation.sendMessageAsync(
+      Contents.of(contentItems.toList()),
+      object : MessageCallback {
+        override fun onMessage(message: Message) = Unit // discard historical reply
+        override fun onDone() = latch.countDown()
+        override fun onError(t: Throwable) { err[0] = t; latch.countDown() }
+      },
+      emptyMap(),
+    )
+    if (!latch.await(30, TimeUnit.SECONDS)) error("history replay timed out")
+    err[0]?.let { throw it }
   }
 }
