@@ -163,8 +163,15 @@ internal fun buildPromptParts(
     }
   }
 
+  // Normalize to user-first: a leading assistant turn has no preceding user turn, which would make
+  // the seeded conversation (RelaisEngine ConversationConfig.initialMessages) start with a MODEL
+  // message — a shape chat templates don't expect. Drop any orphan leading assistant turn(s). The
+  // truncation pass below has its own dangling-leading-assistant guard; this covers the
+  // non-truncated path too.
+  val userFirst = history.dropWhile { it.role == "assistant" }
+
   // Apply overflow truncation: drop oldest-first in user+assistant pairs, keep system always.
-  val truncated = applyHistoryTruncation(history, maxHistoryChars)
+  val truncated = applyHistoryTruncation(userFirst, maxHistoryChars)
 
   return ParsedMessages(
     systemPrompt = systemPrompt,

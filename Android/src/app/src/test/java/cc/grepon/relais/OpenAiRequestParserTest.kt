@@ -159,10 +159,11 @@ class OpenAiRequestParserTest {
   // ---------------------------------------------------------------------------
 
   @Test
-  fun `assistant-last array promotes last user to live turn, assistant goes to history`() {
-    // [system, user, assistant] — the last user message is still promoted to lastUserText
-    // (it is the only user turn, so lastUserIndex points to it). The trailing assistant
-    // goes into history. This pins the parser's actual contract for this edge case.
+  fun `assistant-last array promotes last user to live turn and drops the orphan assistant`() {
+    // [system, user, assistant] — the sole user message is promoted to lastUserText (it is the
+    // only user turn, so lastUserIndex points to it). That leaves the trailing assistant as a
+    // history with no preceding user turn; it is dropped so the seeded conversation is user-first
+    // (a MODEL-first initialMessages is a shape chat templates don't expect).
     val messages = JSONArray("""
       [{"role":"system","content":"SYS"},
        {"role":"user","content":"Q1"},
@@ -174,10 +175,33 @@ class OpenAiRequestParserTest {
     assertEquals("Q1", result.lastUserText)
     assertNull(result.lastUserImage)
     assertNull(result.lastUserAudio)
-    // The trailing assistant turn, which has no paired user turn after it, goes to history.
-    assertEquals(1, result.history.size)
-    assertEquals("assistant", result.history[0].role)
-    assertEquals("A1",        result.history[0].text)
+    // The orphan leading assistant turn is dropped — history must be user-first (here, empty).
+    assertTrue("orphan leading assistant must be dropped", result.history.isEmpty())
+  }
+
+  // ---------------------------------------------------------------------------
+  // Case 8 — leading assistant turn (client primes with an assistant message first)
+  // ---------------------------------------------------------------------------
+
+  @Test
+  fun `leading assistant turns are dropped so history is user-first`() {
+    // Some clients send an assistant greeting before the first user turn. A leading assistant
+    // turn has no preceding user turn; seeding it would make ConversationConfig.initialMessages
+    // start with a MODEL message. The parser must drop leading assistant turn(s).
+    val messages = JSONArray("""
+      [{"role":"assistant","content":"Hi! How can I help?"},
+       {"role":"user","content":"Q1"},
+       {"role":"assistant","content":"A1"},
+       {"role":"user","content":"Q2"}]
+    """)
+    val result = buildPromptParts(messages)
+    assertNull(result.systemPrompt)
+    // Live turn is the last user.
+    assertEquals("Q2", result.lastUserText)
+    // History keeps the genuine Q1/A1 pair, with the orphan leading assistant removed.
+    assertEquals(2, result.history.size)
+    assertEquals("user",      result.history[0].role); assertEquals("Q1", result.history[0].text)
+    assertEquals("assistant", result.history[1].role); assertEquals("A1", result.history[1].text)
   }
 
   // ---------------------------------------------------------------------------

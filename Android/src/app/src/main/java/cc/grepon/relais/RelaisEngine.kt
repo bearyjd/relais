@@ -91,8 +91,9 @@ data class RelaisRequest(
   val systemPrompt: String? = null,
   /**
    * Prior conversation turns (oldest first) extracted from the OpenAI messages[] array.
-   * Empty for the /generate path. History is replayed into the LiteRT-LM session before
-   * the live user message via [replaySend] in [RelaisEngine.generate].
+   * Empty for the /generate path. Seeded into the LiteRT-LM conversation as
+   * [ConversationConfig.initialMessages] in [RelaisEngine.generate] — prefilled as context, not
+   * replayed turn-by-turn, so a multi-turn request costs one decode rather than one per turn.
    */
   val history: List<ParsedTurn> = emptyList(),
 ) {
@@ -316,30 +317,26 @@ object RelaisEngine {
         // Thermal cool-down spaces *actual* decode runs: applied under the lock, not per-request on
         // the worker pool, so concurrent requests don't all sleep in parallel and then serialize.
         ThermalGovernor.cooldownMs().takeIf { it > 0 }?.let { runCatching { Thread.sleep(it) } }
-        val conversation =
-          e.createConversation(
-            ConversationConfig(samplerConfig = SamplerConfig(topK = 64, topP = 0.95, temperature = 1.0))
-          )
-        return try {
-          // Replay system prompt + history into the conversation BEFORE the live user message.
-          // sendMessageAsync is cumulative within a Conversation: each call adds a turn.
-          // The model infers role from turn order (odd=user, even=model).
+        // Seed the system prompt + prior history into the conversation at creation via
+        // ConversationConfig (systemInstruction + initialMessages). LiteRT-LM prefills these as
+        // context; only the live user message below triggers a decode — so a multi-turn request
+        // costs ONE generation, not one per history turn. (The prior replaySend path ran a full
+        // generate-and-discard per turn — ~22 s/turn; a 2-exchange history hit the per-turn timeout
+        // and 500'd. Validated on rango / Tensor-G5 / E2B: system honored, history recalled, one decode.)
+        val sampler = SamplerConfig(topK = 64, topP = 0.95, temperature = 1.0)
+        val initialMessages = request.history.mapNotNull { it.toResidentMessage() }
+        val conversationConfig =
           if (request.systemPrompt != null) {
-            // LiteRT-LM has no Content.System type; wrap in <system>...</system> which all
-            // Gemma and Qwen3 chat templates recognize.
-            replaySend(conversation, Content.Text("<system>\n${request.systemPrompt}\n</system>"))
+            ConversationConfig(
+              systemInstruction = Contents.of(request.systemPrompt),
+              initialMessages = initialMessages,
+              samplerConfig = sampler,
+            )
+          } else {
+            ConversationConfig(initialMessages = initialMessages, samplerConfig = sampler)
           }
-          for (turn in request.history) {
-            val turnContents = buildList {
-              turn.imagePng?.let { add(Content.ImageBytes(it)) }
-              turn.audioWav?.let { add(Content.AudioBytes(it)) }
-              if (turn.text.isNotBlank()) add(Content.Text(turn.text))
-            }
-            if (turnContents.isNotEmpty()) {
-              replaySend(conversation, *turnContents.toTypedArray())
-            }
-          }
-
+        val conversation = e.createConversation(conversationConfig)
+        return try {
           // Stream so we can measure decode throughput by wall clock: BenchmarkInfo only populates
           // via the library's benchmark() path, not normal conversations (SPIKE-FINDINGS.md / Q1).
           val sb = StringBuilder()
@@ -414,28 +411,20 @@ object RelaisEngine {
   }
 
   /**
-   * Sends a single replay turn into [conversation] and blocks until the model responds.
-   * Used to populate system prompt and prior history turns before the live user message.
-   * The model's reply is discarded — only the session state (KV cache) is needed.
-   *
-   * On-device note: this adds N round-trips through the LiteRT-LM decode loop before the live
-   * message. Each replay consumes context-window tokens. The overflow policy in [buildPromptParts]
-   * bounds total history so that system + history + live message ≤ MAX_NUM_TOKENS.
+   * Maps a parsed OpenAI history turn to a LiteRT-LM [Message] with the correct role, for seeding a
+   * conversation via [ConversationConfig.initialMessages]. Assistant turns become a MODEL message;
+   * everything else (the parser only emits "user"/"assistant" into history) becomes a USER message.
+   * Returns null for an empty turn (no text and no media) so no blank turn is seeded.
    */
   @OptIn(ExperimentalApi::class)
-  private fun replaySend(conversation: com.google.ai.edge.litertlm.Conversation, vararg contentItems: Content) {
-    val latch = CountDownLatch(1)
-    val err = arrayOfNulls<Throwable>(1)
-    conversation.sendMessageAsync(
-      Contents.of(contentItems.toList()),
-      object : MessageCallback {
-        override fun onMessage(message: Message) = Unit // discard historical reply
-        override fun onDone() = latch.countDown()
-        override fun onError(t: Throwable) { err[0] = t; latch.countDown() }
-      },
-      emptyMap(),
-    )
-    if (!latch.await(30, TimeUnit.SECONDS)) error("history replay timed out")
-    err[0]?.let { throw it }
+  private fun ParsedTurn.toResidentMessage(): Message? {
+    val items = buildList {
+      imagePng?.let { add(Content.ImageBytes(it)) }
+      audioWav?.let { add(Content.AudioBytes(it)) }
+      if (text.isNotBlank()) add(Content.Text(text))
+    }
+    if (items.isEmpty()) return null
+    val contents = Contents.of(items)
+    return if (role == "assistant") Message.model(contents) else Message.user(contents)
   }
 }
