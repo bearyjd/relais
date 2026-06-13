@@ -72,6 +72,9 @@ android {
       // without Robolectric). Tradeoff: masks accidental unmocked-Android calls — migrate
       // Android-touching tests to Robolectric (PR5).
       isReturnDefaultValues = true
+      // Required for Robolectric to load AndroidManifest, resources, and assets when running
+      // Context-touching tests as JVM unit tests (PR5).
+      isIncludeAndroidResources = true
     }
   }
 }
@@ -123,6 +126,8 @@ dependencies {
   kapt(libs.hilt.android.compiler)
   testImplementation(libs.junit)
   testImplementation(libs.com.google.code.gson)
+  testImplementation(libs.robolectric)
+  testImplementation(libs.androidx.junit)
   androidTestImplementation(libs.androidx.junit)
   androidTestImplementation(libs.androidx.espresso.core)
   androidTestImplementation(platform(libs.androidx.compose.bom))
