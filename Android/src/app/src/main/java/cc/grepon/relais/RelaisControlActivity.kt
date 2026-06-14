@@ -148,6 +148,7 @@ class RelaisControlActivity : ComponentActivity() {
           var modelRef by remember { mutableStateOf(RelaisConfig.modelRef(ctx)) }
           var showModelSheet by remember { mutableStateOf(false) }
           var hfToken by remember { mutableStateOf(RelaisConfig.hfToken(ctx) ?: "") }
+          var shareEnabled by remember { mutableStateOf(RelaisConfig.shareEnabled(ctx)) }
           var savedNote by remember { mutableStateOf("") }
           val ip = remember { lanIpv4() }
           val powerManager = remember { ctx.getSystemService(Context.POWER_SERVICE) as PowerManager }
@@ -291,6 +292,15 @@ class RelaisControlActivity : ComponentActivity() {
             Divider()
             ActionLink("PROMPT TEMPLATES ›") {
               ctx.startActivity(Intent(ctx, PromptTemplateEditorActivity::class.java))
+            }
+
+            // Share-sheet inference target (#1): on/off. The manifest entry is always present; this
+            // is the runtime opt-out — when off, a share reports "disabled" instead of running.
+            Readout("SHARE TARGET", if (shareEnabled) "on" else "off")
+            ActionLink(if (shareEnabled) "DISABLE SHARE TARGET" else "ENABLE SHARE TARGET") {
+              val next = !shareEnabled
+              RelaisConfig.setShareEnabled(ctx, next)
+              shareEnabled = next
             }
 
             Spacer(Modifier.height(4.dp))
