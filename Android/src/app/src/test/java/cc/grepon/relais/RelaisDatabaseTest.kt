@@ -48,8 +48,21 @@ class RelaisDatabaseTest {
     assertEquals("relais", got?.note)
   }
 
-  @Test fun `migrations array is wired and empty at v1`() {
-    // Consumers (#4/#5/#14) append Migration(n, n+1) here when they add tables + bump the version.
-    assertEquals(0, RelaisDatabase.MIGRATIONS.size)
+  @Test fun `migrations array carries the v1 to v2 session-memory migration`() {
+    // Feature #5 added `session_turns` at schema v2; the 1->2 migration must be wired so an
+    // upgrade-in-place keeps existing on-device data (no destructive fallback).
+    assertEquals(1, RelaisDatabase.MIGRATIONS.size)
+    val m = RelaisDatabase.MIGRATIONS.single()
+    assertEquals(1, m.startVersion)
+    assertEquals(2, m.endVersion)
+  }
+
+  @Test fun `session turn round-trips on the v2 schema`() = runBlocking {
+    val turn = cc.grepon.relais.data.SessionTurn(sessionKey = "h:x", role = "user", content = "hi", createdAt = 5L)
+    val id = db.sessionDao().insert(turn)
+    val got = db.sessionDao().turnsFor("h:x")
+    assertEquals(1, got.size)
+    assertEquals("hi", got.single().content)
+    assertEquals(id, got.single().id)
   }
 }

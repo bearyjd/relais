@@ -44,6 +44,7 @@ import java.util.concurrent.Executors
 import java.util.concurrent.Semaphore
 import javax.net.ssl.KeyManagerFactory
 import javax.net.ssl.SSLContext
+import kotlinx.coroutines.runBlocking
 import org.bouncycastle.asn1.x500.X500Name
 import org.bouncycastle.cert.jcajce.JcaX509CertificateConverter
 import org.bouncycastle.cert.jcajce.JcaX509v3CertificateBuilder
@@ -216,8 +217,12 @@ class RelaisHttpServer(
         var contentLength = 0
         var authorization: String? = null
         var accept: String? = null
+        var sessionHeader: String? = null
         var headerLines = 0
         var headerBytes = 0
+        // Session memory (Feature #5) is DEFAULT-OFF: only capture the session header when enabled, so
+        // the disabled path does no extra work (and never reads a client-controlled value).
+        val sessionEnabled = RelaisConfig.sessionMemoryEnabled(context)
         while (true) {
           val line = reader.readLine() ?: break
           if (line.isEmpty()) break
@@ -232,6 +237,8 @@ class RelaisHttpServer(
             lower.startsWith("content-length:") -> contentLength = line.substringAfter(":").trim().toIntOrNull() ?: 0
             lower.startsWith("authorization:") -> authorization = line.substringAfter(":").trim()
             lower.startsWith("accept:") -> accept = lower.substringAfter(":").trim()
+            sessionEnabled && lower.startsWith("x-relais-session:") ->
+              sessionHeader = line.substringAfter(":").trim()
           }
         }
 
@@ -391,10 +398,37 @@ class RelaisHttpServer(
             // /generate, so its p95 separates from /generate's in the labeled histogram.
             val inferStartNs = System.nanoTime()
             try {
-              handleOpenAi(sock, JSONObject(readBody(reader, contentLength)))
+              // Resolve the session key only when session memory is enabled (null otherwise = inert).
+              val sessionKey = if (sessionEnabled) resolveSessionKey(sock, sessionHeader) else null
+              handleOpenAi(sock, JSONObject(readBody(reader, contentLength)), sessionKey)
             } finally {
               RelaisMetrics.recordEndpointLatency("/v1/chat/completions", (System.nanoTime() - inferStartNs) / 1e9)
               admissionGate.release()
+            }
+          }
+
+          method == "DELETE" && path.startsWith("/v1/sessions") -> {
+            // Clears the caller's resolved session. Auth-gated (shared gate above). Inert + 404 when
+            // the feature is off so the surface area doesn't exist by default.
+            val key = if (sessionEnabled) resolveSessionKey(sock, sessionHeader) else null
+            if (key == null) {
+              reply(if (sessionEnabled) 400 else 404,
+                JSONObject().put("error", if (sessionEnabled) "no session key" else "not found"))
+            } else {
+              runBlocking { RelaisSessionStore.clear(context, key) }
+              reply(200, JSONObject().put("status", "cleared"))
+            }
+          }
+
+          method == "GET" && path.startsWith("/v1/sessions") -> {
+            // Returns the caller's own turn count only — never another session's data.
+            val key = if (sessionEnabled) resolveSessionKey(sock, sessionHeader) else null
+            if (key == null) {
+              reply(if (sessionEnabled) 400 else 404,
+                JSONObject().put("error", if (sessionEnabled) "no session key" else "not found"))
+            } else {
+              val turns = runBlocking { RelaisSessionStore.count(context, key) }
+              reply(200, JSONObject().put("turns", turns).put("session_memory", true))
             }
           }
 
@@ -450,7 +484,7 @@ class RelaisHttpServer(
 
   // --- OpenAI-compatible chat completions ---
 
-  private fun handleOpenAi(sock: java.net.Socket, body: JSONObject) {
+  private fun handleOpenAi(sock: java.net.Socket, body: JSONObject, sessionKey: String? = null) {
     val model = body.optString("model", DEFAULT_MODEL)
     val stream = body.optBoolean("stream", false)
     // Reject an unknown template id up front (all sub-paths) so a client never silently gets the
@@ -460,7 +494,26 @@ class RelaisHttpServer(
       respond(sock, 400, JSONObject().put("error", "unknown template").put("code", "unknown_template"))
       return
     }
-    val request = parseOpenAiRequest(body)
+    val parsed = parseOpenAiRequest(body)
+    // Session memory (Feature #5): stored history is injected ONLY for a bare turn (client sent no
+    // prior history) and ONLY on the plain chat path (no tools, no tool results). A client managing
+    // its own multi-turn messages[] stays authoritative — no double-injection. sessionKey is null
+    // whenever the feature is disabled, so this whole block is inert by default.
+    val isPlainChat = parsed.tools.isEmpty() && parsed.toolResults.isEmpty()
+    val request =
+      if (sessionKey != null && isPlainChat &&
+        RelaisSessionPolicy.shouldUseStoredHistory(parsed.history.size)) {
+        val stored = runBlocking {
+          RelaisSessionStore.loadHistory(context, sessionKey, RelaisConfig.sessionMaxTurns(context))
+        }
+        val merged = RelaisSessionPolicy.mergeHistory(stored, RelaisConfig.sessionMaxTurns(context))
+        if (merged.isNotEmpty()) {
+          RelaisMetrics.recordSessionHit()
+          parsed.copy(history = merged)
+        } else parsed
+      } else parsed
+    // Record the live turn + reply after the response is sent, when a key resolved on the plain path.
+    val recordKey = sessionKey?.takeIf { isPlainChat }
     val id = "chatcmpl-" + System.currentTimeMillis()
 
     // Tool path: a request advertising tools OR replying with tool results uses the dedicated
@@ -504,6 +557,9 @@ class RelaisHttpServer(
           .put("x_relais_usage_note", "prompt_tokens_estimated")
       RelaisMetrics.recordRequest("/v1/chat/completions", 200)
       respond(sock, 200, resp)
+      // Session memory: persist the live user turn + assistant reply after the response is sent
+      // (best-effort, swallows errors, never blocks/fails the already-sent response).
+      recordSessionTurn(recordKey, request.text, result.text)
       return
     }
 
@@ -553,10 +609,40 @@ class RelaisHttpServer(
         .put("x_relais_usage_note", "prompt_tokens_estimated")
       out.write("data: $finalChunk\n\n".toByteArray()); out.flush()
       out.write("data: [DONE]\n\n".toByteArray()); out.flush()
+      // Session memory: persist on stream completion using the captured full result text (the engine
+      // returns the whole reply alongside the deltas). Best-effort; never affects the stream.
+      recordSessionTurn(recordKey, request.text, result.text)
     } catch (e: Exception) {
       Log.e(TAG, "stream error after headers committed", e)
       runCatching { out.write("data: {\"error\":\"stream aborted\"}\n\n".toByteArray()); out.flush() }
     }
+  }
+
+  /**
+   * Best-effort persistence of one live turn (user message + assistant reply) for session memory
+   * (Feature #5). No-op when [key] is null (feature off, no key, or a non-plain path). Runs after the
+   * response is already sent and swallows all failures — persistence must never affect the reply.
+   */
+  private fun recordSessionTurn(key: String?, userText: String, assistantText: String) {
+    if (key == null) return
+    // A cooperatively-cancelled / thermally-truncated stream can finish before the first token, so
+    // assistantText is blank. Persisting a blank assistant turn would seed a future bare-turn recall
+    // with an empty reply, so skip the whole record when there's no reply to store. (A NON-empty but
+    // truncated reply is still stored as-is, best-effort, until RelaisResult carries a finish/
+    // truncated signal — the deferred work noted near RelaisEngine's finishReason.)
+    if (assistantText.isBlank()) return
+    runCatching { runBlocking { RelaisSessionStore.record(context, key, userText, assistantText) } }
+      .onFailure { Log.w(TAG, "session record failed (swallowed)") }
+  }
+
+  /**
+   * Resolves the session key for a request from the (already feature-gated) `X-Relais-Session` header
+   * and the hashed peer IP fallback. The IP is hashed with the per-install API key as salt so the raw
+   * address is never stored or surfaced (security M6). Returns null when no key resolves.
+   */
+  private fun resolveSessionKey(sock: java.net.Socket, header: String?): String? {
+    val ipHash = RelaisSessionStore.hashIp(sock.inetAddress?.hostAddress, apiKey)
+    return RelaisSessionPolicy.resolveSessionKey(header, ipHash)
   }
 
   /**
@@ -778,6 +864,7 @@ class RelaisHttpServer(
       path.startsWith("/v1/chat/completions") -> "/v1/chat/completions"
       path.startsWith("/v1/models") -> "/v1/models"
       path.startsWith("/v1/clientconfig") -> "/v1/clientconfig"
+      path.startsWith("/v1/sessions") -> "/v1/sessions"
       else -> "other"
     }
 

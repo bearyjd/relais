@@ -89,6 +89,9 @@ class RelaisNodeService : Service() {
         httpServer = RelaisHttpServer(applicationContext, port = 8080, bindAddr = "127.0.0.1").also { it.start() }
         httpsServer = RelaisHttpServer(applicationContext, port = 8443, tls = true, bindAddr = "0.0.0.0").also { it.start() }
         RelaisDiscovery.register(applicationContext) // advertise _relais._tcp for zero-config LAN discovery
+        // Periodic TTL prune for the optional session memory (Feature #5). Idempotent + no-ops when
+        // session memory is disabled, so scheduling it unconditionally is a true no-op by default.
+        cc.grepon.relais.worker.SessionPruneWorker.schedule(applicationContext)
         updateNotification("Resident engine ready · http 127.0.0.1:8080 · https :8443 (LAN)")
         Log.i(TAG, "Node up: engine resident; http loopback :8080, https LAN :8443")
         // Security H3: never log the API key — it is shown in the Relais Node control screen.

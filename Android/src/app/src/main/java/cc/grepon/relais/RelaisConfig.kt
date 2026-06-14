@@ -42,6 +42,27 @@ object RelaisConfig {
   private const val KEY_DECODE_FLOOR_TOK_S = "decode_floor_tok_s"
   private const val KEY_MODERATE_COOLDOWN_MS = "moderate_cooldown_ms"
   private const val KEY_TILE_TEMPLATE_ID = "tile_canned_template_id"
+  private const val KEY_SESSION_MEMORY = "session_memory_enabled"
+  private const val KEY_SESSION_TTL_HOURS = "session_ttl_hours"
+  private const val KEY_SESSION_MAX_TURNS = "session_max_turns"
+  private const val KEY_SESSION_GLOBAL_MAX_TURNS = "session_global_max_turns"
+
+  // Server-side session memory (Feature #5) — DEFAULT-OFF. When disabled the HTTP path never reads
+  // the header, opens the DB, or persists anything (zero behavior change). TTL + per-session turn
+  // cap bound retention and DB growth; both are clamped on read AND write so a tampered prefs value
+  // stays in band.
+  private const val SESSION_TTL_HOURS_DEFAULT = 24
+  private const val SESSION_TTL_HOURS_MIN = 1
+  private const val SESSION_TTL_HOURS_MAX = 24 * 30 // 30 days
+  private const val SESSION_MAX_TURNS_DEFAULT = 40
+  private const val SESSION_MAX_TURNS_MIN = 2
+  private const val SESSION_MAX_TURNS_MAX = 200
+  // Global (all-sessions) stored-turn cap — the absolute ceiling on session_turns rows, so a client
+  // that varies its session key can't grow the DB without bound between TTL passes. Clamped to a sane
+  // band on read AND write, mirroring the per-session cap.
+  private const val SESSION_GLOBAL_MAX_TURNS_DEFAULT = 5_000
+  private const val SESSION_GLOBAL_MAX_TURNS_MIN = 100
+  private const val SESSION_GLOBAL_MAX_TURNS_MAX = 50_000
 
   // Operational shed-threshold defaults + HARD CLAMP bands (Feature #10). Defaults equal the
   // ThermalGovernor consts these replace. Clamps applied on BOTH read and write so a pre-existing
@@ -307,5 +328,58 @@ object RelaisConfig {
     val clean = id?.takeIf { it.isNotBlank() }
     if (clean == null) edit.remove(KEY_TILE_TEMPLATE_ID) else edit.putString(KEY_TILE_TEMPLATE_ID, clean)
     edit.apply()
+  }
+
+  /**
+   * Server-side session memory master switch (Feature #5). DEFAULT **false** — the node is stateless
+   * unless an operator opts in. When false the HTTP path never captures the session header, opens the
+   * session DB, or persists a turn (byte-for-byte the prior behavior). Privacy posture: opt-in only,
+   * TTL-pruned, explicit DELETE, app-private storage, hashed IP keys.
+   */
+  fun sessionMemoryEnabled(context: Context): Boolean =
+    prefs(context).getBoolean(KEY_SESSION_MEMORY, false)
+
+  fun setSessionMemoryEnabled(context: Context, enabled: Boolean) {
+    prefs(context).edit().putBoolean(KEY_SESSION_MEMORY, enabled).apply()
+  }
+
+  /** Session retention TTL in hours (Feature #5). Clamped to [SESSION_TTL_HOURS_MIN]..MAX on read+write. */
+  fun sessionTtlHours(context: Context): Int =
+    prefs(context).getInt(KEY_SESSION_TTL_HOURS, SESSION_TTL_HOURS_DEFAULT)
+      .coerceIn(SESSION_TTL_HOURS_MIN, SESSION_TTL_HOURS_MAX)
+
+  fun setSessionTtlHours(context: Context, value: Int) {
+    prefs(context).edit()
+      .putInt(KEY_SESSION_TTL_HOURS, value.coerceIn(SESSION_TTL_HOURS_MIN, SESSION_TTL_HOURS_MAX))
+      .apply()
+  }
+
+  /** Per-session stored-turn cap (Feature #5). Clamped to [SESSION_MAX_TURNS_MIN]..MAX on read+write. */
+  fun sessionMaxTurns(context: Context): Int =
+    prefs(context).getInt(KEY_SESSION_MAX_TURNS, SESSION_MAX_TURNS_DEFAULT)
+      .coerceIn(SESSION_MAX_TURNS_MIN, SESSION_MAX_TURNS_MAX)
+
+  fun setSessionMaxTurns(context: Context, value: Int) {
+    prefs(context).edit()
+      .putInt(KEY_SESSION_MAX_TURNS, value.coerceIn(SESSION_MAX_TURNS_MIN, SESSION_MAX_TURNS_MAX))
+      .apply()
+  }
+
+  /**
+   * Global stored-turn cap across ALL sessions (Feature #5). The absolute row ceiling enforced by the
+   * periodic prune so a client cycling its `X-Relais-Session` value can't grow the DB without bound
+   * before TTL reclaims those sessions. Clamped to [SESSION_GLOBAL_MAX_TURNS_MIN]..MAX on read+write.
+   */
+  fun sessionGlobalMaxTurns(context: Context): Int =
+    prefs(context).getInt(KEY_SESSION_GLOBAL_MAX_TURNS, SESSION_GLOBAL_MAX_TURNS_DEFAULT)
+      .coerceIn(SESSION_GLOBAL_MAX_TURNS_MIN, SESSION_GLOBAL_MAX_TURNS_MAX)
+
+  fun setSessionGlobalMaxTurns(context: Context, value: Int) {
+    prefs(context).edit()
+      .putInt(
+        KEY_SESSION_GLOBAL_MAX_TURNS,
+        value.coerceIn(SESSION_GLOBAL_MAX_TURNS_MIN, SESSION_GLOBAL_MAX_TURNS_MAX),
+      )
+      .apply()
   }
 }
