@@ -20,6 +20,7 @@ import android.content.Context
 import android.util.Base64
 import android.util.Log
 import cc.grepon.relais.data.RelaisModelRef
+import cc.grepon.relais.embed.RelaisEmbedderProvider
 import cc.grepon.relais.templates.PromptTemplateStore
 import cc.grepon.relais.templates.parseTemplateId
 import cc.grepon.relais.templates.parseTemplateMode
@@ -67,6 +68,11 @@ private const val MAX_TRACKED_IPS = 4096 // bound the rate-limiter map (memory-e
 // Structured output (response_format): at most MAX+1 inference calls per request. Latency-bounded;
 // constrained decoding is not a hard guarantee so we validate + repair + retry. (feature-05)
 private const val MAX_STRUCTURED_OUTPUT_RETRIES = 2
+// /v1/embeddings input bounds (feature-06): cap the batch size and per-item length so one request
+// can't drive an unbounded number of (or arbitrarily long) embeddings. Mirrors the chat path's
+// boundary validation; the 32 MB body cap above is the outer limit, these are the semantic ones.
+private const val EMBEDDINGS_MAX_INPUTS = 64
+private const val EMBEDDINGS_MAX_INPUT_CHARS = 32 * 1024
 
 /** Fixed-window per-IP rate limiter with stale-entry eviction (bounds the tracking map). */
 private class RateLimiter(private val limit: Int, private val windowMs: Long) {
@@ -364,6 +370,40 @@ class RelaisHttpServer(
             val refs = RelaisModelCatalog.curatedModels()
             val fallback = RelaisConfig.modelId(context)
             reply(200, buildModelsResponse(refs, fallback))
+          }
+
+          method == "POST" && path.startsWith("/v1/embeddings") -> {
+            // OpenAI /v1/embeddings. Auth-gated by the shared gate above. The embedder impl ships in a
+            // later feature #6 follow-up (on-device TFLite + HF-auth); until it registers,
+            // RelaisEmbedderProvider.get() is null → honest 501 (no fake/placeholder vectors).
+            val body = JSONObject(readBody(reader, contentLength))
+            val inputs = parseEmbeddingInputs(body)
+            if (inputs == null) {
+              reply(400, buildEmbeddingsError("invalid 'input' (expected a non-empty string or string[])", "invalid_request_error"))
+              return
+            }
+            when (validateEmbeddingInputs(inputs, EMBEDDINGS_MAX_INPUTS, EMBEDDINGS_MAX_INPUT_CHARS)) {
+              EmbeddingValidation.TooMany ->
+                reply(400, buildEmbeddingsError("too many inputs (max $EMBEDDINGS_MAX_INPUTS)", "invalid_request_error"))
+              EmbeddingValidation.TooLong ->
+                reply(400, buildEmbeddingsError("an input exceeds the per-item limit ($EMBEDDINGS_MAX_INPUT_CHARS chars)", "invalid_request_error"))
+              EmbeddingValidation.Ok -> {
+                val embedder = RelaisEmbedderProvider.get()
+                if (embedder == null || !embedder.isAvailable(context)) {
+                  reply(501, buildEmbeddingsError("embeddings model not provisioned", "not_implemented"))
+                } else {
+                  val model = body.optString("model").takeIf { it.isNotBlank() } ?: RelaisConfig.modelId(context)
+                  val vectors = embedder.embed(context, inputs)
+                  // Contract insurance: one vector per input. A misbehaving embedder returning fewer
+                  // would otherwise silently drop entries from the OpenAI response (→ outer catch 500).
+                  check(vectors.size == inputs.size) {
+                    "embedder returned ${vectors.size} vectors for ${inputs.size} inputs"
+                  }
+                  val promptTokens = embedder.countTokens(inputs)
+                  reply(200, buildEmbeddingsResponse(vectors, model, promptTokens))
+                }
+              }
+            }
           }
 
           method == "GET" && path.startsWith("/v1/clientconfig") -> {
@@ -862,6 +902,7 @@ class RelaisHttpServer(
       path.startsWith("/metrics") -> "/metrics"
       path.startsWith("/generate") -> "/generate"
       path.startsWith("/v1/chat/completions") -> "/v1/chat/completions"
+      path.startsWith("/v1/embeddings") -> "/v1/embeddings"
       path.startsWith("/v1/models") -> "/v1/models"
       path.startsWith("/v1/clientconfig") -> "/v1/clientconfig"
       path.startsWith("/v1/sessions") -> "/v1/sessions"
@@ -912,12 +953,14 @@ class RelaisHttpServer(
   private fun reason(status: Int): String =
     when (status) {
       200 -> "OK"
+      400 -> "Bad Request"
       401 -> "Unauthorized"
       404 -> "Not Found"
       413 -> "Payload Too Large"
       429 -> "Too Many Requests"
       431 -> "Request Header Fields Too Large"
       500 -> "Internal Server Error"
+      501 -> "Not Implemented"
       503 -> "Service Unavailable"
       else -> "ERR"
     }
@@ -1077,3 +1120,87 @@ internal fun buildModelsResponse(refs: List<RelaisModelRef>, fallbackId: String)
   }
   return JSONObject().put("object", "list").put("data", data)
 }
+
+// ---------------------------------------------------------------------------
+// OpenAI /v1/embeddings helpers (Feature 06)
+// ---------------------------------------------------------------------------
+
+/** Outcome of bounding the embeddings request inputs (size + per-item length). */
+internal enum class EmbeddingValidation { Ok, TooMany, TooLong }
+
+/**
+ * Extracts the `input` field of an OpenAI embeddings request as a list of non-blank strings, or null
+ * when it is absent/malformed. Accepts either a single string or a string array (the two shapes the
+ * OpenAI spec allows). Returns null — not an empty list — for: missing field, empty array, a blank
+ * single string, or any array element that is not a string. The route maps null → 400.
+ *
+ * Pure (no Context, no Android types) — unit-testable on the JVM ([RelaisEmbeddingsEndpointTest]).
+ */
+internal fun parseEmbeddingInputs(body: JSONObject): List<String>? {
+  if (!body.has("input") || body.isNull("input")) return null
+  val arr = body.optJSONArray("input")
+  if (arr != null) {
+    if (arr.length() == 0) return null
+    val out = ArrayList<String>(arr.length())
+    for (i in 0 until arr.length()) {
+      // optString coerces non-strings (numbers/objects); reject those AND blank elements — OpenAI
+      // 400s an empty-string array member, and an empty token sequence yields a degenerate vector.
+      val raw = arr.get(i)
+      if (raw !is String || raw.isBlank()) return null
+      out.add(raw)
+    }
+    return out
+  }
+  // Single value MUST be a string: body.optString would coerce a bare number/bool (e.g. {"input":42}
+  // -> "42"); OpenAI 400s a non-string scalar, so check the raw type instead of coercing.
+  val raw = body.get("input")
+  return if (raw is String && raw.isNotBlank()) listOf(raw) else null
+}
+
+/**
+ * Bounds the parsed embedding inputs: at most [maxCount] items, each at most [maxItemLength] chars.
+ * Pure — the route maps [EmbeddingValidation.TooMany]/[EmbeddingValidation.TooLong] → 400.
+ */
+internal fun validateEmbeddingInputs(inputs: List<String>, maxCount: Int, maxItemLength: Int): EmbeddingValidation =
+  when {
+    inputs.size > maxCount -> EmbeddingValidation.TooMany
+    inputs.any { it.length > maxItemLength } -> EmbeddingValidation.TooLong
+    else -> EmbeddingValidation.Ok
+  }
+
+/**
+ * Shapes the OpenAI-compatible `/v1/embeddings` success response from already-computed [vectors].
+ * Each data entry is `{object:"embedding", index:i, embedding:[...]}` in input order. The `usage`
+ * block carries `prompt_tokens` + `total_tokens` only (embeddings have no completion tokens), with
+ * `total_tokens == prompt_tokens` per the OpenAI embeddings schema.
+ *
+ * Pure (no Context, no Android types) — unit-testable on the JVM.
+ */
+internal fun buildEmbeddingsResponse(vectors: List<FloatArray>, model: String, promptTokens: Int): JSONObject {
+  val data = JSONArray()
+  vectors.forEachIndexed { i, vec ->
+    val arr = JSONArray()
+    for (v in vec) arr.put(v.toDouble())
+    data.put(
+      JSONObject()
+        .put("object", "embedding")
+        .put("index", i)
+        .put("embedding", arr)
+    )
+  }
+  val usage = JSONObject()
+    .put("prompt_tokens", promptTokens)
+    .put("total_tokens", promptTokens)
+  return JSONObject()
+    .put("object", "list")
+    .put("data", data)
+    .put("model", model)
+    .put("usage", usage)
+}
+
+/**
+ * The OpenAI error envelope `{error:{message,type}}` used by the embeddings route for its 400/501
+ * paths. Pure — unit-testable on the JVM.
+ */
+internal fun buildEmbeddingsError(message: String, type: String): JSONObject =
+  JSONObject().put("error", JSONObject().put("message", message).put("type", type))

@@ -219,6 +219,7 @@ object RelaisMetrics {
     when {
       raw == "/generate" -> "/generate"
       raw == "/v1/chat/completions" -> "/v1/chat/completions"
+      raw == "/v1/embeddings" -> "/v1/embeddings"
       raw == "/v1/models" -> "/v1/models"
       raw == "/v1/clientconfig" -> "/v1/clientconfig"
       raw == "/v1/sessions" -> "/v1/sessions"
