@@ -92,9 +92,11 @@ by `sendMessage`/`sendMessageAsync`/`renderMessageIntoString`.
   0.11.0 — do **not** rely on it for hard guarantees. **Always validate** model output against the
   schema and repair/retry; treat the schema-tool as a high-hit-rate generator, not a guarantee.
 
-## 6. Channels — reasoning / thinking separation `[UNEXPLOITED]`
+## 6. Channels — reasoning / thinking separation `[USED: feature-10a, verified on-device]`
 
-`Channel(channelName, start, end)` + `Message.channels: Map<String,String>` + `ConversationConfig.channels` + `ExperimentalFlags.filterChannelContentFromKvCache`. This is the mechanism for models that emit delimited side-channels (e.g. a `<think>…</think>` reasoning channel or tool channel): define the start/end markers, and optionally keep that content out of the KV cache. **Opportunity:** expose reasoning as an OpenAI-style `reasoning_content`, or strip it from the user-visible answer. Unverified — needs a probe with a channel-emitting model.
+`Message.channels: Map<String,String>` + `Channel(channelName, start, end)` + `ConversationConfig.channels` + `ExperimentalFlags.filterChannelContentFromKvCache`. The mechanism for models that emit delimited side-channels (e.g. a `<think>…</think>` reasoning channel).
+
+**Verified on-device (`ReasoningChannelProbe`, rango/G5/E2B):** Gemma-4 E2B populates a `message.channels["thought"]` stream **only** when `extraContext["enable_thinking"]="true"` is passed to `sendMessageAsync` — NOT by defining a `Channel` or by default. The visible answer (`message.toString()`) stays clean (no `<think>` leakage). Reasoning arrives as **per-token deltas** (concatenate them; one callback ≠ the whole chain), interleaved/parallel with visible deltas in the same callback stream. Baseline (`emptyMap()`, today's `RelaisEngine` default) → `channels` empty, no reasoning. The `enable_thinking` key is a chat-template variable (see §8 extraContext), not a `Channel` definition. Relais exposes this as OpenAI `reasoning_content`, gated by `reasoning_effort` (`RelaisReasoning` / `RelaisEngine.generate(onReasoning=…)`). The inherited gallery chat path already used it (`LlmChatViewModel` sets the key; `LlmChatModelHelper` reads `channels["thought"]`).
 
 ## 7. Utilities
 
@@ -108,21 +110,23 @@ by `sendMessage`/`sendMessageAsync`/`renderMessageIntoString`.
 | Hook | Opportunity | Status |
 |---|---|---|
 | `enableConversationConstrainedDecoding` | Guarantee schema-valid structured output / clean tool args | **see §5 verdict** |
-| `Channel` + `filterChannelContentFromKvCache` | Expose/strip model reasoning (`reasoning_content`) | unverified |
-| `ConversationConfig.extraContext` | Per-request context (RAG) injection without polluting messages | unverified |
+| `message.channels["thought"]` + `extraContext["enable_thinking"]` | Expose model reasoning as `reasoning_content` | **DONE: feature-10a, §6** |
+| `ConversationConfig.extraContext` | Per-request chat-template variables (e.g. `enable_thinking`) | **verified: consumed by the template (§6); a generic "RAG document" slot is NOT how it behaves** |
 | `Session.runPrefill`/`runDecode` | Token-level control; prompt-cache reuse; embeddings-ish pooling experiments | unverified |
 | `SamplerConfig.seed` | Deterministic/reproducible sampling (testing, `seed` passthrough) | available |
-| `BenchmarkInfo` (via `getBenchmarkInfo()` / `enableBenchmark`) | Real prefill/decode tok/s + TTFT in `usage`/metrics vs wall-clock estimate | available |
+| `getBenchmarkInfo()` / `enableBenchmark` | Real prefill/decode tok/s + TTFT + exact token counts on the live path | **DEAD END (0.11.0): see below** |
 | `overwritePromptTemplate` | Support models with broken/missing templates | available |
 | `Capabilities(modelPath)` | Pre-flight model capability checks in the model picker | available |
 | `maxNumImages` (EngineConfig) | Multi-image requests | available |
+
+**Benchmark on the live path is a DEAD END in 0.11.0 (verified, `ReasoningChannelProbe` predecessor / `RelaisBackendBenchmarkTest`).** Setting `ExperimentalFlags.enableBenchmark = true` then calling `conversation.getBenchmarkInfo()` throws `INTERNAL: Benchmark is not enabled. Please make sure the BenchmarkParams is set in the EngineSettings.` — and `javap` on the AAR shows **no public `BenchmarkParams` and no `EngineSettings`** type; `EngineConfig(modelPath, backend, visionBackend, audioBackend, maxNumTokens, maxNumImages, cacheDir)` has no benchmark hook. The only populated `BenchmarkInfo` comes from the standalone `BenchmarkKt.benchmark(modelPath, backend, …)` one-shot, which re-loads the model and so **cannot run on the resident serving engine**. → Real per-request prefill/decode tok/s + TTFT + **exact `prompt_tokens`** are unreachable on the live path; Relais keeps the wall-clock decode estimate and the `x_relais_usage_note: prompt_tokens_estimated` flag. Exact token counts would need a tokenizer or the low-level `Session.runPrefill` count, not this API. (Confirms `RelaisEngine.kt` SPIKE-FINDINGS Q1; the table's prior "available" was wrong — a cautionary case for §-labels, see the `litertlm-native-api-probe-first` learned skill.)
 
 ## 9. How to regenerate / re-verify
 
 ```bash
 scripts/dump-litertlm-api.sh          # prints the full public API of the pinned AAR
 # Re-run the on-device probes after a version bump (rango / E2B):
-#   MultiTurnReplayProbe, ToolCallingProbe, StructuredOutputProbe
+#   MultiTurnReplayProbe, ToolCallingProbe, StructuredOutputProbe, ReasoningChannelProbe
 # in Android/src/app/src/androidTest/java/cc/grepon/relais/
 ```
 When a probe's behavior changes, update the "Verified on-device" claims and the §5/§6 verdicts here.

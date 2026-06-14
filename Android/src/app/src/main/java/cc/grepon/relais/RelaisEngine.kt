@@ -120,6 +120,15 @@ data class RelaisRequest(
   val topP: Double? = null,
   /** Sampling seed for reproducibility. Null = unspecified -> [DEFAULT_SEED]. */
   val seed: Int? = null,
+  /**
+   * When true, request the model's reasoning ("thinking") channel: the engine passes
+   * `extraContext["enable_thinking"]="true"` and captures the separate `message.channels["thought"]`
+   * stream into [RelaisResult.reasoning] (surfaced as OpenAI `reasoning_content`). Derived from the
+   * OpenAI `reasoning_effort` field (absent/"none" -> false). Default false = today's behavior (no
+   * thinking, no latency tax). Honored on the streaming text path only; the tool and
+   * structured-output paths ignore it (v1).
+   */
+  val enableThinking: Boolean = false,
 ) {
   val modalities: RequestModalities
     get() = RequestModalities(hasImage = imagePng != null, hasAudio = audioWav != null)
@@ -157,6 +166,13 @@ data class RelaisResult(
    * dedicated blocking tool branch in [RelaisEngine.generate].
    */
   val toolCalls: List<ParsedToolCall> = emptyList(),
+  /**
+   * Accumulated model reasoning from the `message.channels["thought"]` side-channel, when the request
+   * opted in via [RelaisRequest.enableThinking]. Null when thinking was off or the model emitted no
+   * reasoning. Surfaced as OpenAI `reasoning_content`; NOT included in [completionTokens] (reasoning
+   * tokens are decoded but are not visible-answer tokens).
+   */
+  val reasoning: String? = null,
 )
 
 /**
@@ -328,6 +344,7 @@ object RelaisEngine {
     request: RelaisRequest,
     onToken: ((String) -> Unit)? = null,
     shouldCancel: (() -> Boolean)? = null,
+    onReasoning: ((String) -> Unit)? = null,
   ): RelaisResult {
     RelaisMetrics.incInFlight() // counts both queued (waiting on lock) and running -> queue_depth
     val reqStartNs = System.nanoTime()
@@ -387,21 +404,55 @@ object RelaisEngine {
           // Stream so we can measure decode throughput by wall clock: BenchmarkInfo only populates
           // via the library's benchmark() path, not normal conversations (SPIKE-FINDINGS.md / Q1).
           val sb = StringBuilder()
+          val reasoningSb = StringBuilder()
           var tokens = 0
           var firstTokenNs = 0L
           var lastTokenNs = 0L
           val canceled = AtomicBoolean(false)
           val latch = CountDownLatch(1)
           val error = arrayOfNulls<Throwable>(1)
+          // Request the reasoning channel only when the client opted in (OpenAI reasoning_effort).
+          // "enable_thinking" is the extraContext key the Gemma chat template routes its <think>
+          // content through; the default (off) passes emptyMap() — byte-for-byte the prior behavior.
+          val extraContext =
+            if (request.enableThinking) mapOf("enable_thinking" to "true") else emptyMap()
           conversation.sendMessageAsync(
             Contents.of(contents),
             object : MessageCallback {
               override fun onMessage(message: Message) {
                 val now = System.nanoTime()
+                // Split this callback into its reasoning ("thinking") side-channel and its visible
+                // answer delta. Reasoning is streamed + accumulated separately and is NEVER counted
+                // as a completion token; only when thinking is off-or-absent does this collapse to
+                // "emit the visible delta verbatim" (byte-for-byte the prior behavior).
+                val thoughtDelta = if (request.enableThinking) message.channels["thought"] else null
+                val step =
+                  RelaisReasoning.classifyStreamDelta(request.enableThinking, message.toString(), thoughtDelta)
+
+                step.reasoningToEmit?.let { reasoning ->
+                  reasoningSb.append(reasoning)
+                  if (!canceled.get()) {
+                    try {
+                      onReasoning?.invoke(reasoning)
+                    } catch (t: Throwable) {
+                      canceled.set(true)
+                    }
+                  }
+                }
+
+                val delta = step.visibleToEmit
+                if (delta == null) {
+                  // Reasoning-only callback: no visible token to count/emit. Still honor cooperative
+                  // cancel so a long thinking phase can be thermally truncated / pipe-aborted.
+                  if (shouldCancel?.invoke() == true) canceled.set(true)
+                  return
+                }
+
+                // Decode-throughput clock advances on VISIBLE tokens only — reasoning callbacks must
+                // not stretch the window (they would understate decode_tok_s fed to ThermalGovernor).
                 if (firstTokenNs == 0L) firstTokenNs = now
                 lastTokenNs = now
                 tokens++
-                val delta = message.toString()
                 sb.append(delta)
                 if (canceled.get()) return
                 // Cooperative cancel: thermal-truncate (device-protective) or client disconnect
@@ -426,7 +477,7 @@ object RelaisEngine {
                 latch.countDown()
               }
             },
-            emptyMap(),
+            extraContext,
           )
           if (!latch.await(120, TimeUnit.SECONDS)) error("inference timed out")
           error[0]?.let { throw it }
@@ -434,7 +485,13 @@ object RelaisEngine {
           val tokS = if (decodeSec > 0 && tokens > 1) (tokens - 1) / decodeSec else 0.0
           RelaisMetrics.recordThroughput(tokens, tokS, backend.name)
           ThermalGovernor.onDecodeThroughput(tokS)
-          RelaisResult(text = sb.toString(), backend = backend, decodeTokensPerSec = tokS, completionTokens = tokens)
+          RelaisResult(
+            text = sb.toString(),
+            backend = backend,
+            decodeTokensPerSec = tokS,
+            completionTokens = tokens,
+            reasoning = reasoningSb.toString().takeIf { it.isNotEmpty() },
+          )
         } finally {
           conversation.close()
         }

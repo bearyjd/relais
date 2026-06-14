@@ -419,6 +419,10 @@ class RelaisHttpServer(
 
     if (!stream) {
       val result = RelaisEngine.generate(context, request, shouldCancel = { ThermalGovernor.shouldTruncate() })
+      // reasoning_content (OpenAI/DeepSeek convention) carries the model's thinking channel; present
+      // only when the client opted in via reasoning_effort AND the model emitted reasoning.
+      val assistantMessage = JSONObject().put("role", "assistant").put("content", result.text)
+      result.reasoning?.let { assistantMessage.put("reasoning_content", it) }
       val resp =
         JSONObject()
           .put("id", id)
@@ -428,7 +432,7 @@ class RelaisHttpServer(
           .put("choices", JSONArray().put(
             JSONObject()
               .put("index", 0)
-              .put("message", JSONObject().put("role", "assistant").put("content", result.text))
+              .put("message", assistantMessage)
               .put("finish_reason", "stop")))
           .put("usage", buildUsageObject(request.text, result.completionTokens))
           .put("x_relais_usage_note", "prompt_tokens_estimated")
@@ -447,22 +451,27 @@ class RelaisHttpServer(
           "Connection: close\r\n\r\n").toByteArray()
     )
     out.flush()
-    fun sendChunk(delta: String?, finish: String?) {
+    fun emitDelta(delta: JSONObject, finish: String?) {
       val choice = JSONObject().put("index", 0)
-        .put("delta", if (delta != null) JSONObject().put("content", delta) else JSONObject())
+        .put("delta", delta)
         .put("finish_reason", finish ?: JSONObject.NULL)
       val chunk = JSONObject().put("id", id).put("object", "chat.completion.chunk")
         .put("model", model).put("choices", JSONArray().put(choice))
       out.write("data: $chunk\n\n".toByteArray()); out.flush()
     }
+    fun sendChunk(delta: String?, finish: String?) =
+      emitDelta(if (delta != null) JSONObject().put("content", delta) else JSONObject(), finish)
     try {
       // onToken throwing (broken pipe) and thermal-truncate both cooperatively stop the decode.
-      // Capture result so completionTokens is available for the final usage chunk.
+      // Capture result so completionTokens is available for the final usage chunk. When the client
+      // opted into thinking, reasoning deltas stream first as delta.reasoning_content (OpenAI/DeepSeek
+      // convention) ahead of the visible content deltas.
       val result = RelaisEngine.generate(
         context,
         request,
         onToken = { delta -> sendChunk(delta, null) },
         shouldCancel = { ThermalGovernor.shouldTruncate() },
+        onReasoning = { r -> emitDelta(JSONObject().put("reasoning_content", r), null) },
       )
       // Final chunk: finish_reason="stop" + usage block (always included for client compatibility).
       // OpenAI spec allows usage on the terminal chunk; we always emit it regardless of
@@ -670,8 +679,13 @@ class RelaisHttpServer(
       temperature = optDoubleOrNull(body, "temperature"),
       topP = optDoubleOrNull(body, "top_p"),
       seed = if (body.has("seed") && !body.isNull("seed")) body.optInt("seed") else null,
+      enableThinking = RelaisReasoning.thinkingEnabled(optStringOrNull(body, "reasoning_effort")),
     )
   }
+
+  /** A JSON string field as a nullable String — null when absent/null (so defaults apply). */
+  private fun optStringOrNull(body: JSONObject, key: String): String? =
+    if (body.has(key) && !body.isNull(key)) body.optString(key) else null
 
   /** A JSON number field as a nullable Double — null when absent/null (so engine defaults apply). */
   private fun optDoubleOrNull(body: JSONObject, key: String): Double? =
