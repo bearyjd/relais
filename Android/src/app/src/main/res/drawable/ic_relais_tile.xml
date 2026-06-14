@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Relais QS-tile mark: the broadcast-beacon motif from DESIGN.md — a node dot with two concentric
+     arcs radiating upward. Single-color paths only: Quick Settings tints tile icons by system state
+     (the amber-on-charcoal palette is expressed by the tile's active/inactive state, not the glyph). -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24"
+    android:tint="?android:attr/textColorPrimary">
+    <!-- node dot (the relay) -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M12,17 m-2.6,0 a2.6,2.6 0 1,0 5.2,0 a2.6,2.6 0 1,0 -5.2,0" />
+    <!-- inner arc radiating upward from the node -->
+    <path
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="2"
+        android:strokeLineCap="round"
+        android:fillColor="#00000000"
+        android:pathData="M8.1,13.1 A5.5,5.5 0 0,1 15.9,13.1" />
+    <!-- outer arc -->
+    <path
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="2"
+        android:strokeLineCap="round"
+        android:fillColor="#00000000"
+        android:pathData="M5,10 A9,9 0 0,1 19,10" />
+</vector>

@@ -140,6 +140,19 @@
             android:foregroundServiceType="dataSync"
             android:exported="false" />
 
+        <!-- Quick Settings tile (#2): live node status + one-tap start/stop. Bind is OS-restricted
+             (BIND_QUICK_SETTINGS_TILE), so only the system shade can reach it. -->
+        <service
+            android:name=".tile.RelaisTileService"
+            android:exported="true"
+            android:icon="@drawable/ic_relais_tile"
+            android:label="Relais Node"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+        </service>
+
         <!-- Opt-in only (RelaisConfig.autoStartEnabled, default false) -->
         <receiver
             android:name=".RelaisBootReceiver"
