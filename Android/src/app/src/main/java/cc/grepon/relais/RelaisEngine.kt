@@ -42,6 +42,14 @@ import org.json.JSONObject
 private const val TAG = "RelaisEngine"
 private const val MAX_NUM_TOKENS = 1024
 
+// Default sampler params (used when a request omits them). topK has no OpenAI equivalent, so it is
+// fixed; temperature/top_p/seed mirror the OpenAI request fields. Previous behavior was the hardcoded
+// (64, 0.95, 1.0); these preserve it as the default while letting callers override per request.
+private const val DEFAULT_TOP_K = 64
+private const val DEFAULT_TOP_P = 0.95
+private const val DEFAULT_TEMPERATURE = 1.0
+private const val DEFAULT_SEED = 0
+
 /**
  * Models that initialize cleanly but then SIGSEGV natively on the FIRST inference on Tensor G5
  * (Pixel 10) — a LiteRT-LM model×SoC bug reproduced on litertlm 0.11.0 AND 0.13.1, on both CPU and
@@ -106,9 +114,25 @@ data class RelaisRequest(
   val toolChoice: ToolChoice = ToolChoice.Auto,
   /** Trailing tool-result turn (from a `role:"tool"` run) that drives a tool round-trip. */
   val toolResults: List<ToolResult> = emptyList(),
+  /** OpenAI `temperature` (0.0–2.0). Null = unspecified -> engine default ([DEFAULT_TEMPERATURE]). */
+  val temperature: Double? = null,
+  /** OpenAI `top_p` (0.0–1.0). Null = unspecified -> engine default ([DEFAULT_TOP_P]). */
+  val topP: Double? = null,
+  /** Sampling seed for reproducibility. Null = unspecified -> [DEFAULT_SEED]. */
+  val seed: Int? = null,
 ) {
   val modalities: RequestModalities
     get() = RequestModalities(hasImage = imagePng != null, hasAudio = audioWav != null)
+
+  /** Resolves the per-request [SamplerConfig], clamping to valid ranges and applying defaults. */
+  @OptIn(ExperimentalApi::class)
+  fun samplerConfig(): SamplerConfig =
+    SamplerConfig(
+      topK = DEFAULT_TOP_K,
+      topP = (topP ?: DEFAULT_TOP_P).coerceIn(0.0, 1.0),
+      temperature = (temperature ?: DEFAULT_TEMPERATURE).coerceIn(0.0, 2.0),
+      seed = seed ?: DEFAULT_SEED,
+    )
 }
 
 /** Result of one inference. */
@@ -346,7 +370,7 @@ object RelaisEngine {
         // costs ONE generation, not one per history turn. (The prior replaySend path ran a full
         // generate-and-discard per turn — ~22 s/turn; a 2-exchange history hit the per-turn timeout
         // and 500'd. Validated on rango / Tensor-G5 / E2B: system honored, history recalled, one decode.)
-        val sampler = SamplerConfig(topK = 64, topP = 0.95, temperature = 1.0)
+        val sampler = request.samplerConfig()
         val initialMessages = request.history.mapNotNull { it.toResidentMessage() }
         val conversationConfig =
           if (request.systemPrompt != null) {
@@ -442,7 +466,7 @@ object RelaisEngine {
   ): RelaisResult {
     synchronized(lock) {
       ThermalGovernor.cooldownMs().takeIf { it > 0 }?.let { runCatching { Thread.sleep(it) } }
-      val sampler = SamplerConfig(topK = 64, topP = 0.95, temperature = 1.0)
+      val sampler = request.samplerConfig()
       val providers = request.tools.map { tool(openApiToolOf(it.functionJson)) }
       val initialMessages = request.history.mapNotNull { it.toResidentMessage() }
       val config =
