@@ -60,13 +60,29 @@ object ThermalGovernor {
   @Volatile private var decodeEwma = 0.0
   @Volatile private var decodeSamples = 0
 
+  // Configurable shed thresholds (Feature #10). Default to the historical consts; [register] pushes
+  // the operator-set, already-CLAMPED values from RelaisConfig in. Holding them as injectable fields
+  // (rather than reading RelaisConfig from shouldShed) keeps the hot path Context-free and the
+  // device-safety invariant headlessly testable. The values are pre-clamped, so the throughput floor
+  // is always > 0 and the SEVERE backstop in [shouldShed] is independent of all three.
+  @Volatile private var shedHeadroom = HEADROOM_SHED
+  @Volatile private var decodeFloorTokS = DECODE_FLOOR_TOK_S
+  @Volatile private var moderateCooldownMs = MODERATE_COOLDOWN_MS
+
   fun register(context: Context) {
     if (listener != null) return
     val pm = context.getSystemService(Context.POWER_SERVICE) as PowerManager
     powerManager = pm
+    // Load operator-configured, already-clamped shed thresholds (defaults == the consts).
+    shedHeadroom = RelaisConfig.shedHeadroom(context)
+    decodeFloorTokS = RelaisConfig.decodeFloorTokS(context)
+    moderateCooldownMs = RelaisConfig.moderateCooldownMs(context)
     statusValue = runCatching { pm.currentThermalStatus }.getOrDefault(PowerManager.THERMAL_STATUS_NONE)
     val l = PowerManager.OnThermalStatusChangedListener { status ->
       statusValue = status
+      // Record the transition as a counter event so a transient SEVERE between scrapes isn't lost
+      // (the `relais_thermal_status` gauge only shows the value at scrape time). Feature #10.
+      RelaisMetrics.recordThermalEvent(status)
       Log.i(TAG, "thermal status -> $status")
     }
     runCatching { pm.addThermalStatusListener(executor, l) }
@@ -94,12 +110,14 @@ object ThermalGovernor {
   }
 
   private fun throughputFloorBreached(): Boolean =
-    decodeSamples >= MIN_THROUGHPUT_SAMPLES && decodeEwma in 0.001..DECODE_FLOOR_TOK_S
+    decodeSamples >= MIN_THROUGHPUT_SAMPLES && decodeEwma in 0.001..decodeFloorTokS
 
   /** True when new inference should be rejected with 503 + Retry-After. */
   fun shouldShed(): Boolean {
+    // DEVICE-SAFETY INVARIANT: the SEVERE backstop is hardcoded and FIRST — independent of any
+    // (clamped or not) config value. No threshold setting can make this return false while SEVERE.
     if (statusValue >= PowerManager.THERMAL_STATUS_SEVERE) return true
-    if (headroomOrSentinel() >= HEADROOM_SHED) return true
+    if (headroomOrSentinel() >= shedHeadroom) return true
     if (throughputFloorBreached()) return true
     return false
   }
@@ -108,7 +126,7 @@ object ThermalGovernor {
   fun shouldTruncate(): Boolean = statusValue >= PowerManager.THERMAL_STATUS_CRITICAL
 
   /** Cool-down gap to insert before serving while MODERATE; 0 otherwise. Caller applies it. */
-  fun cooldownMs(): Long = if (statusValue == PowerManager.THERMAL_STATUS_MODERATE) MODERATE_COOLDOWN_MS else 0L
+  fun cooldownMs(): Long = if (statusValue == PowerManager.THERMAL_STATUS_MODERATE) moderateCooldownMs else 0L
 
   /** Base Retry-After seconds for a shed response (HTTP layer adds jitter). */
   fun retryAfterSeconds(): Int =
@@ -134,5 +152,24 @@ object ThermalGovernor {
   /** Test seam: drive the thermal status directly (no real hardware in CI). */
   fun setStatusForTest(value: Int) {
     statusValue = value
+  }
+
+  /**
+   * Test seam: push shed thresholds directly (mirrors what [register] does from RelaisConfig) so the
+   * device-safety invariant can be verified headlessly without a Context. Values are clamped here too
+   * — the floor stays > 0 — so a test can't accidentally model a configuration the production read
+   * path would never produce.
+   */
+  fun setThresholdsForTest(shedHeadroom: Float, decodeFloorTokS: Double, moderateCooldownMs: Long) {
+    this.shedHeadroom = shedHeadroom.coerceIn(0.5f, 1.5f)
+    this.decodeFloorTokS = decodeFloorTokS.coerceIn(0.5, 50.0)
+    this.moderateCooldownMs = moderateCooldownMs.coerceIn(0L, 10_000L)
+  }
+
+  /** Test seam: restore the default (historical-const) thresholds. */
+  fun resetThresholdsForTest() {
+    shedHeadroom = HEADROOM_SHED
+    decodeFloorTokS = DECODE_FLOOR_TOK_S
+    moderateCooldownMs = MODERATE_COOLDOWN_MS
   }
 }

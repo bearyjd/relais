@@ -304,6 +304,10 @@ class RelaisHttpServer(
             if (shedIfHot(::reply)) return         // thermal 503 wins first
             if (rejectIfQueueFull(::reply)) return  // admission 429 second
             // Permit acquired — release in finally so a crash or timeout never leaks a slot.
+            // Per-endpoint latency (Feature #10): time the whole inference branch so EVERY outcome
+            // (success, timeout, error) lands in the /generate-labeled histogram. The global tail
+            // guarantee stays in the engine's finally (recordLatency) — un-double-counted.
+            val inferStartNs = System.nanoTime()
             try {
               val json = JSONObject(readBody(reader, contentLength))
               if (PromptTemplateStore.isUnknown(context, parseTemplateId(json))) {
@@ -332,6 +336,7 @@ class RelaisHttpServer(
                   .put("decode_tok_s", result.decodeTokensPerSec),
               )
             } finally {
+              RelaisMetrics.recordEndpointLatency("/generate", (System.nanoTime() - inferStartNs) / 1e9)
               admissionGate.release()
             }
           }
@@ -347,9 +352,13 @@ class RelaisHttpServer(
             if (rejectIfQueueFull(::reply)) return  // admission 429 second (before SSE 200 header)
             // Permit acquired — release in finally; handleOpenAi may commit the SSE 200 header
             // before returning, so post-commit errors are handled inside handleOpenAi itself.
+            // Per-endpoint latency (Feature #10): time the whole chat-completions branch, mirroring
+            // /generate, so its p95 separates from /generate's in the labeled histogram.
+            val inferStartNs = System.nanoTime()
             try {
               handleOpenAi(sock, JSONObject(readBody(reader, contentLength)))
             } finally {
+              RelaisMetrics.recordEndpointLatency("/v1/chat/completions", (System.nanoTime() - inferStartNs) / 1e9)
               admissionGate.release()
             }
           }
