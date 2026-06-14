@@ -41,6 +41,7 @@ object RelaisConfig {
   private const val KEY_SHED_HEADROOM = "shed_headroom"
   private const val KEY_DECODE_FLOOR_TOK_S = "decode_floor_tok_s"
   private const val KEY_MODERATE_COOLDOWN_MS = "moderate_cooldown_ms"
+  private const val KEY_TILE_TEMPLATE_ID = "tile_canned_template_id"
 
   // Operational shed-threshold defaults + HARD CLAMP bands (Feature #10). Defaults equal the
   // ThermalGovernor consts these replace. Clamps applied on BOTH read and write so a pre-existing
@@ -290,5 +291,21 @@ object RelaisConfig {
     prefs(context).edit()
       .putLong(KEY_MODERATE_COOLDOWN_MS, value.coerceIn(COOLDOWN_MIN, COOLDOWN_MAX))
       .apply()
+  }
+
+  /**
+   * Optional canned-prompt template id run on a QS-tile tap (Feature #2). Null (the default) =
+   * toggle-only: a tap just starts/stops the node and never triggers inference. A blank stored value
+   * decodes to null so a cleared field can't enqueue an empty prompt. The tile gates the actual run
+   * on engine readiness (never cold-starts) — this is only which template to use when it does run.
+   */
+  fun tileCannedTemplateId(context: Context): String? =
+    prefs(context).getString(KEY_TILE_TEMPLATE_ID, null)?.takeIf { it.isNotBlank() }
+
+  fun setTileCannedTemplateId(context: Context, id: String?) {
+    val edit = prefs(context).edit()
+    val clean = id?.takeIf { it.isNotBlank() }
+    if (clean == null) edit.remove(KEY_TILE_TEMPLATE_ID) else edit.putString(KEY_TILE_TEMPLATE_ID, clean)
+    edit.apply()
   }
 }
