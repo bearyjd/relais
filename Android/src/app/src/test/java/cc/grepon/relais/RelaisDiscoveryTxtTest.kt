@@ -1,0 +1,98 @@
+/*
+ * Copyright (C) 2026 Entrevoix / grepon.cc
+ *
+ * This file is part of Relais.
+ *
+ * Relais is free software: you can redistribute it and/or modify it under the
+ * terms of the GNU Affero General Public License as published by the Free
+ * Software Foundation, either version 3 of the License, or (at your option) any
+ * later version.
+ *
+ * Relais is distributed in the hope that it will be useful, but WITHOUT ANY
+ * WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR
+ * A PARTICULAR PURPOSE. See the GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License along
+ * with Relais. If not, see <https://www.gnu.org/licenses/>.
+ */
+
+package cc.grepon.relais
+
+import cc.grepon.relais.RelaisClientConfig.Capabilities
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
+import org.junit.Test
+
+/**
+ * Hermetic JVM tests for the mDNS TXT attribute map that [RelaisDiscovery] advertises.
+ *
+ * `NsdServiceInfo` is an Android type that can't be instantiated in a plain JVM unit test, so we
+ * test the pure source of the TXT attributes — [RelaisClientConfig.buildDiscoveryTxt] — which is the
+ * exact map [RelaisDiscovery.register]/`updateModel` iterate into `setAttribute(...)`. This pins the
+ * secret-leakage invariant and the worst-case length cap at the boundary that actually produces the
+ * broadcast values.
+ */
+class RelaisDiscoveryTxtTest {
+
+  private val sentinelKey = "SENTINEL_SECRET_abc123def456_DO_NOT_LEAK"
+
+  @Test
+  fun `txt attribute keys are exactly the advertised routing set`() {
+    val txt = RelaisClientConfig.buildDiscoveryTxt(
+      modelId = "litert-community/gemma-4-E4B-it",
+      version = "1.0.15",
+      httpsPort = 8443,
+      caps = Capabilities(multimodal = true, tools = true, reasoning = true),
+    )
+    assertEquals(
+      setOf("model", "version", "https", "api", "path", "auth", "caps"),
+      txt.keys,
+    )
+  }
+
+  @Test
+  fun `no txt value leaks the api key`() {
+    // buildDiscoveryTxt has no apiKey parameter — there is no path for the key to enter. Scan all
+    // values anyway so a future signature change that threads a secret in is caught immediately.
+    val txt = RelaisClientConfig.buildDiscoveryTxt(
+      modelId = "litert-community/gemma-4-E4B-it",
+      version = "1.0.15",
+      httpsPort = 8443,
+      caps = Capabilities(multimodal = false, tools = true, reasoning = true),
+    )
+    txt.values.forEach { v ->
+      assertFalse("no TXT value may equal the api key", v == sentinelKey)
+      assertFalse("no TXT value may contain the api key", v.contains(sentinelKey))
+    }
+  }
+
+  @Test
+  fun `caps format matches the enabled capabilities`() {
+    val textOnly = RelaisClientConfig.buildDiscoveryTxt(
+      "m", "v", 8443, Capabilities(multimodal = false, tools = true, reasoning = true),
+    )
+    assertEquals("tools,reasoning", textOnly["caps"])
+
+    val mm = RelaisClientConfig.buildDiscoveryTxt(
+      "m", "v", 8443, Capabilities(multimodal = true, tools = true, reasoning = true),
+    )
+    assertEquals("multimodal,tools,reasoning", mm["caps"])
+  }
+
+  @Test
+  fun `worst-case long model id is capped so the txt record stays bounded`() {
+    val longId = "litert-community/" + "z".repeat(500)
+    val txt = RelaisClientConfig.buildDiscoveryTxt(
+      longId, "1.0.15", 8443, Capabilities(multimodal = true, tools = true, reasoning = true),
+    )
+    assertTrue(
+      "every TXT value must be within MAX_TXT_VALUE_BYTES",
+      txt.values.all { it.toByteArray(Charsets.UTF_8).size <= RelaisClientConfig.MAX_TXT_VALUE_BYTES },
+    )
+    assertTrue(
+      "the whole TXT record must stay well under the 255-byte DNS-SD ceiling",
+      txt.entries.sumOf { it.key.toByteArray(Charsets.UTF_8).size + it.value.toByteArray(Charsets.UTF_8).size } < 255,
+    )
+  }
+}

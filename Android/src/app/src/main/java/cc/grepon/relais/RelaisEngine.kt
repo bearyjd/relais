@@ -228,6 +228,17 @@ object RelaisEngine {
   @Volatile var lastInitFailed: Boolean = false
 
   /**
+   * True iff the resident engine initialized with the FULL multimodal config (vision+audio
+   * encoders). False on the text-only fallback path (model exposes no image/audio encoder, e.g.
+   * Qwen3) and before any successful init. Read by [RelaisDiscovery] (mDNS `caps`) and the
+   * `/v1/clientconfig` endpoint to advertise the model's true modality. Set truthfully in
+   * [buildResidentEngine] — never assumed.
+   */
+  @Volatile
+  var isMultimodal: Boolean = false
+    private set
+
+  /**
    * Legacy hardcoded model location from the spike (manually side-loaded; see SPIKE-FINDINGS.md).
    * Now only a fallback — the node self-provisions to [Model.getPath]'s layout via
    * [RelaisModelProvisioner], and [ensureInitialized] defaults to that resolved path.
@@ -294,7 +305,10 @@ object RelaisEngine {
         maxNumTokens = MAX_NUM_TOKENS,
         cacheDir = cacheDir,
       )
-    buildIfModelAccepts(multimodal, "multimodal")?.let { return it }
+    buildIfModelAccepts(multimodal, "multimodal")?.let {
+      isMultimodal = true // full multimodal config is the one that initialized
+      return it
+    }
     Log.i(TAG, "Model has no image/audio encoder; rebuilding a text-only engine")
     val textOnly =
       EngineConfig(
@@ -303,6 +317,7 @@ object RelaisEngine {
         maxNumTokens = MAX_NUM_TOKENS,
         cacheDir = cacheDir,
       )
+    isMultimodal = false // text-only fallback: model exposes no image/audio encoder
     return buildIfModelAccepts(textOnly, "text-only")
       ?: error("Engine init failed for $modelPath")
   }

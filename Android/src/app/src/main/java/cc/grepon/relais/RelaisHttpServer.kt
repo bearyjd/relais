@@ -29,7 +29,9 @@ import java.io.File
 import java.io.InputStreamReader
 import java.io.OutputStream
 import java.math.BigInteger
+import java.net.Inet4Address
 import java.net.InetSocketAddress
+import java.net.NetworkInterface
 import java.net.ServerSocket
 import java.security.KeyPair
 import java.security.KeyPairGenerator
@@ -266,6 +268,11 @@ class RelaisHttpServer(
             // security headers added via extraHeaders (CSP no script-src, nosniff, X-Frame DENY).
             RelaisMetrics.recordRequest(endpoint, 200)
             val metricsJson = RelaisMetrics.renderJson(context)
+            val dashCaps = RelaisClientConfig.Capabilities(
+              multimodal = RelaisEngine.isMultimodal,
+              tools = true,
+              reasoning = true,
+            )
             val dashStatus = assembleDashboardStatus(
               engineReady = RelaisEngine.isReady,
               startupInProgress = RelaisEngine.startupInProgress,
@@ -277,6 +284,11 @@ class RelaisHttpServer(
               errorsTotal = metricsJson.optLong("errors_total", 0L),
               shedTotal = metricsJson.optLong("shed_total", 0L),
               recentRequests = RelaisMetrics.recentRequests(),
+              // Mask the key for the HTML view — the raw key is only ever returned by the
+              // bearer-gated /v1/clientconfig endpoint, never rendered into the dashboard page.
+              baseUrl = "https://${localLanIp(sock)}:8443/v1",
+              apiKeyMasked = maskApiKey(RelaisConfig.apiKey(context)),
+              capabilities = dashCaps.toCapsString(),
             )
             val html = renderDashboardHtml(dashStatus)
             respondText(
@@ -345,6 +357,29 @@ class RelaisHttpServer(
             val refs = RelaisModelCatalog.curatedModels()
             val fallback = RelaisConfig.modelId(context)
             reply(200, buildModelsResponse(refs, fallback))
+          }
+
+          method == "GET" && path.startsWith("/v1/clientconfig") -> {
+            // Bearer-gated (the shared auth gate above already enforced the key), so this is the ONE
+            // surface that may carry the raw API key — it builds paste-ready Open WebUI / Continue.dev
+            // / Aider configs for the LAN HTTPS base URL. IP comes from the accepting socket's local
+            // address (the real bound interface); lanIpv4() is a defensive fallback only.
+            val ip = localLanIp(sock)
+            val baseUrl = "https://$ip:8443/v1"
+            val caps = RelaisClientConfig.Capabilities(
+              multimodal = RelaisEngine.isMultimodal,
+              tools = true,
+              reasoning = true,
+            )
+            reply(
+              200,
+              RelaisClientConfig.buildClientConfigJson(
+                baseUrl = baseUrl,
+                apiKey = RelaisConfig.apiKey(context),
+                modelId = RelaisConfig.modelId(context),
+                caps = caps,
+              ),
+            )
           }
 
           method == "POST" && path.startsWith("/v1/chat/completions") -> {
@@ -742,8 +777,23 @@ class RelaisHttpServer(
       path.startsWith("/generate") -> "/generate"
       path.startsWith("/v1/chat/completions") -> "/v1/chat/completions"
       path.startsWith("/v1/models") -> "/v1/models"
+      path.startsWith("/v1/clientconfig") -> "/v1/clientconfig"
       else -> "other"
     }
+
+  /**
+   * The LAN IPv4 to advertise in the `/v1/clientconfig` base URL. Prefers the accepting socket's
+   * local address (the exact interface this connection arrived on — the most accurate value for the
+   * URL the client should call back). Falls back to [lanIpv4] only if that address is missing,
+   * loopback, a wildcard, or non-IPv4 (e.g. the HTTPS listener bound to 0.0.0.0).
+   */
+  private fun localLanIp(sock: java.net.Socket): String {
+    val local = sock.localAddress
+    if (local is Inet4Address && !local.isLoopbackAddress && !local.isAnyLocalAddress) {
+      local.hostAddress?.let { return it }
+    }
+    return lanIpv4()
+  }
 
   private fun authorized(header: String?): Boolean {
     val token = header?.removePrefix("Bearer ")?.trim() ?: return false
@@ -886,6 +936,23 @@ internal fun buildUsageObject(promptText: String, completionTokens: Int): org.js
     .put("completion_tokens", completionTokens)
     .put("total_tokens", promptTokens + completionTokens)
 }
+
+/**
+ * Best-effort LAN IPv4 (prefers wlan), used only as a fallback when the accepting socket's local
+ * address is unavailable/loopback/wildcard. Mirrors RelaisControlActivity's display helper, kept
+ * small + duplicated here so the server has no UI dependency. Returns "0.0.0.0" if nothing resolves.
+ */
+private fun lanIpv4(): String =
+  runCatching {
+    val nis = NetworkInterface.getNetworkInterfaces().toList().filter { it.isUp && !it.isLoopback }
+    val ordered = nis.sortedByDescending { it.name.startsWith("wlan") }
+    for (ni in ordered) {
+      for (addr in ni.inetAddresses) {
+        if (addr is Inet4Address && !addr.isLoopbackAddress) return@runCatching addr.hostAddress ?: continue
+      }
+    }
+    "0.0.0.0"
+  }.getOrDefault("0.0.0.0")
 
 // Stable epoch for the "created" field required by strict OpenAI clients (e.g. older openai-python).
 // A fixed constant keeps buildModelsResponse pure and deterministic — no System.currentTimeMillis().

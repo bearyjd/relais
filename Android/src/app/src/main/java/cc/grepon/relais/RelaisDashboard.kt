@@ -45,7 +45,23 @@ data class DashboardStatus(
   val errorsTotal: Long,
   val shedTotal: Long,
   val recentRequests: List<RequestLogEntry>,
+  /** LAN HTTPS base URL clients connect to, e.g. "https://192.168.1.42:8443/v1". */
+  val baseUrl: String,
+  /** API key MASKED for display (first/last 4 chars) — the raw key is NEVER rendered. */
+  val apiKeyMasked: String,
+  /** Comma-joined enabled capability names (e.g. "tools,reasoning" or "multimodal,tools,reasoning"). */
+  val capabilities: String,
 )
+
+/**
+ * Masks a secret for display: shows the first and last 4 characters with the middle elided. Short
+ * keys (<= 8 chars) are fully masked (all asterisks) so the masking never reveals most of a short
+ * key. Pure; the raw key must never reach the rendered HTML — only this masked form does.
+ */
+fun maskApiKey(key: String): String {
+  if (key.length <= 8) return "*".repeat(key.length)
+  return key.take(4) + "…" + key.takeLast(4)
+}
 
 /**
  * Pure assembler: maps raw status inputs to the [DashboardStatus] render model.
@@ -68,6 +84,9 @@ fun assembleDashboardStatus(
   errorsTotal: Long,
   shedTotal: Long,
   recentRequests: List<RequestLogEntry>,
+  baseUrl: String,
+  apiKeyMasked: String,
+  capabilities: String,
 ): DashboardStatus {
   val live = engineReady
   val statusLabel = when {
@@ -86,6 +105,9 @@ fun assembleDashboardStatus(
     errorsTotal = errorsTotal,
     shedTotal = shedTotal,
     recentRequests = recentRequests,
+    baseUrl = baseUrl,
+    apiKeyMasked = apiKeyMasked,
+    capabilities = capabilities,
   )
 }
 
@@ -259,6 +281,29 @@ tr:last-child td { border-bottom: none; }
     <tr>
       <td class="label">shed total</td>
       <td class="value ${if (status.shedTotal > 0L) "warn" else ""}">${status.shedTotal}</td>
+    </tr>
+  </table>
+</div>
+
+<div class="panel">
+  <div class="panel-title">Client Config</div>
+  <table>
+    <tr>
+      <td class="label">base url</td>
+      <td class="value">${escapeHtml(status.baseUrl)}</td>
+    </tr>
+    <tr>
+      <td class="label">api key</td>
+      <td class="value muted">${escapeHtml(status.apiKeyMasked)}</td>
+    </tr>
+    <tr>
+      <td class="label">capabilities</td>
+      <td class="value">${escapeHtml(status.capabilities)}</td>
+    </tr>
+    <tr>
+      <td class="label" colspan="2" style="color:#8A8780;font-size:11px;line-height:1.5">${escapeHtml(
+        "GET /v1/clientconfig (with your bearer key) for paste-ready Open WebUI / Continue.dev / Aider configs.",
+      )}</td>
     </tr>
   </table>
 </div>

@@ -55,6 +55,9 @@ class RelaisDashboardTest {
     errorsTotal = 0L,
     shedTotal = 0L,
     recentRequests = sampleRequests,
+    baseUrl = "https://192.168.1.42:8443/v1",
+    apiKeyMasked = "abcd…wxyz",
+    capabilities = "multimodal,tools,reasoning",
   )
 
   private fun startingStatus() = assembleDashboardStatus(
@@ -68,6 +71,9 @@ class RelaisDashboardTest {
     errorsTotal = 0L,
     shedTotal = 0L,
     recentRequests = emptyList(),
+    baseUrl = "https://192.168.1.42:8443/v1",
+    apiKeyMasked = "abcd…wxyz",
+    capabilities = "tools,reasoning",
   )
 
   private fun offlineStatus() = assembleDashboardStatus(
@@ -81,6 +87,9 @@ class RelaisDashboardTest {
     errorsTotal = 0L,
     shedTotal = 0L,
     recentRequests = emptyList(),
+    baseUrl = "https://192.168.1.42:8443/v1",
+    apiKeyMasked = "abcd…wxyz",
+    capabilities = "tools,reasoning",
   )
 
   // ---------------------------------------------------------------------------
@@ -122,6 +131,9 @@ class RelaisDashboardTest {
       errorsTotal = 0L,
       shedTotal = 0L,
       recentRequests = emptyList(),
+      baseUrl = "https://192.168.1.42:8443/v1",
+      apiKeyMasked = "abcd…wxyz",
+      capabilities = "tools,reasoning",
     )
     assertEquals("LIVE", s.statusLabel)
     assertTrue(s.live)
@@ -167,6 +179,9 @@ class RelaisDashboardTest {
       errorsTotal = 4L,
       shedTotal = 1L,
       recentRequests = sampleRequests,
+      baseUrl = "https://10.0.0.5:8443/v1",
+      apiKeyMasked = "1234…5678",
+      capabilities = "tools,reasoning",
     )
     assertEquals(7.77, s.decodeTokensPerSec, 0.001)
     assertEquals("litert-community/test-model", s.currentModelId)
@@ -174,6 +189,9 @@ class RelaisDashboardTest {
     assertEquals(2, s.queueDepth)
     assertEquals(4L, s.errorsTotal)
     assertEquals(1L, s.shedTotal)
+    assertEquals("https://10.0.0.5:8443/v1", s.baseUrl)
+    assertEquals("1234…5678", s.apiKeyMasked)
+    assertEquals("tools,reasoning", s.capabilities)
     assertEquals(2, s.recentRequests.size)
     assertEquals("/v1/chat/completions", s.recentRequests[0].endpoint)
     assertEquals(200, s.recentRequests[0].status)
@@ -188,6 +206,7 @@ class RelaisDashboardTest {
       engineReady = true, startupInProgress = false, thermalStatus = 2,
       decodeTokensPerSec = 0.0, currentModelId = "x", uptimeSeconds = 0.0,
       queueDepth = 0, errorsTotal = 0L, shedTotal = 0L, recentRequests = emptyList(),
+      baseUrl = "https://192.168.1.42:8443/v1", apiKeyMasked = "abcd…wxyz", capabilities = "tools,reasoning",
     )
     assertEquals("MODERATE", s.thermalLabel)
   }
@@ -304,6 +323,9 @@ class RelaisDashboardTest {
       recentRequests = listOf(
         RequestLogEntry("""<script>evil()</script>""", 200, 1L),
       ),
+      baseUrl = """https://x"/><script>alert(2)</script>:8443/v1""",
+      apiKeyMasked = """ab<script>cd""",
+      capabilities = """<script>caps()</script>""",
     )
     val html = renderDashboardHtml(maliciousStatus)
     assertFalse("XSS: <script must not appear in rendered output", html.contains("<script"))
@@ -346,6 +368,9 @@ class RelaisDashboardTest {
         RequestLogEntry("/v1/chat/completions", 429, 5L),
         RequestLogEntry("/v1/chat/completions", 200, 8L),
       ),
+      baseUrl = "https://192.168.1.42:8443/v1",
+      apiKeyMasked = "abcd…wxyz",
+      capabilities = "tools,reasoning",
     )
     val html = renderDashboardHtml(status)
 
@@ -372,5 +397,62 @@ class RelaisDashboardTest {
     assertTrue("200 status text must appear in rendered body", bodyRegion.contains(">200<"))
     assertFalse("200 cell must not have stop class", bodyRegion.contains("""class="value stop">200"""))
     assertFalse("200 cell must not have warn class", bodyRegion.contains("""class="value warn">200"""))
+  }
+
+  // ---------------------------------------------------------------------------
+  // 7. CLIENT CONFIG panel (Feature #11) — base URL, masked key, caps, hint
+  // ---------------------------------------------------------------------------
+
+  @Test
+  fun `renderDashboardHtml contains the CLIENT CONFIG panel with base url and capabilities`() {
+    val html = renderDashboardHtml(liveStatus())
+    assertTrue("CLIENT CONFIG panel title must appear", html.contains("Client Config"))
+    assertTrue("base url must appear", html.contains("https://192.168.1.42:8443/v1"))
+    assertTrue("capabilities must appear", html.contains("multimodal,tools,reasoning"))
+    assertTrue(
+      "hint must point to GET /v1/clientconfig",
+      html.contains("/v1/clientconfig"),
+    )
+  }
+
+  @Test
+  fun `renderDashboardHtml renders the masked key and never a raw key`() {
+    // The dashboard is fed a MASKED key (assembler does the masking at the call site). Confirm the
+    // masked form renders and that a raw-looking sentinel key never reaches the HTML.
+    val rawSentinel = "deadbeefcafef00d1234567890abcdef"
+    val status = assembleDashboardStatus(
+      engineReady = true,
+      startupInProgress = false,
+      thermalStatus = 0,
+      decodeTokensPerSec = 1.0,
+      currentModelId = "litert-community/test",
+      uptimeSeconds = 0.0,
+      queueDepth = 0,
+      errorsTotal = 0L,
+      shedTotal = 0L,
+      recentRequests = emptyList(),
+      baseUrl = "https://192.168.1.42:8443/v1",
+      apiKeyMasked = maskApiKey(rawSentinel),
+      capabilities = "tools,reasoning",
+    )
+    val html = renderDashboardHtml(status)
+    assertFalse("raw API key must never appear in the dashboard HTML", html.contains(rawSentinel))
+    assertTrue("masked key form must appear", html.contains(maskApiKey(rawSentinel)))
+    assertFalse("page must remain scriptless", html.contains("<script"))
+  }
+
+  @Test
+  fun `maskApiKey shows first and last four characters of a long key`() {
+    val masked = maskApiKey("deadbeefcafef00d1234567890abcdef")
+    assertTrue("must start with first 4 chars", masked.startsWith("dead"))
+    assertTrue("must end with last 4 chars", masked.endsWith("cdef"))
+    assertFalse("must not contain the full middle", masked.contains("cafef00d"))
+  }
+
+  @Test
+  fun `maskApiKey fully masks a short key`() {
+    assertEquals("********", maskApiKey("12345678"))
+    assertEquals("***", maskApiKey("abc"))
+    assertEquals("", maskApiKey(""))
   }
 }
