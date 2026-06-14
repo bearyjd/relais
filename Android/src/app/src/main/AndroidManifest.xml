@@ -134,6 +134,18 @@
             </intent-filter>
         </activity>
 
+        <!-- In-app prompt-template editor (#12). Internal screen launched only from the control
+             panel — not exported, no launcher icon. Up-navigates to RelaisControlActivity. -->
+        <activity
+            android:name="cc.grepon.relais.templates.PromptTemplateEditorActivity"
+            android:exported="false"
+            android:label="Prompt Templates"
+            android:parentActivityName=".RelaisControlActivity">
+            <meta-data
+                android:name="android.support.PARENT_ACTIVITY"
+                android:value="cc.grepon.relais.RelaisControlActivity" />
+        </activity>
+
         <!-- Relais node: headless resident multimodal LLM + LAN endpoint -->
         <service
             android:name=".RelaisNodeService"

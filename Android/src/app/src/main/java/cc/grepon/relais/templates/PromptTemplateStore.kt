@@ -35,8 +35,10 @@ object PromptTemplateStore {
   private const val TAG = "PromptTemplateStore"
   private const val FILE = "relais_templates.json"
   private const val MAX_TEMPLATES = 64
-  private const val MAX_NAME = 80
-  private const val MAX_SYSTEM = 8_192 // bounds file size + per-request prompt growth
+  // Content caps are `internal` so the in-app editor's pure logic ([TemplateEditorLogic]) validates
+  // against the same numbers the store enforces — one source of truth, no drift.
+  internal const val MAX_NAME = 80
+  internal const val MAX_SYSTEM = 8_192 // bounds file size + per-request prompt growth
 
   internal val BUILTINS = listOf(
     PromptTemplate("default", "Default", "", builtin = true),
@@ -53,6 +55,9 @@ object PromptTemplateStore {
       "Translate the user's message into natural French. Output only the translation.", builtin = true,
     ),
   )
+
+  /** How many user templates fit alongside the always-present built-ins (the editor's create cap). */
+  internal val CUSTOM_CAP = MAX_TEMPLATES - BUILTINS.size
 
   @Volatile private var cache: List<PromptTemplate>? = null
   private val lock = Any()

@@ -79,6 +79,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import cc.grepon.relais.templates.PromptTemplateEditorActivity
 import java.net.Inet4Address
 import java.net.NetworkInterface
 import kotlinx.coroutines.delay
@@ -285,6 +286,11 @@ class RelaisControlActivity : ComponentActivity() {
                 },
                 onDismiss = { showModelSheet = false },
               )
+            }
+
+            Divider()
+            ActionLink("PROMPT TEMPLATES ›") {
+              ctx.startActivity(Intent(ctx, PromptTemplateEditorActivity::class.java))
             }
 
             Spacer(Modifier.height(4.dp))
