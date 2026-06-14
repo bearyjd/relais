@@ -55,4 +55,14 @@ class TemplatePrecedenceTest {
   @Test fun `blank explicit is ignored in prepend`() {
     assertEquals("PERSONA", resolveSystemPrompt("  ", tmpl("PERSONA"), TemplateMode.PREPEND))
   }
+
+  @Test fun `empty-string system with no template is normalized to null`() {
+    // A present-but-empty system message yields no system instruction (intentional, documented).
+    assertNull(resolveSystemPrompt("", null, TemplateMode.PREPEND))
+    assertNull(resolveSystemPrompt("", null, TemplateMode.REPLACE))
+  }
+
+  @Test fun `empty-string system still takes the template in prepend`() {
+    assertEquals("PERSONA", resolveSystemPrompt("", tmpl("PERSONA"), TemplateMode.PREPEND))
+  }
 }

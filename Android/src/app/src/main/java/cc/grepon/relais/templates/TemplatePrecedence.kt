@@ -21,7 +21,9 @@ enum class TemplateMode { PREPEND, REPLACE }
  * Resolves the effective system prompt. PREPEND (default) stacks the template persona before an
  * explicit system message ("persona + caller refinement"); REPLACE treats the template only as a
  * fallback when the request has no explicit system. Returns null only when both are blank/absent (the
- * engine then uses its own default), so a request that sends neither is byte-for-byte unchanged.
+ * engine then uses its own default), so a request that sends neither is byte-for-byte unchanged. A
+ * present-but-blank `system` message is normalized to "no system instruction" (intentional, benign —
+ * previously it produced an empty instruction).
  */
 fun resolveSystemPrompt(
   explicitSystem: String?,

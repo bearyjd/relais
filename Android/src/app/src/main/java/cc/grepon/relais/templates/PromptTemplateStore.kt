@@ -21,10 +21,15 @@ import org.json.JSONArray
  * Canonical, user-editable prompt-template library. Static `object` accessed with a [Context] (the
  * node-layer idiom). Persists a JSON array to `filesDir/relais_templates.json`; seeds built-ins on
  * first run and always re-merges them so a corrupt/edited file can never strip the default personas.
- * Bounded ([MAX_TEMPLATES]/[MAX_SYSTEM]) to cap file size and per-request prompt growth (DoS).
+ * Bounded ([MAX_TEMPLATES] count, [MAX_SYSTEM]/[MAX_NAME] content) on BOTH the write ([upsert]) and the
+ * read ([load]) paths, so neither the API nor a hand-edited file can grow a per-request prompt past
+ * the cap (DoS guard).
  *
- * The shared store consumed by the API (`/v1/chat/completions`, `/generate`) and by tile/widget via
- * [WorkflowRegistry]. Single-process, so the in-memory cache is coherent across surfaces.
+ * Read today by the API (`/v1/chat/completions`, `/generate`). [WorkflowRegistry] is the façade the
+ * PLANNED tile (#2) / widget (#3) / NFC (#15) surfaces will use — not yet on this branch. [upsert] /
+ * [delete] back the deferred in-app editor; until that UI lands, only the seeded built-ins are
+ * reachable to end users (custom templates are still createable via these APIs + fully tested).
+ * Single-process, so the in-memory cache is coherent across surfaces.
  */
 object PromptTemplateStore {
   private const val TAG = "PromptTemplateStore"
@@ -108,12 +113,26 @@ object PromptTemplateStore {
       Log.e(TAG, "templates file unreadable; reseeding built-ins", it)
       emptyList()
     }
-    // Built-ins are authoritative and always present; a persisted/tampered entry can't override a
-    // built-in id, but custom entries are preserved.
-    val byId = LinkedHashMap<String, PromptTemplate>()
-    BUILTINS.forEach { byId[it.id] = it }
-    parsed.forEach { if (BUILTINS.none { b -> b.id == it.id }) byId[it.id] = it }
-    return byId.values.toList().take(MAX_TEMPLATES)
+    // Built-ins are authoritative and always present (a persisted/tampered entry can't override a
+    // built-in id). Custom entries are preserved, de-duped, content-bounded on the READ path too — so
+    // a hand-edited file cannot smuggle an oversized system/name past the DoS caps — and limited to
+    // the remaining budget (drops are logged, never silent).
+    val builtinIds = BUILTINS.mapTo(HashSet()) { it.id }
+    val customs = parsed
+      .filterNot { it.id in builtinIds }
+      .distinctBy { it.id }
+      .map {
+        it.copy(
+          name = it.name.take(MAX_NAME).ifBlank { it.id },
+          system = it.system.take(MAX_SYSTEM),
+          builtin = false,
+        )
+      }
+    val customCap = MAX_TEMPLATES - BUILTINS.size
+    if (customs.size > customCap) {
+      Log.w(TAG, "dropping ${customs.size - customCap} template(s) over the custom cap ($customCap)")
+    }
+    return BUILTINS + customs.take(customCap)
   }
 
   private fun persist(ctx: Context, list: List<PromptTemplate>) {

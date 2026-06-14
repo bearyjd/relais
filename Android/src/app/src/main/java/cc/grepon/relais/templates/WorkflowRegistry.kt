@@ -15,9 +15,9 @@ package cc.grepon.relais.templates
 import android.content.Context
 
 /**
- * Shared-infra façade over [PromptTemplateStore] under the name the QS tile (#2), widget (#3), and
- * NFC workflows (#15) reference for their canned-prompt lists — keeping those callers decoupled from
- * the store's internals.
+ * Shared-infra façade over [PromptTemplateStore] under the name the PLANNED QS tile (#2), widget (#3),
+ * and NFC workflows (#15) will reference for their canned-prompt lists — keeping those (not-yet-landed)
+ * callers decoupled from the store's internals.
  */
 object WorkflowRegistry {
   fun templates(context: Context): List<PromptTemplate> = PromptTemplateStore.all(context)

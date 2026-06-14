@@ -90,4 +90,16 @@ class PromptTemplateStoreTest {
     val len = PromptTemplateStore.resolve(ctx, "big")?.system?.length ?: 0
     assertTrue("system should be capped, was $len", len in 1..8_192)
   }
+
+  @Test fun `read path bounds an oversized system from a hand-edited file`() {
+    // Bypasses upsert: write the file directly, as a tampered/restored file would. The DoS cap must
+    // still hold on load.
+    val arr = org.json.JSONArray().put(
+      org.json.JSONObject().put("id", "huge").put("name", "Huge").put("system", "x".repeat(20_000)),
+    )
+    File(ctx.filesDir, "relais_templates.json").writeText(arr.toString())
+    PromptTemplateStore.resetCacheForTest()
+    val len = PromptTemplateStore.resolve(ctx, "huge")?.system?.length ?: 0
+    assertTrue("read-path system should be capped, was $len", len in 1..8_192)
+  }
 }
