@@ -152,6 +152,37 @@
             android:foregroundServiceType="dataSync"
             android:exported="false" />
 
+        <!-- Share-sheet inference target (#1). Transparent trampoline: extracts the shared text,
+             requests notification permission, hands off to RelaisShareService, then finishes (no
+             window). v1 is text/plain only (image/PDF are separate features). The trampoline gates
+             the run on RelaisInference.isReady() — a share never cold-starts the node. -->
+        <activity
+            android:name=".share.RelaisShareActivity"
+            android:exported="true"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar"
+            android:label="Relais">
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/plain" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.SEND_MULTIPLE" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/plain" />
+            </intent-filter>
+        </activity>
+
+        <!-- Short-lived foreground worker for the share run, so a 30–120s decode survives the
+             trampoline finishing. CONSUMER of the resident engine (re-asserts isReady, never
+             cold-starts). dataSync FGS type; not exported. -->
+        <service
+            android:name=".share.RelaisShareService"
+            android:foregroundServiceType="dataSync"
+            android:exported="false" />
+
         <!-- Quick Settings tile (#2): live node status + one-tap start/stop. Bind is OS-restricted
              (BIND_QUICK_SETTINGS_TILE), so only the system shade can reach it. -->
         <service

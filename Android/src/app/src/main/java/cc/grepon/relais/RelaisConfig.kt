@@ -42,6 +42,8 @@ object RelaisConfig {
   private const val KEY_DECODE_FLOOR_TOK_S = "decode_floor_tok_s"
   private const val KEY_MODERATE_COOLDOWN_MS = "moderate_cooldown_ms"
   private const val KEY_TILE_TEMPLATE_ID = "tile_canned_template_id"
+  private const val KEY_SHARE_ENABLED = "share_enabled"
+  private const val KEY_SHARE_SYSTEM = "share_system_prompt"
   private const val KEY_SESSION_MEMORY = "session_memory_enabled"
   private const val KEY_SESSION_TTL_HOURS = "session_ttl_hours"
   private const val KEY_SESSION_MAX_TURNS = "session_max_turns"
@@ -327,6 +329,34 @@ object RelaisConfig {
     val edit = prefs(context).edit()
     val clean = id?.takeIf { it.isNotBlank() }
     if (clean == null) edit.remove(KEY_TILE_TEMPLATE_ID) else edit.putString(KEY_TILE_TEMPLATE_ID, clean)
+    edit.apply()
+  }
+
+  /**
+   * Share-sheet inference target master switch (Feature #1). DEFAULT **true** — the node registers as
+   * a `text/plain` share target out of the box. The trampoline gates the actual run on this AND engine
+   * readiness (never cold-starts); turning this off makes a share report "Share target disabled"
+   * instead of running. The manifest filter is always present (it's static), so this is the runtime
+   * opt-out, not a way to remove the entry from the share sheet.
+   */
+  fun shareEnabled(context: Context): Boolean = prefs(context).getBoolean(KEY_SHARE_ENABLED, true)
+
+  fun setShareEnabled(context: Context, enabled: Boolean) {
+    prefs(context).edit().putBoolean(KEY_SHARE_ENABLED, enabled).apply()
+  }
+
+  /**
+   * Optional operator override for the system prompt used on a share run (Feature #1). Null (the
+   * default) means the share service falls back to its concise built-in summarize/answer prompt. A
+   * blank stored value decodes to null so a cleared field reverts to the built-in.
+   */
+  fun shareSystemPrompt(context: Context): String? =
+    prefs(context).getString(KEY_SHARE_SYSTEM, null)?.takeIf { it.isNotBlank() }
+
+  fun setShareSystemPrompt(context: Context, value: String?) {
+    val edit = prefs(context).edit()
+    val clean = value?.takeIf { it.isNotBlank() }
+    if (clean == null) edit.remove(KEY_SHARE_SYSTEM) else edit.putString(KEY_SHARE_SYSTEM, clean)
     edit.apply()
   }
 
