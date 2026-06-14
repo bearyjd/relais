@@ -667,8 +667,15 @@ class RelaisHttpServer(
       tools = tools,
       toolChoice = toolChoice,
       toolResults = parsed.liveToolResults,
+      temperature = optDoubleOrNull(body, "temperature"),
+      topP = optDoubleOrNull(body, "top_p"),
+      seed = if (body.has("seed") && !body.isNull("seed")) body.optInt("seed") else null,
     )
   }
+
+  /** A JSON number field as a nullable Double — null when absent/null (so engine defaults apply). */
+  private fun optDoubleOrNull(body: JSONObject, key: String): Double? =
+    if (body.has(key) && !body.isNull(key)) body.optDouble(key).takeUnless { it.isNaN() } else null
 
   private fun dataUriBytes(url: String): ByteArray? =
     runCatching { decode(if (url.startsWith("data:")) url.substringAfter(",") else url) }.getOrNull()
