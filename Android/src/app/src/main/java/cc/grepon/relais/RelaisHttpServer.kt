@@ -20,6 +20,10 @@ import android.content.Context
 import android.util.Base64
 import android.util.Log
 import cc.grepon.relais.data.RelaisModelRef
+import cc.grepon.relais.templates.PromptTemplateStore
+import cc.grepon.relais.templates.parseTemplateId
+import cc.grepon.relais.templates.parseTemplateMode
+import cc.grepon.relais.templates.resolveSystemPrompt
 import java.io.BufferedReader
 import java.io.File
 import java.io.InputStreamReader
@@ -302,11 +306,22 @@ class RelaisHttpServer(
             // Permit acquired — release in finally so a crash or timeout never leaks a slot.
             try {
               val json = JSONObject(readBody(reader, contentLength))
+              if (PromptTemplateStore.isUnknown(context, parseTemplateId(json))) {
+                reply(400, JSONObject().put("error", "unknown template").put("code", "unknown_template"))
+                return
+              }
               val request =
                 RelaisRequest(
                   text = json.optString("text", ""),
                   imagePng = json.optString("image_b64").takeIf { it.isNotEmpty() }?.let { decode(it) },
                   audioWav = json.optString("audio_b64").takeIf { it.isNotEmpty() }?.let { decode(it) },
+                  // Optional `system` + `template`/`x_relais_template` selector (default-off: both
+                  // absent → null → engine default, unchanged behavior).
+                  systemPrompt = resolveSystemPrompt(
+                    explicitSystem = json.optString("system").takeIf { it.isNotBlank() },
+                    template = PromptTemplateStore.resolve(context, parseTemplateId(json)),
+                    mode = parseTemplateMode(json),
+                  ),
                 )
               val result = RelaisEngine.generate(context, request, shouldCancel = { ThermalGovernor.shouldTruncate() })
               reply(
@@ -394,6 +409,13 @@ class RelaisHttpServer(
   private fun handleOpenAi(sock: java.net.Socket, body: JSONObject) {
     val model = body.optString("model", DEFAULT_MODEL)
     val stream = body.optBoolean("stream", false)
+    // Reject an unknown template id up front (all sub-paths) so a client never silently gets the
+    // default persona when it asked for a specific one.
+    if (PromptTemplateStore.isUnknown(context, parseTemplateId(body))) {
+      RelaisMetrics.recordRequest("/v1/chat/completions", 400)
+      respond(sock, 400, JSONObject().put("error", "unknown template").put("code", "unknown_template"))
+      return
+    }
     val request = parseOpenAiRequest(body)
     val id = "chatcmpl-" + System.currentTimeMillis()
 
@@ -662,7 +684,14 @@ class RelaisHttpServer(
       text = parsed.lastUserText,
       imagePng = parsed.lastUserImage,
       audioWav = parsed.lastUserAudio,
-      systemPrompt = parsed.systemPrompt,
+      // Fold a selected prompt template into the system prompt (default-off: absent template +
+      // absent system message → null → engine default, i.e. unchanged behavior). Unknown ids are
+      // rejected with 400 in handleOpenAi before we reach here.
+      systemPrompt = resolveSystemPrompt(
+        explicitSystem = parsed.systemPrompt,
+        template = PromptTemplateStore.resolve(context, parseTemplateId(body)),
+        mode = parseTemplateMode(body),
+      ),
       history = parsed.history,
       tools = tools,
       toolChoice = toolChoice,
