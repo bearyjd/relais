@@ -60,6 +60,7 @@ class CannedPromptWorker(context: Context, params: WorkerParameters) :
     val answer = runCatching {
       RelaisInference.completeText(applicationContext, CANNED_PROMPT, system = system)
     }.getOrElse {
+      if (it is kotlinx.coroutines.CancellationException) throw it // never swallow cancellation
       if (it is RelaisInference.NodeNotReadyException) {
         Log.i(TAG, "node went down mid-run; skipping notification")
       } else {

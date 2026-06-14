@@ -16,6 +16,7 @@
 
 <resources>
   <!-- TODO(jingjin): Add translation support when i18n is ready. -->
+  <string name="relais_widget_description" translatable="false">Relais quick-prompt: run a canned prompt on the live node</string>
   <string name="about_this_update" translatable="false">About this update</string>
   <string name="all" translatable="false">All</string>
   <string name="add" translatable="false">Add</string>

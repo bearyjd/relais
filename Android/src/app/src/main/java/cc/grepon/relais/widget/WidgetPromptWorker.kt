@@ -1,0 +1,129 @@
+/*
+ * Copyright (C) 2026 Entrevoix / grepon.cc
+ *
+ * This program is free software: you can redistribute it and/or modify it under the terms of the
+ * GNU Affero General Public License as published by the Free Software Foundation, either version 3
+ * of the License, or (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without
+ * even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
+ * Affero General Public License for more details.
+ */
+
+package cc.grepon.relais.widget
+
+import android.content.Context
+import android.util.Log
+import androidx.datastore.preferences.core.MutablePreferences
+import androidx.datastore.preferences.core.Preferences
+import androidx.datastore.preferences.core.stringPreferencesKey
+import androidx.glance.GlanceId
+import androidx.glance.appwidget.GlanceAppWidgetManager
+import androidx.glance.appwidget.state.updateAppWidgetState
+import androidx.work.CoroutineWorker
+import androidx.work.Data
+import androidx.work.ExistingWorkPolicy
+import androidx.work.OneTimeWorkRequestBuilder
+import androidx.work.WorkManager
+import androidx.work.WorkerParameters
+import cc.grepon.relais.core.RelaisInference
+import cc.grepon.relais.templates.WorkflowRegistry
+
+private const val TAG = "WidgetPromptWorker"
+private const val KEY_TEMPLATE_ID = "template_id"
+private const val KEY_APP_WIDGET_ID = "app_widget_id"
+
+/** The fixed canned prompt the widget runs (the template only supplies the system prompt). */
+const val WIDGET_PROMPT = "Give me a one-line status check."
+
+// Glance Preferences keys backing the persisted [WidgetUiState]. DataStore-backed and separate from
+// the node's EncryptedSharedPreferences — output here is non-secret, capped, and operator-clearable.
+private val PHASE_KEY = stringPreferencesKey("relais_widget_phase")
+private val PROMPT_KEY = stringPreferencesKey("relais_widget_prompt")
+private val RESPONSE_KEY = stringPreferencesKey("relais_widget_response")
+
+/** Serializes [state] into Glance's [MutablePreferences] (the persisted widget store). */
+fun writeState(prefs: MutablePreferences, state: WidgetUiState) {
+  prefs[PHASE_KEY] = state.phase.name
+  state.prompt?.let { prefs[PROMPT_KEY] = it } ?: prefs.remove(PROMPT_KEY)
+  state.response?.let { prefs[RESPONSE_KEY] = it } ?: prefs.remove(RESPONSE_KEY)
+}
+
+/** Reconstructs the [WidgetUiState] from Glance's [Preferences]; missing/garbled phase reads as IDLE. */
+fun readState(prefs: Preferences): WidgetUiState {
+  val phase = prefs[PHASE_KEY]?.let { name -> WidgetPhase.entries.firstOrNull { it.name == name } }
+    ?: WidgetPhase.IDLE
+  return WidgetUiState(phase = phase, prompt = prefs[PROMPT_KEY], response = prefs[RESPONSE_KEY])
+}
+
+/**
+ * Runs the widget's canned prompt off the broadcast thread (long inference must outlive the ~10 s
+ * ActionCallback/broadcast limit — hence a Worker). Re-asserts [RelaisInference.isReady] (defense in
+ * depth: the action already gated, but the node can stop between enqueue and run — never cold-start),
+ * resolves the template's system prompt via [WorkflowRegistry], runs the in-process inference, and
+ * writes DONE/ERROR (with a capped response) back into the widget's Glance state, then re-renders.
+ * Enqueued with `enqueueUniqueWork(KEEP)` so rapid taps don't stack inferences on the single engine.
+ */
+class WidgetPromptWorker(context: Context, params: WorkerParameters) :
+  CoroutineWorker(context, params) {
+
+  override suspend fun doWork(): Result {
+    val appWidgetId = inputData.getInt(KEY_APP_WIDGET_ID, -1).takeIf { it >= 0 }
+      ?: return Result.failure()
+    val templateId = inputData.getString(KEY_TEMPLATE_ID)?.takeIf { it.isNotBlank() }
+    val glanceId = runCatching {
+      GlanceAppWidgetManager(applicationContext).getGlanceIdBy(appWidgetId)
+    }.getOrElse {
+      Log.w(TAG, "no GlanceId for appWidgetId=$appWidgetId; widget removed?", it)
+      return Result.failure()
+    }
+
+    if (!RelaisInference.isReady()) {
+      Log.i(TAG, "engine not resident at run time; skipping widget prompt")
+      settle(glanceId, WidgetUiState.idle().error("node off — open app to start"))
+      return Result.failure()
+    }
+
+    val system = WorkflowRegistry.resolve(applicationContext, templateId)?.system
+    val answer = runCatching {
+      RelaisInference.completeText(applicationContext, WIDGET_PROMPT, system = system)
+    }.getOrElse {
+      if (it is kotlinx.coroutines.CancellationException) throw it // never swallow cancellation
+      if (it is RelaisInference.NodeNotReadyException) {
+        Log.i(TAG, "node went down mid-run", it)
+        settle(glanceId, WidgetUiState.idle().loading(WIDGET_PROMPT).error("node went off"))
+      } else {
+        Log.e(TAG, "widget prompt failed", it) // never silently swallow
+        settle(glanceId, WidgetUiState.idle().loading(WIDGET_PROMPT).error("inference failed"))
+      }
+      return Result.failure()
+    }
+
+    settle(glanceId, WidgetUiState.idle().loading(WIDGET_PROMPT).done(answer))
+    return Result.success()
+  }
+
+  /** Persists [state] into the widget's Glance store and re-renders it. */
+  private suspend fun settle(glanceId: GlanceId, state: WidgetUiState) {
+    updateAppWidgetState(applicationContext, glanceId) { prefs -> writeState(prefs, state) }
+    RelaisWidget().update(applicationContext, glanceId)
+  }
+
+  companion object {
+    /** Enqueues a per-widget unique run (KEEP coalesces rapid taps onto the single engine lock). */
+    fun enqueue(context: Context, glanceId: GlanceId, templateId: String?) {
+      val appWidgetId = GlanceAppWidgetManager(context).getAppWidgetId(glanceId)
+      val request = OneTimeWorkRequestBuilder<WidgetPromptWorker>()
+        .setInputData(inputData(appWidgetId, templateId))
+        .build()
+      WorkManager.getInstance(context.applicationContext)
+        .enqueueUniqueWork("relais-widget-$appWidgetId", ExistingWorkPolicy.KEEP, request)
+    }
+
+    private fun inputData(appWidgetId: Int, templateId: String?): Data =
+      Data.Builder()
+        .putInt(KEY_APP_WIDGET_ID, appWidgetId)
+        .apply { templateId?.let { putString(KEY_TEMPLATE_ID, it) } }
+        .build()
+  }
+}
