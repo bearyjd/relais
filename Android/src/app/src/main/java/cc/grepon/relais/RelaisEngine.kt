@@ -205,6 +205,13 @@ object RelaisEngine {
   @Volatile var startupInProgress: Boolean = false
 
   /**
+   * True when the most recent init attempt threw (set by [RelaisNodeService]'s init thread). Lets
+   * [cc.grepon.relais.core.computeNodeState] surface ERROR rather than an indefinite STARTING when
+   * provisioning/init fails. Cleared on a successful init.
+   */
+  @Volatile var lastInitFailed: Boolean = false
+
+  /**
    * Legacy hardcoded model location from the spike (manually side-loaded; see SPIKE-FINDINGS.md).
    * Now only a fallback — the node self-provisions to [Model.getPath]'s layout via
    * [RelaisModelProvisioner], and [ensureInitialized] defaults to that resolved path.

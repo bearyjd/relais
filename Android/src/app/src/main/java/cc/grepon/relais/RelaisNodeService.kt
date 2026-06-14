@@ -74,6 +74,8 @@ class RelaisNodeService : Service() {
     // Provision the model (download if missing) then initialize the resident engine off the main
     // thread; start the endpoint when ready.
     thread(name = "relais-init") {
+      RelaisEngine.lastInitFailed = false // new attempt: drop any prior failure so a restart-after-
+      // failure doesn't flash NodeState.ERROR in the window before startupInProgress flips.
       RelaisEngine.startupInProgress = true // tell the watchdog "coming up", not "dead" (slow downloads)
       try {
         updateNotification("Provisioning model…")
@@ -92,6 +94,7 @@ class RelaisNodeService : Service() {
         // Security H3: never log the API key — it is shown in the Relais Node control screen.
       } catch (e: Exception) {
         Log.e(TAG, "Node init failed", e)
+        RelaisEngine.lastInitFailed = true // surfaced as NodeState.ERROR (e.g. QS tile)
         updateNotification("Init failed: ${e.message}")
       } finally {
         RelaisEngine.startupInProgress = false
