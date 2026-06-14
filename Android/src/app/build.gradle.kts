@@ -123,6 +123,12 @@ dependencies {
   // explicitly now that Firebase is removed.
   implementation("androidx.documentfile:documentfile:1.0.1")
   implementation(libs.moshi.kotlin)
+  // Shared on-device SQLite (RelaisDatabase) — vector store (#4), session memory (#5), batch queue
+  // (#14) all add entities/DAOs. Static singleton accessor, not Hilt-provided (matches the node layer).
+  implementation(libs.androidx.room.runtime)
+  implementation(libs.androidx.room.ktx)
+  ksp(libs.androidx.room.compiler)
+  testImplementation(libs.androidx.room.testing)
   kapt(libs.hilt.android.compiler)
   testImplementation(libs.junit)
   testImplementation(libs.com.google.code.gson)
@@ -149,3 +155,7 @@ protobuf {
   protoc { artifact = "com.google.protobuf:protoc:4.26.1" }
   generateProtoTasks { all().forEach { it.plugins { create("java") { option("lite") } } } }
 }
+
+// Room exports its schema JSON (committed under app/schemas) so future migrations (#4/#5/#14) are
+// diffable and migration-testable.
+ksp { arg("room.schemaLocation", "$projectDir/schemas") }

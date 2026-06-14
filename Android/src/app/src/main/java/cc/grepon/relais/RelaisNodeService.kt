@@ -82,6 +82,7 @@ class RelaisNodeService : Service() {
             updateNotification("Downloading model $pct%…")
           }
         RelaisEngine.ensureInitialized(applicationContext, modelPath)
+        RelaisEngine.lastInitFailed = false // init succeeded — clear any prior failure (NodeState)
         // Security C1: plaintext HTTP is loopback-only (in-device app/dev); the LAN is served only
         // over HTTPS, so the bearer key never crosses the network in cleartext.
         httpServer = RelaisHttpServer(applicationContext, port = 8080, bindAddr = "127.0.0.1").also { it.start() }
@@ -92,6 +93,7 @@ class RelaisNodeService : Service() {
         // Security H3: never log the API key — it is shown in the Relais Node control screen.
       } catch (e: Exception) {
         Log.e(TAG, "Node init failed", e)
+        RelaisEngine.lastInitFailed = true // surfaced as NodeState.ERROR (e.g. QS tile)
         updateNotification("Init failed: ${e.message}")
       } finally {
         RelaisEngine.startupInProgress = false
