@@ -206,6 +206,7 @@ object RelaisMetrics {
       raw == "/generate" -> "/generate"
       raw == "/v1/chat/completions" -> "/v1/chat/completions"
       raw == "/v1/models" -> "/v1/models"
+      raw == "/v1/clientconfig" -> "/v1/clientconfig"
       raw == "/metrics" -> "/metrics"
       raw == "/health" -> "/health"
       raw == "/" -> "/"
