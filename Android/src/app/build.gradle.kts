@@ -128,6 +128,8 @@ dependencies {
   implementation(libs.androidx.room.runtime)
   implementation(libs.androidx.room.ktx)
   ksp(libs.androidx.room.compiler)
+  // Home-screen widget (#3): Glance app-widget renderer. Pinned 1.1.1 (cached for --offline builds).
+  implementation(libs.androidx.glance.appwidget)
   testImplementation(libs.androidx.room.testing)
   kapt(libs.hilt.android.compiler)
   testImplementation(libs.junit)

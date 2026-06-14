@@ -153,6 +153,20 @@
             </intent-filter>
         </service>
 
+        <!-- Home-screen widget (#3): Glance quick-prompt surface. Exported so the launcher's
+             AppWidgetHost can deliver APPWIDGET_UPDATE; the widget is a CONSUMER (taps never
+             cold-start the engine — RunPromptAction gates on RelaisInference.isReady). -->
+        <receiver
+            android:name=".widget.RelaisWidgetReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/relais_widget_info" />
+        </receiver>
+
         <!-- Opt-in only (RelaisConfig.autoStartEnabled, default false) -->
         <receiver
             android:name=".RelaisBootReceiver"

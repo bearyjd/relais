@@ -42,6 +42,7 @@ mcp = "0.8.0"
 ktor = "3.4.3"
 robolectric = "4.14.1"  # https://github.com/robolectric/robolectric/releases/tag/robolectric-4.14.1
 room = "2.7.1"  # KSP2-compatible line (Kotlin 2.2.0 uses KSP2); 2.6.x predates KSP2 Room support
+glance = "1.1.1"  # Glance app-widget (#3); pinned to the cached version so --offline builds resolve
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -98,6 +99,7 @@ androidx-room-runtime = { group = "androidx.room", name = "room-runtime", versio
 androidx-room-ktx = { group = "androidx.room", name = "room-ktx", version.ref = "room" }
 androidx-room-compiler = { group = "androidx.room", name = "room-compiler", version.ref = "room" }
 androidx-room-testing = { group = "androidx.room", name = "room-testing", version.ref = "room" }
+androidx-glance-appwidget = { group = "androidx.glance", name = "glance-appwidget", version.ref = "glance" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }
