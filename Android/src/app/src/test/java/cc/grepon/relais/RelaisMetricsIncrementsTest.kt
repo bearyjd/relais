@@ -195,6 +195,7 @@ class RelaisMetricsIncrementsTest {
     assertEquals("other", RelaisMetrics.endpointLabel("/v1/chat/completions/../../secret"))
     assertEquals("/generate", RelaisMetrics.endpointLabel("/generate"))
     assertEquals("/v1/chat/completions", RelaisMetrics.endpointLabel("/v1/chat/completions"))
+    assertEquals("/v1/embeddings", RelaisMetrics.endpointLabel("/v1/embeddings"))
     assertEquals("/v1/models", RelaisMetrics.endpointLabel("/v1/models"))
     assertEquals("/metrics", RelaisMetrics.endpointLabel("/metrics"))
     assertEquals("/health", RelaisMetrics.endpointLabel("/health"))
