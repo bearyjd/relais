@@ -38,6 +38,23 @@ object RelaisConfig {
   private const val KEY_MODEL_PATH = "model_path"
   private const val KEY_TLS_PASS = "tls_keystore_pass"
   private const val KEY_RESTARTS = "restarts_total"
+  private const val KEY_SHED_HEADROOM = "shed_headroom"
+  private const val KEY_DECODE_FLOOR_TOK_S = "decode_floor_tok_s"
+  private const val KEY_MODERATE_COOLDOWN_MS = "moderate_cooldown_ms"
+
+  // Operational shed-threshold defaults + HARD CLAMP bands (Feature #10). Defaults equal the
+  // ThermalGovernor consts these replace. Clamps applied on BOTH read and write so a pre-existing
+  // out-of-band prefs value (or a bad write) can never disable a shed signal — in particular
+  // DECODE_FLOOR_MIN stays > 0 so the throughput-floor signal is never switched off.
+  private const val SHED_HEADROOM_DEFAULT = 0.95f
+  private const val SHED_HEADROOM_MIN = 0.5f
+  private const val SHED_HEADROOM_MAX = 1.5f
+  private const val DECODE_FLOOR_DEFAULT = 3.0
+  private const val DECODE_FLOOR_MIN = 0.5 // must stay > 0: floor signal must never be disabled
+  private const val DECODE_FLOOR_MAX = 50.0
+  private const val COOLDOWN_DEFAULT = 1_500L
+  private const val COOLDOWN_MIN = 0L
+  private const val COOLDOWN_MAX = 10_000L
 
   @Volatile private var securePrefsCache: SharedPreferences? = null
 
@@ -226,5 +243,52 @@ object RelaisConfig {
   fun incrementRestartCount(context: Context) {
     val p = prefs(context)
     p.edit().putLong(KEY_RESTARTS, p.getLong(KEY_RESTARTS, 0L) + 1).apply()
+  }
+
+  /**
+   * Forecast-headroom shed threshold (Feature #10). Clamped to [SHED_HEADROOM_MIN]..[SHED_HEADROOM_MAX]
+   * on read so even a tampered prefs value stays in band; [ThermalGovernor] reads this at register().
+   */
+  fun shedHeadroom(context: Context): Float =
+    sanitizeHeadroom(prefs(context).getFloat(KEY_SHED_HEADROOM, SHED_HEADROOM_DEFAULT))
+
+  fun setShedHeadroom(context: Context, value: Float) {
+    prefs(context).edit().putFloat(KEY_SHED_HEADROOM, sanitizeHeadroom(value)).apply()
+  }
+
+  // coerceIn does NOT neutralize NaN (NaN < min and NaN > max are both false, so NaN passes
+  // through). A non-finite threshold would silently disable the headroom shed signal, so map
+  // NaN/Inf to the default BEFORE clamping — on both the read and write paths, so a tampered or
+  // corrupt prefs value can never reach ThermalGovernor.
+  private fun sanitizeHeadroom(v: Float): Float =
+    (if (v.isFinite()) v else SHED_HEADROOM_DEFAULT).coerceIn(SHED_HEADROOM_MIN, SHED_HEADROOM_MAX)
+
+  /**
+   * Sustained-decode floor (tok/s) shed threshold (Feature #10). Clamped to a STRICTLY POSITIVE band
+   * [DECODE_FLOOR_MIN]..[DECODE_FLOOR_MAX] so the throughput-floor signal can never be disabled.
+   */
+  fun decodeFloorTokS(context: Context): Double =
+    sanitizeDecodeFloor(prefs(context).getFloat(KEY_DECODE_FLOOR_TOK_S, DECODE_FLOOR_DEFAULT.toFloat()).toDouble())
+
+  fun setDecodeFloorTokS(context: Context, value: Double) {
+    prefs(context).edit()
+      .putFloat(KEY_DECODE_FLOOR_TOK_S, sanitizeDecodeFloor(value).toFloat())
+      .apply()
+  }
+
+  // NaN/Inf -> default BEFORE clamping (coerceIn lets NaN through). Guarding both read and write
+  // keeps the throughput-floor signal strictly positive even against a tampered prefs value.
+  private fun sanitizeDecodeFloor(v: Double): Double =
+    (if (v.isFinite()) v else DECODE_FLOOR_DEFAULT).coerceIn(DECODE_FLOOR_MIN, DECODE_FLOOR_MAX)
+
+  /** Cool-down gap (ms) inserted while MODERATE (Feature #10). Clamped to [COOLDOWN_MIN]..[COOLDOWN_MAX]. */
+  fun moderateCooldownMs(context: Context): Long =
+    prefs(context).getLong(KEY_MODERATE_COOLDOWN_MS, COOLDOWN_DEFAULT)
+      .coerceIn(COOLDOWN_MIN, COOLDOWN_MAX)
+
+  fun setModerateCooldownMs(context: Context, value: Long) {
+    prefs(context).edit()
+      .putLong(KEY_MODERATE_COOLDOWN_MS, value.coerceIn(COOLDOWN_MIN, COOLDOWN_MAX))
+      .apply()
   }
 }

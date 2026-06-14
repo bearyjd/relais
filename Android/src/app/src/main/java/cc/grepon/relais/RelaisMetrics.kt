@@ -65,6 +65,35 @@ object RelaisMetrics {
   private var latencySum = 0.0
   private val histLock = Any()
 
+  // Per-endpoint inference-latency histograms (Feature #10). Same bucket bounds as the global series
+  // above, but keyed by a *normalized* endpoint label so `/generate` p95 separates from
+  // `/v1/chat/completions` p95. Security M6: keys only ever enter via [endpointLabel], so label
+  // cardinality is bounded to the fixed whitelist — no user-controlled path becomes a series.
+  // The global (unlabeled) series stays the single, un-double-counted tail guarantee
+  // ([recordLatency]); [recordEndpointLatency] writes ONLY here.
+  private class EndpointHist {
+    val counts = LongArray(bucketBoundsSec.size + 1) // last == +Inf
+    var count = 0L
+    var sum = 0.0
+  }
+
+  private val endpointHists = ConcurrentHashMap<String, EndpointHist>()
+  private val endpointHistLock = Any()
+
+  // Completion-token histogram (Feature #10). Visible decoded tokens per inference; lets operators
+  // see the answer-length distribution without scraping the per-request usage block.
+  private val tokenBucketBounds = longArrayOf(16, 32, 64, 128, 256, 512, 1024)
+  private val tokenBucketCounts = LongArray(tokenBucketBounds.size + 1) // last == +Inf
+  private var completionTokenCount = 0L
+  private var completionTokenSum = 0L
+  private val tokenHistLock = Any()
+
+  // Thermal-event counter (Feature #10). The existing `relais_thermal_status` gauge only shows the
+  // status at scrape time; a transient SEVERE between two scrapes is invisible. This counter,
+  // incremented on every status change by the ThermalGovernor listener, captures those transients.
+  // Label `level` comes from the fixed [thermalLabel] whitelist (M6: bounded cardinality).
+  private val thermalEventCounts = ConcurrentHashMap<String, AtomicLong>()
+
   fun recordRequest(endpoint: String, status: Int) {
     requestCounts.getOrPut("$endpoint $status") { AtomicLong(0) }.incrementAndGet()
     if (status >= 500) errorsTotal.incrementAndGet()
@@ -122,6 +151,83 @@ object RelaisMetrics {
     lastDecodeTokS = tokensPerSec
     lastBackend = backend
   }
+
+  /**
+   * Records inference latency into a **per-endpoint** histogram only (Feature #10). The unlabeled
+   * global series ([recordLatency], called once from the engine's outer `finally`) stays the single
+   * tail guarantee — this never writes there, so the global can't be double-counted. [endpoint] is
+   * normalized through [endpointLabel] so an unknown/hostile value collapses to "other" (M6).
+   */
+  fun recordEndpointLatency(endpoint: String, durationSec: Double) {
+    val label = endpointLabel(endpoint)
+    synchronized(endpointHistLock) {
+      val h = endpointHists.getOrPut(label) { EndpointHist() }
+      h.count++
+      h.sum += durationSec
+      var idx = bucketBoundsSec.indexOfFirst { durationSec <= it }
+      if (idx < 0) idx = bucketBoundsSec.size
+      h.counts[idx]++
+    }
+  }
+
+  /**
+   * Records the visible completion-token count of one inference (Feature #10). Call on the success
+   * path where the visible token count is authoritative (next to [recordThroughput]). Negative input
+   * is guarded (ignored) — a histogram can't represent a negative observation.
+   */
+  fun recordCompletionTokens(tokens: Int) {
+    if (tokens < 0) return
+    synchronized(tokenHistLock) {
+      completionTokenCount++
+      completionTokenSum += tokens.toLong()
+      var idx = tokenBucketBounds.indexOfFirst { tokens <= it }
+      if (idx < 0) idx = tokenBucketBounds.size
+      tokenBucketCounts[idx]++
+    }
+  }
+
+  /**
+   * Increments the thermal-event counter for a status change (Feature #10). Call from the
+   * ThermalGovernor listener on every change so transient SEVERE between scrapes is captured.
+   * [status] is mapped to a fixed [thermalLabel] (M6: bounded label cardinality).
+   */
+  fun recordThermalEvent(status: Int) {
+    thermalEventCounts.getOrPut(thermalLabel(status)) { AtomicLong(0) }.incrementAndGet()
+  }
+
+  /**
+   * Fixed whitelist that maps an arbitrary request path to a bounded endpoint label (security M6 —
+   * no user-controlled metric-label cardinality). Anything outside the known endpoints becomes
+   * "other". Mirrors the HTTP server's own normalizer; duplicated here so the metrics boundary is
+   * self-defending even if a caller forgets to pre-normalize.
+   */
+  fun endpointLabel(raw: String): String =
+    when {
+      raw == "/generate" -> "/generate"
+      raw == "/v1/chat/completions" -> "/v1/chat/completions"
+      raw == "/v1/models" -> "/v1/models"
+      raw == "/metrics" -> "/metrics"
+      raw == "/health" -> "/health"
+      raw == "/" -> "/"
+      else -> "other"
+    }
+
+  /**
+   * Maps Android [android.os.PowerManager] THERMAL_STATUS_* integers to a fixed, lowercase metric
+   * label (security M6 — bounded cardinality). Out-of-range values collapse to "unknown" without
+   * throwing. Distinct from the dashboard's human label so the two surfaces can diverge freely.
+   */
+  fun thermalLabel(status: Int): String =
+    when (status) {
+      0 -> "none"
+      1 -> "light"
+      2 -> "moderate"
+      3 -> "severe"
+      4 -> "critical"
+      5 -> "emergency"
+      6 -> "shutdown"
+      else -> "unknown"
+    }
 
   /** Cheap RSS via /proc/self/status (avoids Debug.getPss, which can stall tens of ms). */
   private fun rssBytes(): Long =
@@ -194,6 +300,44 @@ object RelaisMetrics {
       line("relais_inference_duration_seconds_sum $latencySum")
       line("relais_inference_duration_seconds_count $latencyCount")
     }
+    // Per-endpoint series share the same metric name + bucket bounds, distinguished by the
+    // `endpoint` label (Feature #10). Emitted under the same HELP/TYPE header above, but read
+    // under `endpointHistLock` — the lock `recordEndpointLatency` writes under (NOT histLock), so
+    // the render and the writer mutually exclude. Kept a separate, sequential block (not nested in
+    // histLock) so there is no lock-ordering/deadlock risk.
+    synchronized(endpointHistLock) {
+      for ((label, h) in endpointHists) {
+        var cum = 0L
+        for (i in bucketBoundsSec.indices) {
+          cum += h.counts[i]
+          line("relais_inference_duration_seconds_bucket{endpoint=\"${esc(label)}\",le=\"${bucketBoundsSec[i]}\"} $cum")
+        }
+        cum += h.counts[bucketBoundsSec.size]
+        line("relais_inference_duration_seconds_bucket{endpoint=\"${esc(label)}\",le=\"+Inf\"} $cum")
+        line("relais_inference_duration_seconds_sum{endpoint=\"${esc(label)}\"} ${h.sum}")
+        line("relais_inference_duration_seconds_count{endpoint=\"${esc(label)}\"} ${h.count}")
+      }
+    }
+
+    line("# HELP relais_completion_tokens Visible completion tokens per inference.")
+    line("# TYPE relais_completion_tokens histogram")
+    synchronized(tokenHistLock) {
+      var cumulative = 0L
+      for (i in tokenBucketBounds.indices) {
+        cumulative += tokenBucketCounts[i]
+        line("relais_completion_tokens_bucket{le=\"${tokenBucketBounds[i]}\"} $cumulative")
+      }
+      cumulative += tokenBucketCounts[tokenBucketBounds.size]
+      line("relais_completion_tokens_bucket{le=\"+Inf\"} $cumulative")
+      line("relais_completion_tokens_sum $completionTokenSum")
+      line("relais_completion_tokens_count $completionTokenCount")
+    }
+
+    line("# HELP relais_thermal_events_total Thermal status-change events by level (catches transients the gauge misses).")
+    line("# TYPE relais_thermal_events_total counter")
+    for ((level, v) in thermalEventCounts) {
+      line("relais_thermal_events_total{level=\"${esc(level)}\"} ${v.get()}")
+    }
 
     line("# HELP relais_decode_tokens_per_second Decode throughput of the most recent inference.")
     line("# TYPE relais_decode_tokens_per_second gauge")
@@ -248,6 +392,26 @@ object RelaisMetrics {
       .put("memory_rss_bytes", rssBytes())
       .put("queue_depth", inFlight.get())
       .put("restarts_total", RelaisConfig.restartCount(context))
+  }
+
+  /**
+   * Test seam: clears the Feature #10 increment state (per-endpoint latency, completion-token
+   * histogram, thermal events) AND the global latency histogram, so each test starts from zero in
+   * this process-global object. Does not touch the request-count map or counters used elsewhere.
+   */
+  fun resetIncrementsForTest() {
+    synchronized(histLock) {
+      bucketCounts.fill(0L)
+      latencyCount = 0L
+      latencySum = 0.0
+    }
+    synchronized(endpointHistLock) { endpointHists.clear() }
+    synchronized(tokenHistLock) {
+      tokenBucketCounts.fill(0L)
+      completionTokenCount = 0L
+      completionTokenSum = 0L
+    }
+    thermalEventCounts.clear()
   }
 
   /** Coarse quantile from the cumulative histogram (HUD only). Caller holds [histLock]. */

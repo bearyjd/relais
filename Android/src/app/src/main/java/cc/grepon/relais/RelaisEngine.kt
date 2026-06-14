@@ -491,6 +491,7 @@ object RelaisEngine {
           val decodeSec = if (lastTokenNs > firstTokenNs) (lastTokenNs - firstTokenNs) / 1e9 else 0.0
           val tokS = if (decodeSec > 0 && tokens > 1) (tokens - 1) / decodeSec else 0.0
           RelaisMetrics.recordThroughput(tokens, tokS, backend.name)
+          RelaisMetrics.recordCompletionTokens(tokens) // Feature #10: visible-token distribution
           ThermalGovernor.onDecodeThroughput(tokS)
           RelaisResult(
             text = sb.toString(),
