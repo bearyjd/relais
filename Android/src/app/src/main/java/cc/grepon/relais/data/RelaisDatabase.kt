@@ -40,7 +40,7 @@ abstract class RelaisDatabase : RoomDatabase() {
     @Volatile private var instance: RelaisDatabase? = null
 
     /** Migrations appended by consumers when they add tables + bump [version]. Empty at v1. */
-    val MIGRATIONS: Array<Migration> = arrayOf()
+    val MIGRATIONS: List<Migration> = emptyList()
 
     /** Process-wide singleton (single process — see backlog §3). */
     fun get(context: Context): RelaisDatabase =
@@ -52,13 +52,14 @@ abstract class RelaisDatabase : RoomDatabase() {
                 RelaisDatabase::class.java,
                 DB_NAME,
               )
-              .addMigrations(*MIGRATIONS)
+              .addMigrations(*MIGRATIONS.toTypedArray())
               .build()
               .also { instance = it }
         }
 
     @VisibleForTesting
     fun resetForTest() {
+      instance?.close()
       instance = null
     }
   }

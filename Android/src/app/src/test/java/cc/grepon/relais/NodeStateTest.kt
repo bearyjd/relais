@@ -61,6 +61,11 @@ class NodeStateTest {
     assertEquals(NodeState.LIVE, state(shouldRun = true, ready = true, lastInitFailed = true))
   }
 
+  @Test fun `stopped node never shows error even with a stale init-failed flag`() {
+    // ERROR requires shouldRun; a stopped node reads OFF regardless of a leftover lastInitFailed.
+    assertEquals(NodeState.OFF, state(shouldRun = false, lastInitFailed = true))
+  }
+
   @Test fun `active retry shows starting not error`() {
     // A retry in progress (startupInProgress) after a prior failure should read STARTING, not ERROR.
     assertEquals(NodeState.STARTING, state(shouldRun = true, startupInProgress = true, lastInitFailed = true))

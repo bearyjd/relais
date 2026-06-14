@@ -74,6 +74,8 @@ class RelaisNodeService : Service() {
     // Provision the model (download if missing) then initialize the resident engine off the main
     // thread; start the endpoint when ready.
     thread(name = "relais-init") {
+      RelaisEngine.lastInitFailed = false // new attempt: drop any prior failure so a restart-after-
+      // failure doesn't flash NodeState.ERROR in the window before startupInProgress flips.
       RelaisEngine.startupInProgress = true // tell the watchdog "coming up", not "dead" (slow downloads)
       try {
         updateNotification("Provisioning model…")
@@ -82,7 +84,6 @@ class RelaisNodeService : Service() {
             updateNotification("Downloading model $pct%…")
           }
         RelaisEngine.ensureInitialized(applicationContext, modelPath)
-        RelaisEngine.lastInitFailed = false // init succeeded — clear any prior failure (NodeState)
         // Security C1: plaintext HTTP is loopback-only (in-device app/dev); the LAN is served only
         // over HTTPS, so the bearer key never crosses the network in cleartext.
         httpServer = RelaisHttpServer(applicationContext, port = 8080, bindAddr = "127.0.0.1").also { it.start() }

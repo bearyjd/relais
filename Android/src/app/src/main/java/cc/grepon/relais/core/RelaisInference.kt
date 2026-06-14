@@ -14,14 +14,19 @@ package cc.grepon.relais.core
 
 import android.content.Context
 import android.net.Uri
+import android.util.Log
 import cc.grepon.relais.RelaisEngine
 import cc.grepon.relais.RelaisRequest
+import cc.grepon.relais.ThermalGovernor
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.channels.trySendBlocking
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+
+private const val TAG = "RelaisInference"
 
 /**
  * In-process one-shot inference for NON-HTTP callers (tiles, widgets, share, NFC, triage, Tasker).
@@ -60,10 +65,18 @@ object RelaisInference {
     return callbackFlow {
       val job = launch(Dispatchers.IO) {
         try {
+          // Re-assert readiness after the dispatch gap: if the node shut down between the eager guard
+          // and here, fail fast instead of letting generate() cold-start the engine from a UI tap.
+          if (!RelaisEngine.isReady) throw NodeNotReadyException()
           RelaisEngine.generate(
             context = context,
             request = request,
             onToken = { delta -> trySendBlocking(delta) }, // paces the producer to the collector
+            // Parity with the HTTP paths (which pass ThermalGovernor.shouldTruncate): honor
+            // thermal-critical truncation (device protection), and stop at the next token boundary
+            // once the collector cancels — releasing the single engine lock promptly rather than
+            // letting an abandoned decode hold it (and block HTTP inference) until the 120s timeout.
+            shouldCancel = { !isActive || ThermalGovernor.shouldTruncate() },
           )
           close()
         } catch (t: Throwable) {
@@ -74,10 +87,19 @@ object RelaisInference {
     }
   }
 
-  /** Collects [complete] to the full answer text. The primary API for non-streaming callers. */
-  suspend fun completeText(context: Context, prompt: String, system: String? = null): String =
-    buildString { complete(context, prompt, system).collect { append(it) } }
+  /**
+   * Collects [complete] to the full answer text. The primary API for non-streaming callers. Forwards
+   * [images] so non-streaming multimodal callers don't silently lose the image.
+   */
+  suspend fun completeText(
+    context: Context,
+    prompt: String,
+    system: String? = null,
+    images: List<Uri> = emptyList(),
+  ): String = buildString { complete(context, prompt, system, images).collect { append(it) } }
 
   private fun readPng(context: Context, uri: Uri): ByteArray? =
-    runCatching { context.contentResolver.openInputStream(uri)?.use { it.readBytes() } }.getOrNull()
+    runCatching { context.contentResolver.openInputStream(uri)?.use { it.readBytes() } }
+      .onFailure { Log.w(TAG, "Failed to read image for inference", it) } // never silently swallow
+      .getOrNull()
 }
