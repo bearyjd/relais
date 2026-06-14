@@ -51,6 +51,12 @@ object RelaisMetrics {
   @Volatile private var lastDecodeTokS = 0.0
   @Volatile private var lastBackend = "none"
 
+  // Session memory (Feature #5). `sessionHitsTotal` counts requests that loaded stored history; the
+  // gauge holds the last-observed stored-turn count (refreshed by the record path + prune worker).
+  // Security M6: fixed metric names, no labels — a session key or IP NEVER enters a metric.
+  private val sessionHitsTotal = AtomicLong(0)
+  @Volatile private var sessionTurnsGauge = 0L
+
   // Bounded ring buffer for the dashboard recent-request log (last 20 entries).
   // Security M6: only normalized endpoint labels enter here — never raw paths, IPs, keys, or FS paths.
   private const val REQUEST_LOG_CAPACITY = 20
@@ -117,6 +123,14 @@ object RelaisMetrics {
     return synchronized(requestLogLock) {
       requestLog.map { it.copy(ageSeconds = (nowSec - it.ageSeconds).coerceAtLeast(0L)) }
     }
+  }
+
+  /** A request that loaded stored session history (Feature #5). M6: counter only, no labels. */
+  fun recordSessionHit() = sessionHitsTotal.incrementAndGet()
+
+  /** Updates the stored-turn gauge (Feature #5). Called off the request path (record + prune). */
+  fun setSessionTurns(count: Long) {
+    sessionTurnsGauge = count.coerceAtLeast(0)
   }
 
   fun recordShed() = shedTotal.incrementAndGet()
@@ -207,6 +221,7 @@ object RelaisMetrics {
       raw == "/v1/chat/completions" -> "/v1/chat/completions"
       raw == "/v1/models" -> "/v1/models"
       raw == "/v1/clientconfig" -> "/v1/clientconfig"
+      raw == "/v1/sessions" -> "/v1/sessions"
       raw == "/metrics" -> "/metrics"
       raw == "/health" -> "/health"
       raw == "/" -> "/"
@@ -367,6 +382,14 @@ object RelaisMetrics {
     line("# HELP relais_restarts_total Process (re)starts observed by the watchdog/service.")
     line("# TYPE relais_restarts_total counter")
     line("relais_restarts_total ${RelaisConfig.restartCount(context)}")
+
+    line("# HELP relais_session_turns Stored session-memory turns at last observation (0 when disabled).")
+    line("# TYPE relais_session_turns gauge")
+    line("relais_session_turns $sessionTurnsGauge")
+
+    line("# HELP relais_session_hits_total Requests that loaded stored session history.")
+    line("# TYPE relais_session_hits_total counter")
+    line("relais_session_hits_total ${sessionHitsTotal.get()}")
 
     return sb.toString()
   }
