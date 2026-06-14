@@ -223,6 +223,7 @@ object RelaisMetrics {
       raw == "/v1/models" -> "/v1/models"
       raw == "/v1/clientconfig" -> "/v1/clientconfig"
       raw == "/v1/sessions" -> "/v1/sessions"
+      raw == "/automation" -> "/automation" // Tasker/Automate intent ABI (#8)
       raw == "/metrics" -> "/metrics"
       raw == "/health" -> "/health"
       raw == "/" -> "/"

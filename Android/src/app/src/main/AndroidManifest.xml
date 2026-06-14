@@ -183,6 +183,26 @@
             android:foregroundServiceType="dataSync"
             android:exported="false" />
 
+        <!-- Tasker/Automate intent ABI (#8). Exported NoDisplay activity: an automation app (or adb)
+             sends cc.grepon.relais.action.INFER with a prompt + the node's API key and captures the
+             answer via activity-result or a package-targeted RESULT broadcast. The token extra is
+             API-key gated (constant-time compare); a missing/bad token runs NO inference. Consumer of
+             the resident engine — never cold-starts. noHistory + excludeFromRecents keep the prompt
+             out of recents/back-stack. No new permission. -->
+        <activity
+            android:name=".automation.RelaisTaskerActivity"
+            android:exported="true"
+            android:launchMode="singleTask"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:theme="@android:style/Theme.NoDisplay"
+            android:label="Relais Inference">
+            <intent-filter>
+                <action android:name="cc.grepon.relais.action.INFER" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </activity>
+
         <!-- Quick Settings tile (#2): live node status + one-tap start/stop. Bind is OS-restricted
              (BIND_QUICK_SETTINGS_TILE), so only the system shade can reach it. -->
         <service
