@@ -20,6 +20,8 @@ import android.util.Log
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import cc.grepon.relais.automation.RelaisIntentAbi
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
 import org.junit.Assert.assertEquals
@@ -70,6 +72,39 @@ class TaskerIntentProbe {
       // Targeted at our own package so the in-process receiver below catches the RESULT broadcast.
       putExtra(RelaisIntentAbi.EXTRA_RESULT_PACKAGE, pkg)
     }
+
+  /**
+   * Fires TWO good-token intents [gapMs] apart and waits up to [waitSec] for both targeted RESULT
+   * broadcasts. Returns the captured results keyed by request_id (deduped). Used by the #44/M1
+   * concurrency guard: single-flight must admit exactly one decode and still DELIVER it.
+   */
+  private fun fireTwoAndAwait(
+    token: String,
+    idA: String,
+    idB: String,
+    gapMs: Long,
+    waitSec: Long,
+  ): Map<String, Intent> {
+    val results = ConcurrentHashMap<String, Intent>()
+    val latch = CountDownLatch(2)
+    val receiver = object : BroadcastReceiver() {
+      override fun onReceive(c: Context, i: Intent) {
+        val rid = i.getStringExtra(RelaisIntentAbi.EXTRA_REQUEST_ID) ?: return
+        if ((rid == idA || rid == idB) && results.putIfAbsent(rid, i) == null) latch.countDown()
+      }
+    }
+    ctx.registerReceiver(
+      receiver, IntentFilter(RelaisIntentAbi.ACTION_INFER_RESULT), Context.RECEIVER_NOT_EXPORTED)
+    try {
+      ctx.startActivity(inferIntent(token, idA))
+      Thread.sleep(gapMs) // let A acquire the single-flight latch so B arrives mid-decode
+      ctx.startActivity(inferIntent(token, idB))
+      latch.await(waitSec, TimeUnit.SECONDS)
+      return HashMap(results)
+    } finally {
+      runCatching { ctx.unregisterReceiver(receiver) }
+    }
+  }
 
   /** Fires the intent and waits up to [waitSec] for the targeted RESULT broadcast (null = none). */
   private fun fireAndAwait(token: String, requestId: String, waitSec: Long): Intent? {
@@ -123,6 +158,26 @@ class TaskerIntentProbe {
     assertTrue("ok flag should be true", ok?.getBooleanExtra(RelaisIntentAbi.EXTRA_OK, false) == true)
     assertTrue("response should be non-blank", !ok?.getStringExtra(RelaisIntentAbi.EXTRA_RESPONSE).isNullOrBlank())
     assertNull("result must never echo the token", ok?.getStringExtra(RelaisIntentAbi.EXTRA_TOKEN))
+
+    // 5. CONCURRENCY (#44 / M1 regression guard): two rapid good-token fires. Single-flight must admit
+    // exactly one decode AND still deliver it — the rejected (busy) start must NOT cancel the in-flight
+    // decode. Pre-fix, the busy start's stopSelf tore down the shared service instance, killing the
+    // running decode, so the successful answer was never delivered (the very #44 symptom).
+    val both = fireTwoAndAwait(key, "probe-conc-a", "probe-conc-b", gapMs = 250, waitSec = 95)
+    Log.i(TAG, "concurrency results = " +
+      both.mapValues { it.value.getBooleanExtra(RelaisIntentAbi.EXTRA_OK, false) to it.value.getStringExtra(RelaisIntentAbi.EXTRA_ERROR) })
+    assertEquals("both rapid fires must deliver a result (neither silently dropped)", 2, both.size)
+    val oks = both.values.filter { it.getBooleanExtra(RelaisIntentAbi.EXTRA_OK, false) }
+    val busies = both.values.filter {
+      !it.getBooleanExtra(RelaisIntentAbi.EXTRA_OK, true) &&
+        it.getStringExtra(RelaisIntentAbi.EXTRA_ERROR) == RelaisIntentAbi.ERROR_BUSY
+    }
+    assertEquals("exactly one fire should succeed", 1, oks.size)
+    assertEquals("exactly one fire should be shed as busy", 1, busies.size)
+    assertTrue(
+      "the successful fire must carry a non-blank response",
+      !oks.first().getStringExtra(RelaisIntentAbi.EXTRA_RESPONSE).isNullOrBlank())
+    assertNull("a busy result must never echo the token", busies.first().getStringExtra(RelaisIntentAbi.EXTRA_TOKEN))
   }
 
   private companion object {

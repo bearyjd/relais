@@ -47,12 +47,22 @@ object RelaisIntentAbi {
   // request_id is echoed back under EXTRA_REQUEST_ID (same key as the input) so the caller can
   // correlate a result with its request.
 
+  // ---- error codes (the `error` extra vocabulary; wire values are part of the ABI contract) ----
+  const val ERROR_UNAUTHORIZED = "unauthorized" // bad/missing token (delivered WITHOUT a broadcast)
+  const val ERROR_NODE_NOT_RUNNING = "node_not_running" // engine not resident; never cold-started
+  const val ERROR_THERMAL = "thermal_backpressure" // ThermalGovernor is shedding
+  const val ERROR_BUSY = "busy" // a single-flight decode is already running
+  const val ERROR_TIMEOUT = "timeout" // the decode exceeded the (clamped) request timeout
+  const val ERROR_UNAVAILABLE = "unavailable" // the OS rejected the foreground-service handoff
+  const val ERROR_INFERENCE_FAILED = "inference_failed" // opaque code when a decode throws
+
   // ---- bounds (clamps + caps) ----
   const val MIN_TIMEOUT_MS = 1_000L
   const val MAX_TIMEOUT_MS = 120_000L
   const val DEFAULT_TIMEOUT_MS = 60_000L
   const val MAX_PROMPT_CHARS = 16_000
   const val MAX_SYSTEM_CHARS = 8_192
+  const val MAX_REQUEST_ID_CHARS = 256 // request_id is echoed verbatim into the result — bound it
 
   /**
    * Parsed, validated ABI request. [prompt] and [token] are non-blank and trimmed; [timeoutMs] is
@@ -86,7 +96,7 @@ object RelaisIntentAbi {
       timeoutMs = resolveTimeout(getString, getLong),
       token = token,
       resultPackage = getString(EXTRA_RESULT_PACKAGE)?.takeIf { it.isNotBlank() },
-      requestId = getString(EXTRA_REQUEST_ID)?.takeIf { it.isNotBlank() },
+      requestId = getString(EXTRA_REQUEST_ID)?.takeIf { it.isNotBlank() }?.take(MAX_REQUEST_ID_CHARS),
     )
   }
 
@@ -125,4 +135,38 @@ object RelaisIntentAbi {
     if (requestId != null) intent.putExtra(EXTRA_REQUEST_ID, requestId)
     return intent
   }
+
+  /**
+   * Outcome of the pre-decode gate chain. [Run] => hand the request to the foreground service;
+   * [Reject] => deliver the structured error and finish (no decode).
+   */
+  sealed interface AbiGate {
+    /** All gates passed — the activity hands off to [RelaisAutomationService]. */
+    data object Run : AbiGate
+
+    /**
+     * A gate failed. [error] is a wire error code (see ERROR_*); [broadcast] is false ONLY for the
+     * unauthenticated path, so an unauthenticated caller can never elicit a RESULT broadcast from the
+     * Relais UID to a package it named.
+     */
+    data class Reject(val error: String, val broadcast: Boolean) : AbiGate
+  }
+
+  /**
+   * Pure pre-decode gate decision, evaluated in strict security order:
+   *  1. AUTH      — `!authorized` => [AbiGate.Reject] `unauthorized`, **broadcast = false**.
+   *  2. READINESS — `!ready`      => [AbiGate.Reject] `node_not_running` (never cold-start from intent).
+   *  3. THERMAL   — `shouldShed`  => [AbiGate.Reject] `thermal_backpressure`.
+   *  else => [AbiGate.Run].
+   *
+   * Extracted from the (exported, transparent) activity so the ordering and the broadcast-suppression
+   * invariant are unit-testable as plain JVM logic instead of through a fragile activity launch.
+   */
+  fun gate(authorized: Boolean, ready: Boolean, shouldShed: Boolean): AbiGate =
+    when {
+      !authorized -> AbiGate.Reject(ERROR_UNAUTHORIZED, broadcast = false)
+      !ready -> AbiGate.Reject(ERROR_NODE_NOT_RUNNING, broadcast = true)
+      shouldShed -> AbiGate.Reject(ERROR_THERMAL, broadcast = true)
+      else -> AbiGate.Run
+    }
 }
