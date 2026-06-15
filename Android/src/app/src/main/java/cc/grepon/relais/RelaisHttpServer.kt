@@ -592,7 +592,7 @@ class RelaisHttpServer(
             JSONObject()
               .put("index", 0)
               .put("message", assistantMessage)
-              .put("finish_reason", "stop")))
+              .put("finish_reason", result.finishReason)))
           .put("usage", buildUsageObject(request.text, result.completionTokens))
           .put("x_relais_usage_note", "prompt_tokens_estimated")
       RelaisMetrics.recordRequest("/v1/chat/completions", 200)
@@ -635,8 +635,9 @@ class RelaisHttpServer(
         shouldCancel = { ThermalGovernor.shouldTruncate() },
         onReasoning = { r -> emitDelta(JSONObject().put("reasoning_content", r), null) },
       )
-      // Final chunk: finish_reason="stop" + usage block (always included for client compatibility).
-      // OpenAI spec allows usage on the terminal chunk; we always emit it regardless of
+      // Final chunk: finish_reason (result.finishReason — "length" if thermally truncated, else
+      // "stop"; issue #22) + usage block (always included for client compatibility). OpenAI spec
+      // allows usage on the terminal chunk; we always emit it regardless of
       // stream_options.include_usage — intermediate chunks carry no usage field.
       val finalChunk = JSONObject().put("id", id).put("object", "chat.completion.chunk")
         .put("created", System.currentTimeMillis() / 1000)
@@ -644,7 +645,7 @@ class RelaisHttpServer(
         .put("choices", JSONArray().put(
           JSONObject().put("index", 0)
             .put("delta", JSONObject())
-            .put("finish_reason", "stop")))
+            .put("finish_reason", result.finishReason)))
         .put("usage", buildUsageObject(request.text, result.completionTokens))
         .put("x_relais_usage_note", "prompt_tokens_estimated")
       out.write("data: $finalChunk\n\n".toByteArray()); out.flush()
@@ -668,8 +669,9 @@ class RelaisHttpServer(
     // A cooperatively-cancelled / thermally-truncated stream can finish before the first token, so
     // assistantText is blank. Persisting a blank assistant turn would seed a future bare-turn recall
     // with an empty reply, so skip the whole record when there's no reply to store. (A NON-empty but
-    // truncated reply is still stored as-is, best-effort, until RelaisResult carries a finish/
-    // truncated signal — the deferred work noted near RelaisEngine's finishReason.)
+    // truncated reply is still stored as-is, best-effort: this method receives only the reply text,
+    // not the [RelaisResult]. Gating recall on [RelaisResult.finishReason] == LENGTH is a possible
+    // follow-up, not part of issue #22.)
     if (assistantText.isBlank()) return
     runCatching { runBlocking { RelaisSessionStore.record(context, key, userText, assistantText) } }
       .onFailure { Log.w(TAG, "session record failed (swallowed)") }
@@ -809,7 +811,7 @@ class RelaisHttpServer(
         val choice = JSONObject()
           .put("index", 0)
           .put("message", JSONObject().put("role", "assistant").put("content", resolved.first))
-          .put("finish_reason", "stop")
+          .put("finish_reason", result.finishReason)
         if (resolved.second) choice.put("x_relais_structured_output_repaired", true)
         val resp = JSONObject()
           .put("id", id)
@@ -1016,7 +1018,8 @@ internal fun estimatePromptTokens(text: String): Int =
 /**
  * Builds the assistant message JSON + finish_reason for a tool completion. When the model emitted
  * tool calls, content is null and `tool_calls[]` is populated (finish_reason="tool_calls");
- * otherwise it is a plain text answer (finish_reason="stop").
+ * otherwise it is a plain text answer carrying the engine's [RelaisResult.finishReason] ("stop", or
+ * "length" if the decode was thermally truncated — issue #22).
  *
  * [streaming] controls whether each tool_call object also carries an `index` field (0-based) — the
  * OpenAI streaming contract requires clients to accumulate streamed delta fragments by `index`; that
@@ -1039,10 +1042,12 @@ internal fun buildToolAssistantMessage(result: RelaisResult, streaming: Boolean 
       .put("role", "assistant")
       .put("content", JSONObject.NULL)
       .put("tool_calls", calls)
-    message to "tool_calls"
+    message to RelaisFinishReason.TOOL_CALLS
   } else {
+    // No tool calls -> a plain text reply. Carry the engine's finish_reason so a thermally
+    // truncated answer reports "length" (issue #22), not a hardcoded "stop".
     val message = JSONObject().put("role", "assistant").put("content", result.text)
-    message to "stop"
+    message to result.finishReason
   }
 
 /**
