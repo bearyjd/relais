@@ -58,6 +58,28 @@ class ToolResponseShapingTest {
     toolCalls = emptyList(),
   )
 
+  // A thermally-truncated text result (issue #22): no tool calls, finishReason carries "length".
+  private val truncatedTextResult = RelaisResult(
+    text = "The weather in Paris is",
+    backend = RelaisBackend.GPU_LITERTLM,
+    decodeTokensPerSec = 0.0,
+    completionTokens = 4,
+    toolCalls = emptyList(),
+    finishReason = RelaisFinishReason.LENGTH,
+  )
+
+  // A truncated result that ALSO carries tool calls — tool_calls must still win over "length".
+  private val truncatedToolResult = RelaisResult(
+    text = "",
+    backend = RelaisBackend.GPU_LITERTLM,
+    decodeTokensPerSec = 0.0,
+    completionTokens = 0,
+    toolCalls = listOf(
+      ParsedToolCall(id = "call_ccc", name = "get_weather", argumentsJson = "{\"city\":\"Paris\"}"),
+    ),
+    finishReason = RelaisFinishReason.LENGTH,
+  )
+
   // Helper: pull the i-th tool_call entry from the message's tool_calls array.
   private fun toolCallAt(message: JSONObject, i: Int): JSONObject =
     message.getJSONArray("tool_calls").getJSONObject(i)
@@ -171,5 +193,26 @@ class ToolResponseShapingTest {
   fun `text result - no tool_calls field`() {
     val (message, _) = buildToolAssistantMessage(textResult)
     assertFalse("text result must not have tool_calls", message.has("tool_calls"))
+  }
+
+  // ---- thermal truncation (issue #22) ----
+
+  @Test
+  fun `truncated text result - finish_reason is length`() {
+    val (_, finishReason) = buildToolAssistantMessage(truncatedTextResult)
+    assertEquals("length", finishReason)
+  }
+
+  @Test
+  fun `truncated text result - content is the partial reply`() {
+    val (message, _) = buildToolAssistantMessage(truncatedTextResult)
+    assertEquals("The weather in Paris is", message.optString("content"))
+  }
+
+  @Test
+  fun `tool calls take precedence over truncation finish_reason`() {
+    // Even if the engine flagged truncation, an emitted tool call must report "tool_calls".
+    val (_, finishReason) = buildToolAssistantMessage(truncatedToolResult, streaming = false)
+    assertEquals("tool_calls", finishReason)
   }
 }

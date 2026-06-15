@@ -36,7 +36,7 @@ import com.google.ai.edge.litertlm.tool
 import java.io.File
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
-import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 import org.json.JSONObject
 
 private const val TAG = "RelaisEngine"
@@ -153,11 +153,11 @@ data class RelaisResult(
    * Raw decode token count from the onMessage callback loop (completion_tokens in OpenAI usage).
    * Zero for the NPU/AICore path which does not expose per-token callbacks (UNVERIFIED path).
    *
-   * NOTE: on a cooperative cancel (thermal truncate via [ThermalGovernor.shouldTruncate] or broken
-   * pipe in the onToken lambda) this counter reflects all tokens the engine DECODED — which may
-   * exceed the tokens the client actually received in its SSE stream. A future
-   * finish_reason="length" signal will make this visible to callers; deferred (needs
-   * RelaisResult.finishReason + cancel-state threading across both HTTP paths).
+   * NOTE: on a cooperative cancel — thermal truncate (via [ThermalGovernor.shouldTruncate]) OR a
+   * broken pipe in the onToken lambda — this counter reflects all tokens the engine DECODED, which
+   * may exceed those the client actually received over its SSE stream. Both causes skew the count;
+   * only the thermal case is additionally surfaced via [finishReason] = [RelaisFinishReason.LENGTH]
+   * (issue #22). The broken-pipe case is not (no client remains to read it).
    */
   val completionTokens: Int,
   /**
@@ -173,6 +173,15 @@ data class RelaisResult(
    * tokens are decoded but are not visible-answer tokens).
    */
   val reasoning: String? = null,
+  /**
+   * OpenAI `finish_reason` for this completion. Default [RelaisFinishReason.STOP] (natural end);
+   * [generate] sets it to [RelaisFinishReason.LENGTH] when a thermal cooperative-cancel truncated the
+   * decode (issue #22). Best-effort: LENGTH is reported only when a decode callback observes the
+   * cancel before the native run's natural end (the decode is not natively interruptible) — see
+   * [RelaisFinishReason]. The blocking tool path ([generateWithTools]) leaves the default — it has no
+   * per-token truncation seam; the HTTP layer derives `"tool_calls"` from [toolCalls] when present.
+   */
+  val finishReason: String = RelaisFinishReason.STOP,
 )
 
 /**
@@ -430,7 +439,12 @@ object RelaisEngine {
           var tokens = 0
           var firstTokenNs = 0L
           var lastTokenNs = 0L
-          val canceled = AtomicBoolean(false)
+          // Running cancel bookkeeping (issue #22). `canceled` stops streaming; `truncated` records a
+          // device-protective thermal cut (-> finish_reason="length") and is set ONLY via a THERMAL
+          // cancel, never a broken-pipe abort (client gone -> no reader -> stays "stop"). Mutated only
+          // on the (sequential) callback thread; the post-await read below is safe via the latch's
+          // happens-before. AtomicReference also covers the in-stream reads during the callback.
+          val cancelState = AtomicReference(DecodeCancelState())
           val latch = CountDownLatch(1)
           val error = arrayOfNulls<Throwable>(1)
           // Request the reasoning channel only when the client opted in (OpenAI reasoning_effort).
@@ -453,11 +467,11 @@ object RelaisEngine {
 
                 step.reasoningToEmit?.let { reasoning ->
                   reasoningSb.append(reasoning)
-                  if (!canceled.get()) {
+                  if (!cancelState.get().canceled) {
                     try {
                       onReasoning?.invoke(reasoning)
                     } catch (t: Throwable) {
-                      canceled.set(true)
+                      cancelState.updateAndGet { RelaisFinishReason.applyCancel(it, DecodeCancelCause.BROKEN_PIPE) }
                     }
                   }
                 }
@@ -466,7 +480,9 @@ object RelaisEngine {
                 if (delta == null) {
                   // Reasoning-only callback: no visible token to count/emit. Still honor cooperative
                   // cancel so a long thinking phase can be thermally truncated / pipe-aborted.
-                  if (shouldCancel?.invoke() == true) canceled.set(true)
+                  if (shouldCancel?.invoke() == true) {
+                    cancelState.updateAndGet { RelaisFinishReason.applyCancel(it, DecodeCancelCause.THERMAL) }
+                  }
                   return
                 }
 
@@ -476,19 +492,19 @@ object RelaisEngine {
                 lastTokenNs = now
                 tokens++
                 sb.append(delta)
-                if (canceled.get()) return
+                if (cancelState.get().canceled) return
                 // Cooperative cancel: thermal-truncate (device-protective) or client disconnect
                 // (onToken throws on a broken pipe). Best-effort — it stops streaming to the client;
                 // native decode is bounded by maxNumTokens. True mid-decode native stop is a TODO
                 // pending a litertlm cancellation API (see SPIKE-FINDINGS / Gate 2 stopResponse).
                 if (shouldCancel?.invoke() == true) {
-                  canceled.set(true)
+                  cancelState.updateAndGet { RelaisFinishReason.applyCancel(it, DecodeCancelCause.THERMAL) }
                   return
                 }
                 try {
                   onToken?.invoke(delta)
                 } catch (t: Throwable) {
-                  canceled.set(true)
+                  cancelState.updateAndGet { RelaisFinishReason.applyCancel(it, DecodeCancelCause.BROKEN_PIPE) }
                 }
               }
 
@@ -514,6 +530,7 @@ object RelaisEngine {
             decodeTokensPerSec = tokS,
             completionTokens = tokens,
             reasoning = reasoningSb.toString().takeIf { it.isNotEmpty() },
+            finishReason = RelaisFinishReason.forCompletion(cancelState.get().truncated),
           )
         } finally {
           conversation.close()
