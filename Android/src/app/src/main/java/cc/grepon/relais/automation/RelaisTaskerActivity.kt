@@ -12,47 +12,44 @@
 
 package cc.grepon.relais.automation
 
+import android.app.Activity
 import android.content.Intent
+import android.os.Build
 import android.os.Bundle
 import android.util.Log
-import androidx.activity.ComponentActivity
-import androidx.lifecycle.lifecycleScope
 import cc.grepon.relais.RelaisConfig
 import cc.grepon.relais.RelaisMetrics
 import cc.grepon.relais.ThermalGovernor
 import cc.grepon.relais.core.RelaisInference
 import cc.grepon.relais.templates.WorkflowRegistry
 import java.security.MessageDigest
-import java.util.concurrent.atomic.AtomicBoolean
-import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.TimeoutCancellationException
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withTimeout
 
 private const val TAG = "RelaisTasker"
 private const val METRIC_ENDPOINT = "/automation"
 
 /**
- * Exported, NoDisplay activity backing the Tasker/Automate intent ABI (#8). An automation app (or
+ * Exported, transparent trampoline backing the Tasker/Automate intent ABI (#8). An automation app (or
  * adb) launches it with [RelaisIntentAbi.ACTION_INFER], a prompt, and the node's API key; the answer
- * comes back via activity-result and (when `result_package` is set) a package-targeted RESULT
- * broadcast.
+ * comes back via a package-targeted RESULT broadcast (set `result_package`).
  *
- * Gating order (each gate delivers a structured error + finishes, never running inference past it):
- *  1. AUTH (mandatory) — constant-time token compare; mismatch => `unauthorized` (+ 401 metric).
- *  2. COLD-START GUARD — only a CONSUMER of the resident engine; if not [RelaisInference.isReady] =>
- *     `node_not_running`. NEVER cold-starts the engine from an exported intent.
- *  3. THERMAL (device-safety) — [ThermalGovernor.shouldShed] => `thermal_backpressure`. The ABI must
- *     not bypass thermal shedding.
- *  4. SINGLE-FLIGHT — a process-global latch so a looped exported launch can't stack decodes; busy =>
- *     `busy`.
+ * It is ONLY a gate + hand-off (the #44 fix). The multi-second decode does NOT run here: a transparent
+ * activity — especially under a cross-app launch — is torn down before a 30–120s decode completes, so
+ * the old in-activity coroutine never delivered the success path. The decode now runs in
+ * [RelaisAutomationService] (a started foreground service), exactly like the share path. This activity:
  *
- * The 30–120s decode runs in a [lifecycleScope] coroutine on [Dispatchers.IO], bounded by
- * [withTimeout] — acceptable in a NoDisplay activity (it's a coroutine, not the main thread, so no
- * ANR). The result NEVER echoes the token (see [RelaisIntentAbi.buildResultIntent]).
+ *  1. Parses + validates the request ([RelaisIntentAbi.parseRequest]); a missing prompt/token => just
+ *     RESULT_CANCELED + finish (no structured outcome to deliver).
+ *  2. Runs the pure gate chain ([RelaisIntentAbi.gate]) in security order:
+ *       AUTH (constant-time) -> READINESS (consumer only, never cold-starts) -> THERMAL.
+ *     A failed gate is delivered SYNCHRONOUSLY here (activity-result + targeted broadcast, the broadcast
+ *     suppressed for the unauthenticated path) and the activity finishes.
+ *  3. On pass, resolves the system prompt, hands the (token-free) request to [RelaisAutomationService],
+ *     sets RESULT_OK as a bare "accepted" ack, and finishes immediately.
+ *
+ * Single-flight + the decode + the run-outcome broadcast all live in the service. The result NEVER
+ * echoes the token (see [RelaisIntentAbi.buildResultIntent]).
  */
-class RelaisTaskerActivity : ComponentActivity() {
+class RelaisTaskerActivity : Activity() {
 
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
@@ -69,88 +66,87 @@ class RelaisTaskerActivity : ComponentActivity() {
       return
     }
 
-    // 1. AUTH (mandatory). Constant-time compare, same as the HTTP path. No inference on a bad token.
-    if (!authorized(request.token)) {
-      Log.w(TAG, "rejected INFER intent: missing/invalid token")
-      RelaisMetrics.recordRequest(METRIC_ENDPOINT, 401)
-      // Activity-result only (broadcast=false): never emit a broadcast on an unauthenticated request.
-      deliver(request, ok = false, response = null, error = "unauthorized", broadcast = false)
-      finish()
-      return
-    }
-
-    // 2. COLD-START GUARD. Consumer only — never provision/cold-start the engine from this intent.
-    if (!RelaisInference.isReady()) {
-      Log.i(TAG, "node not running; refusing to cold-start from INFER intent")
-      finishWith(request, ok = false, error = "node_not_running")
-      return
-    }
-
-    // 3. THERMAL (device-safety blocker). The ABI honors thermal shedding like every inference path.
-    if (ThermalGovernor.shouldShed()) {
-      Log.i(TAG, "thermal backpressure; shedding INFER intent")
-      RelaisMetrics.recordShed()
-      finishWith(request, ok = false, error = "thermal_backpressure")
-      return
-    }
-
-    // 4. SINGLE-FLIGHT. One ABI decode at a time so a looped exported launch can't stack decodes on
-    // the engine lock (mirrors the share service's process-global latch).
-    if (!inFlight.compareAndSet(false, true)) {
-      Log.i(TAG, "an ABI inference is already running; dropping this launch")
-      finishWith(request, ok = false, error = "busy")
-      return
-    }
-
-    val system = request.system ?: WorkflowRegistry.resolve(this, request.templateId)?.system
-    lifecycleScope.launch(Dispatchers.IO) {
-      try {
-        val answer =
-          withTimeout(request.timeoutMs) {
-            RelaisInference.completeText(applicationContext, request.prompt, system)
-          }
-        RelaisMetrics.recordRequest(METRIC_ENDPOINT, 200)
-        deliver(request, ok = true, response = answer, error = null)
-      } catch (t: TimeoutCancellationException) {
-        // withTimeout's own cancellation: a real ABI outcome, not caller cancellation — deliver it.
-        Log.i(TAG, "ABI inference timed out after ${request.timeoutMs}ms")
-        RelaisMetrics.recordRequest(METRIC_ENDPOINT, 504)
-        deliver(request, ok = false, response = null, error = "timeout")
-      } catch (t: CancellationException) {
-        throw t // never swallow structured cancellation (e.g. the activity being torn down)
-      } catch (t: RelaisInference.NodeNotReadyException) {
-        Log.i(TAG, "node went down mid-run", t)
-        RelaisMetrics.recordRequest(METRIC_ENDPOINT, 503)
-        deliver(request, ok = false, response = null, error = "node_not_running")
-      } catch (t: Throwable) {
-        Log.e(TAG, "ABI inference failed", t) // never silently swallow
-        RelaisMetrics.recordRequest(METRIC_ENDPOINT, 500)
-        deliver(request, ok = false, response = null, error = t.message ?: "inference failed")
-      } finally {
-        inFlight.set(false) // always release the single-flight latch, incl. on cancellation
-        finish()
-      }
+    when (val gate =
+      RelaisIntentAbi.gate(
+        authorized = authorized(request.token),
+        ready = RelaisInference.isReady(),
+        shouldShed = ThermalGovernor.shouldShed(),
+      )
+    ) {
+      is RelaisIntentAbi.AbiGate.Reject -> rejectAndFinish(request, gate)
+      RelaisIntentAbi.AbiGate.Run -> runAndFinish(request)
     }
   }
 
-  /** Constant-time bearer-key compare, identical to the HTTP server's [authorized]. */
+  /** Constant-time bearer-key compare, identical to the HTTP server's `authorized`. */
   private fun authorized(token: String): Boolean =
     MessageDigest.isEqual(token.toByteArray(), RelaisConfig.apiKey(this).toByteArray())
 
-  /** Delivers an early-exit outcome (gate failure): result + targeted broadcast, then finishes. */
-  private fun finishWith(request: RelaisIntentAbi.AbiRequest, ok: Boolean, error: String?) {
-    deliver(request, ok = ok, response = null, error = error)
-    setResult(if (ok) RESULT_OK else RESULT_CANCELED)
+  /**
+   * Delivers a gate failure synchronously and finishes. The unauthorized path records a 401 and
+   * suppresses the broadcast; the thermal path records a shed. The cold-start (`node_not_running`) gate
+   * records no request metric, matching the prior behavior.
+   */
+  private fun rejectAndFinish(
+    request: RelaisIntentAbi.AbiRequest,
+    reject: RelaisIntentAbi.AbiGate.Reject,
+  ) {
+    when (reject.error) {
+      RelaisIntentAbi.ERROR_UNAUTHORIZED -> {
+        Log.w(TAG, "rejected INFER intent: missing/invalid token")
+        RelaisMetrics.recordRequest(METRIC_ENDPOINT, 401)
+      }
+      RelaisIntentAbi.ERROR_THERMAL -> {
+        Log.i(TAG, "thermal backpressure; shedding INFER intent")
+        RelaisMetrics.recordShed()
+      }
+      RelaisIntentAbi.ERROR_NODE_NOT_RUNNING ->
+        Log.i(TAG, "node not running; refusing to cold-start from INFER intent")
+    }
+    // deliver() sets RESULT_CANCELED + the error data intent (and broadcasts unless suppressed); don't
+    // overwrite it with a bare setResult, or startActivityForResult callers lose the error.
+    deliver(request, ok = false, response = null, error = reject.error, broadcast = reject.broadcast)
+    finish()
+  }
+
+  /** Resolves the system prompt, hands the request to the foreground service, and finishes. */
+  private fun runAndFinish(request: RelaisIntentAbi.AbiRequest) {
+    val system = request.system ?: WorkflowRegistry.resolve(this, request.templateId)?.system
+    val svc =
+      RelaisAutomationService.startIntent(
+        context = this,
+        prompt = request.prompt,
+        system = system,
+        timeoutMs = request.timeoutMs,
+        resultPackage = request.resultPackage,
+        requestId = request.requestId,
+      )
+    val started =
+      runCatching {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(svc)
+        else startService(svc)
+      }.isSuccess
+    if (started) {
+      // Bare "accepted" ack for startActivityForResult callers; the answer arrives via the RESULT
+      // broadcast (a finished activity can't carry an async decode result).
+      setResult(RESULT_OK)
+    } else {
+      // The OS rejected the FGS start (rare from a foreground activity); deliver a structured error
+      // rather than silently dropping the request. The caller is already authenticated => broadcast ok.
+      // deliver() sets RESULT_CANCELED + the error data intent itself.
+      Log.w(TAG, "failed to start automation service")
+      deliver(request, ok = false, response = null, error = RelaisIntentAbi.ERROR_UNAVAILABLE)
+    }
     finish()
   }
 
   /**
-   * Delivers the outcome two ways:
-   *  - activity-result (for `startActivityForResult` callers) — set whenever we have a structured
-   *    outcome (the gate paths set their own RESULT_* before finishing; the run path sets it here).
-   *  - a RESULT broadcast — ONLY when `result_package` is set, and ALWAYS targeted via
-   *    [Intent.setPackage]. Never a global/implicit broadcast: that would leak the model output to
-   *    every installed app. The RESULT intent never carries the token.
+   * Delivers a synchronous outcome two ways:
+   *  - activity-result (for `startActivityForResult` callers).
+   *  - a RESULT broadcast — ONLY when `result_package` is set and [broadcast] is true, and ALWAYS
+   *    targeted via [Intent.setPackage]. Never global/implicit (that would leak output to every app);
+   *    suppressed on the unauthenticated path so a bad token can't elicit a broadcast from the Relais
+   *    UID. The RESULT never carries the token.
    */
   private fun deliver(
     request: RelaisIntentAbi.AbiRequest,
@@ -168,20 +164,11 @@ class RelaisTaskerActivity : ComponentActivity() {
         requestId = request.requestId,
       )
     setResult(if (ok) RESULT_OK else RESULT_CANCELED, result)
-    // The broadcast is suppressed on the pre-auth (unauthenticated) path so an unauthenticated caller
-    // can't elicit a RESULT broadcast from the Relais UID to a package it chose.
     if (!broadcast) return
     request.resultPackage?.let { pkg ->
-      // Targeted broadcast only — setPackage scopes delivery to the named app (never implicit).
-      val out = Intent(result).setPackage(pkg)
+      val out = Intent(result).setPackage(pkg) // targeted only — setPackage scopes delivery
       runCatching { sendBroadcast(out) }
         .onFailure { Log.w(TAG, "failed to send targeted RESULT broadcast to $pkg", it) }
     }
-  }
-
-  companion object {
-    // Process-global single-flight: one ABI decode at a time, shared across every exported launch so
-    // a malicious app looping the activity can't stack 30–120s decodes on the engine lock.
-    private val inFlight = AtomicBoolean(false)
   }
 }

@@ -5,9 +5,11 @@ Automate) and `adb` can send a prompt to the on-device node and capture the resp
 the existing `--es cmd start|stop` lifecycle control on `RelaisControlActivity` (see the control
 panel) with a structured prompt → response path.
 
-It is implemented by `RelaisTaskerActivity` (a NoDisplay activity) plus the pure
-`RelaisIntentAbi` (action + extra-key constants, request parsing, result building). It is a
-**consumer** of the already-resident engine — it never cold-starts the node.
+It is implemented by `RelaisTaskerActivity` (a transparent trampoline that authenticates and gates,
+then finishes immediately), the `RelaisAutomationService` (a short-lived foreground service that runs
+the decode off the activity's lifecycle so a 30–120s inference survives a cross-app launch — issue
+#44), and the pure `RelaisIntentAbi` (action + extra-key constants, request parsing, result building).
+It is a **consumer** of the already-resident engine — it never cold-starts the node.
 
 ## INFER action
 
@@ -69,7 +71,8 @@ The result **never** contains the `token` or any other secret.
 | `thermal_backpressure`| The device is shedding under thermal load. Retry later. |
 | `busy`                | Another ABI inference is already running (single-flight). Retry. |
 | `timeout`             | The decode exceeded `timeout_ms`. |
-| *(other)*             | An unexpected inference error; the message is surfaced as the `error` string. |
+| `unavailable`         | The OS rejected the foreground-service handoff (e.g. a cross-app launch from a backgrounded app under stricter FGS rules). The request did not run — retry with the launching app foregrounded. |
+| `inference_failed`    | The decode threw. An **opaque, stable** code: the internal exception message is never broadcast to a third-party package (it is logged on-device only). |
 
 ## Tasker example
 
@@ -110,7 +113,8 @@ adb shell am start -W \
   --es timeout_ms "30000"
 ```
 
-The activity is NoDisplay, so nothing is shown; the answer is delivered via the result/broadcast.
+The activity is transparent and finishes immediately; the answer is delivered asynchronously via the
+result broadcast (the decode runs in the foreground service, not the activity).
 (`adb` can't easily read an activity-result, so adb is mainly useful for triggering a run plus a
 `result_package` broadcast into a receiver app.)
 
@@ -124,11 +128,23 @@ The activity is NoDisplay, so nothing is shown; the answer is delivered via the 
 - **RESULT broadcasts are package-targeted, never global.** The broadcast is sent only when you set
   `result_package`, and is always scoped to that package, so the model output is never broadcast to
   other apps.
+- **`result_package` is caller-chosen, trusted to the API key.** The node delivers the output to
+  whatever package an **authenticated** caller names. Possessing the API key already grants full
+  inference, so directing where the answer goes is part of that same trust — the key is the security
+  boundary. Pass only a `result_package` you control.
 - **Device-safety gates are honored.** The ABI respects thermal shedding (`thermal_backpressure`),
   refuses to cold-start the engine (`node_not_running`), and serializes decodes with a single-flight
   latch (`busy`) — it cannot be used to bypass the protections the HTTP path enforces.
 - **No back-stack/recents footprint.** The activity is `noHistory` + `excludeFromRecents`, so a
   prompt never lingers in recents or the back stack.
 
-> Note: on-device validation of this ABI (Tasker round-trip on a real device) is deferred; the pure
-> ABI (parse + result-build, including the no-token-leak guard) is covered by JVM unit tests.
+> On-device validation (rango / Pixel 10 / Tensor G5, gemma-4-E2B). **In-process** (`TaskerIntentProbe`):
+> cold→`node_not_running`, bad-token→no broadcast, warm→`ok` delivered with no token echo, and
+> single-flight→exactly one `ok` + one `busy` (both delivered). **Cross-app** (fired from a separate
+> package/UID into a distinct receiver app): the foreground-service decode runs to completion across a
+> cross-app launch — no FGS rejection, no crash, and `/metrics` `…endpoint="/automation",status="200"`
+> increments — the targeted RESULT broadcast reaches the other app, an unauthenticated fire elicits no
+> broadcast, and no result ever echoes the token. (Capturing a clean cross-app `ok=true` in one line was
+> gated by the G5 thermal-headroom shed during the run — the safety gate working as intended; the
+> success-delivery path itself is covered in-process.) The pure ABI (parse + result-build) is covered by
+> JVM unit tests.

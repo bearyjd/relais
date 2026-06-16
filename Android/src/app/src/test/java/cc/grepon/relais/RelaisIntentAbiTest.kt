@@ -12,6 +12,7 @@
 
 package cc.grepon.relais
 
+import cc.grepon.relais.automation.RelaisAutomationService
 import cc.grepon.relais.automation.RelaisIntentAbi
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -20,6 +21,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
+import org.robolectric.RuntimeEnvironment
 import org.robolectric.annotation.Config
 
 /**
@@ -234,6 +236,16 @@ class RelaisIntentAbiTest {
     assertEquals(RelaisIntentAbi.MAX_SYSTEM_CHARS, req.system?.length)
   }
 
+  @Test fun `over-cap request id is truncated — it is echoed verbatim into the result`() {
+    val big = "r".repeat(RelaisIntentAbi.MAX_REQUEST_ID_CHARS + 500)
+    val req = RelaisIntentAbi.parseRequest(
+      strings(mapOf(RelaisIntentAbi.EXTRA_PROMPT to "p", RelaisIntentAbi.EXTRA_TOKEN to "k", RelaisIntentAbi.EXTRA_REQUEST_ID to big)),
+      longs(emptyMap()),
+    )
+    requireNotNull(req)
+    assertEquals(RelaisIntentAbi.MAX_REQUEST_ID_CHARS, req.requestId?.length)
+  }
+
   // ---- buildResultIntent (real Intent under Robolectric) ----
 
   @Test fun `result ok intent carries response and request id and action`() {
@@ -297,5 +309,96 @@ class RelaisIntentAbiTest {
         assertFalse("token extra key leaked: $key", key == RelaisIntentAbi.EXTRA_TOKEN)
       }
     }
+  }
+
+  // ---- gate(): pure pre-decode decision, security ordering + broadcast suppression ----
+
+  @Test fun `gate runs when authorized, ready, and not shedding`() {
+    assertEquals(
+      RelaisIntentAbi.AbiGate.Run,
+      RelaisIntentAbi.gate(authorized = true, ready = true, shouldShed = false),
+    )
+  }
+
+  @Test fun `gate rejects unauthorized WITHOUT a broadcast`() {
+    val g = RelaisIntentAbi.gate(authorized = false, ready = true, shouldShed = false)
+    val reject = g as RelaisIntentAbi.AbiGate.Reject
+    assertEquals(RelaisIntentAbi.ERROR_UNAUTHORIZED, reject.error)
+    assertFalse("an unauthenticated request must never elicit a broadcast", reject.broadcast)
+  }
+
+  @Test fun `gate checks auth FIRST — unauthorized wins over not-ready and shedding`() {
+    // Even with the node down AND thermal shedding, a bad token must surface as `unauthorized`
+    // (and stay broadcast-suppressed) — never leak readiness/thermal state to an unauthenticated caller.
+    val g = RelaisIntentAbi.gate(authorized = false, ready = false, shouldShed = true)
+    val reject = g as RelaisIntentAbi.AbiGate.Reject
+    assertEquals(RelaisIntentAbi.ERROR_UNAUTHORIZED, reject.error)
+    assertFalse(reject.broadcast)
+  }
+
+  @Test fun `gate rejects node_not_running when authorized but not ready, with a broadcast`() {
+    val g = RelaisIntentAbi.gate(authorized = true, ready = false, shouldShed = false)
+    val reject = g as RelaisIntentAbi.AbiGate.Reject
+    assertEquals(RelaisIntentAbi.ERROR_NODE_NOT_RUNNING, reject.error)
+    assertTrue("an authenticated gate failure is broadcast to result_package", reject.broadcast)
+  }
+
+  @Test fun `gate checks readiness before thermal — not-ready wins over shedding`() {
+    val g = RelaisIntentAbi.gate(authorized = true, ready = false, shouldShed = true)
+    assertEquals(RelaisIntentAbi.ERROR_NODE_NOT_RUNNING, (g as RelaisIntentAbi.AbiGate.Reject).error)
+  }
+
+  @Test fun `gate rejects thermal_backpressure when authorized and ready but shedding`() {
+    val g = RelaisIntentAbi.gate(authorized = true, ready = true, shouldShed = true)
+    val reject = g as RelaisIntentAbi.AbiGate.Reject
+    assertEquals(RelaisIntentAbi.ERROR_THERMAL, reject.error)
+    assertTrue(reject.broadcast)
+  }
+
+  // ---- RelaisAutomationService start-intent round trip (build -> parse) ----
+
+  @Test fun `service intent round-trips all fields and carries no token`() {
+    val ctx = RuntimeEnvironment.getApplication()
+    val intent =
+      RelaisAutomationService.startIntent(
+        context = ctx,
+        prompt = "summarize this",
+        system = "be terse",
+        timeoutMs = 42_000L,
+        resultPackage = "net.dinglisch.android.taskerm",
+        requestId = "req-7",
+      )
+    // CRITICAL: the handoff intent must never carry the caller's token — auth is done in the activity.
+    assertFalse("service intent must not carry the token", intent.hasExtra(RelaisIntentAbi.EXTRA_TOKEN))
+
+    val job = requireNotNull(RelaisAutomationService.jobFromIntent(intent))
+    assertEquals("summarize this", job.prompt)
+    assertEquals("be terse", job.system)
+    assertEquals(42_000L, job.timeoutMs)
+    assertEquals("net.dinglisch.android.taskerm", job.resultPackage)
+    assertEquals("req-7", job.requestId)
+  }
+
+  @Test fun `service intent with only required fields parses with null optionals and default timeout`() {
+    val ctx = RuntimeEnvironment.getApplication()
+    val intent =
+      RelaisAutomationService.startIntent(
+        context = ctx,
+        prompt = "p",
+        system = null,
+        timeoutMs = RelaisIntentAbi.DEFAULT_TIMEOUT_MS,
+        resultPackage = null,
+        requestId = null,
+      )
+    val job = requireNotNull(RelaisAutomationService.jobFromIntent(intent))
+    assertEquals("p", job.prompt)
+    assertNull(job.system)
+    assertNull(job.resultPackage)
+    assertNull(job.requestId)
+    assertEquals(RelaisIntentAbi.DEFAULT_TIMEOUT_MS, job.timeoutMs)
+  }
+
+  @Test fun `service jobFromIntent is null for a null intent`() {
+    assertNull(RelaisAutomationService.jobFromIntent(null))
   }
 }
