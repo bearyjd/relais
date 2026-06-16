@@ -24,7 +24,9 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.os.Build
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
@@ -63,26 +65,56 @@ class RelaisShareService : Service() {
 
   private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
+  // The most recent startId. The service is a singleton: every start lands on this instance, so a
+  // rejected/duplicate start must never tear it down while a real decode runs (that silently loses the
+  // result). We only ever stop when idle, via [stopIfIdle].
+  @Volatile private var latestStartId = 0
+
+  // [stopIfIdle] runs ONLY on the main thread (where onStartCommand is delivered), so the `inFlight`
+  // check and the stop are serialized with every start and can never race a concurrent one.
+  private val mainHandler = Handler(Looper.getMainLooper())
+
   override fun onBind(intent: Intent?): IBinder? = null
 
   override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+    latestStartId = startId
     ensureChannel(this)
-    startForeground(PROGRESS_NOTIFICATION_ID, buildProgress(), foregroundType())
 
     val payload = intent?.getStringExtra(EXTRA_PAYLOAD)?.takeIf { it.isNotBlank() }
-    if (payload == null) {
-      // No usable payload reached the service (shouldn't happen — the trampoline gates on it). Stop
-      // cleanly without an inference or a misleading result.
-      Log.i(TAG, "no payload; stopping")
-      stopSelf(startId)
+
+    // Enter the foreground BEFORE the decode. If the OS rejects the FGS start — possible on a cross-app
+    // share from a backgrounded app, or under GrapheneOS's stricter FGS rules — do NOT let the uncaught
+    // exception crash the service: that silently drops the share. Post an error result and stop (only if
+    // idle, so a decode already in flight on this singleton instance is never torn down).
+    val foregrounded =
+      runCatching { startForeground(PROGRESS_NOTIFICATION_ID, buildProgress(), foregroundType()) }
+        .onFailure { Log.w(TAG, "OS rejected the foreground-service start; reporting unavailable", it) }
+        .isSuccess
+    if (!foregrounded) {
+      // Report only when idle: if a prior decode is in flight on this singleton it OWNS the single
+      // result-notification slot, so don't clobber its eventual result with an "unavailable" notice.
+      if (payload != null && !inFlight.get()) {
+        postResult(title = "Relais · unavailable", text = "Couldn't start the share service. Try again with Relais in the foreground.")
+      }
+      stopIfIdle()
       return START_NOT_STICKY
     }
 
-    // Drop a second concurrent share instead of stacking another decode on the engine lock.
+    if (payload == null) {
+      // No usable payload reached the service (shouldn't happen — the trampoline gates on it). Stop
+      // cleanly (only if idle) without an inference or a misleading result.
+      Log.i(TAG, "no payload; stopping if idle")
+      stopIfIdle()
+      return START_NOT_STICKY
+    }
+
+    // Drop a second concurrent share instead of stacking another decode on the engine lock. Do NOT stop
+    // the service here: a decode is in flight (that's why the CAS failed), and stopSelf on the latest
+    // startId would cancel it — silently losing the running share's result.
     if (!inFlight.compareAndSet(false, true)) {
       Log.i(TAG, "a share inference is already running; dropping this start")
       postResult(title = "Relais · busy", text = "A share is already being processed.")
-      stopSelf(startId)
+      stopIfIdle() // no-op while a decode runs; only stops a genuinely idle service
       return START_NOT_STICKY
     }
 
@@ -96,6 +128,9 @@ class RelaisShareService : Service() {
           return@launch
         }
         val system = RelaisConfig.shareSystemPrompt(applicationContext) ?: DEFAULT_SHARE_SYSTEM
+        // No caller-supplied timeout here (unlike the automation ABI's withTimeout(job.timeoutMs)): the
+        // share sheet has no timeout param, and the decode is already bounded by RelaisEngine's internal
+        // wait, so a wedged decode releases (then the next share proceeds) rather than hanging forever.
         val answer = runCatching {
           RelaisInference.completeText(applicationContext, prompt = payload, system = system)
         }.getOrElse { t ->
@@ -113,7 +148,10 @@ class RelaisShareService : Service() {
         postResult(title = "Relais · result", text = answer.take(RESULT_CAP)) // capped on the shade
       } finally {
         inFlight.set(false) // always release the single-flight latch, incl. on cancellation
-        stopSelf(startId)
+        // Run the stop decision on the main thread so it's serialized with onStartCommand: a start
+        // landing concurrently with this teardown is then either fully observed (we don't stop) or not
+        // yet begun (we stop an idle service it simply restarts) — never a cancelled live decode.
+        mainHandler.post { stopIfIdle() }
       }
     }
     return START_NOT_STICKY
@@ -121,8 +159,23 @@ class RelaisShareService : Service() {
 
   override fun onDestroy() {
     inFlight.set(false) // defensive: never leave the latch stuck if torn down mid-run
-    scope.cancel() // cancels the decode if the service is torn down (releases the engine lock)
+    // Best-effort: coroutine cancellation only stops the decode at the NEXT token callback. It does NOT
+    // interrupt the engine's in-progress native decode — RelaisEngine holds its lock across an internal
+    // bounded wait, not released by scope.cancel() (litertlm exposes no mid-decode cancel).
+    scope.cancel()
     super.onDestroy()
+  }
+
+  /**
+   * Stops the service, but ONLY when no decode is in flight — the `inFlight` check is the ENTIRE guard
+   * against tearing down a live decode (a busy/duplicate start's call here is a no-op while a decode
+   * runs). `latestStartId` is passed so `stopSelf(id)` matches the most-recent delivered start and
+   * therefore actually stops an idle service — a stale id would no-op and leak the foreground service.
+   * MUST run on the main thread (called directly from `onStartCommand`, or posted via [mainHandler]),
+   * so the `inFlight` read + `stopSelf` are serialized with every incoming start.
+   */
+  private fun stopIfIdle() {
+    if (!inFlight.get()) stopSelf(latestStartId)
   }
 
   private fun copyToClipboard(text: String) {
@@ -181,8 +234,8 @@ class RelaisShareService : Service() {
 
   companion object {
     // Process-global single-flight: one share decode at a time, so a malicious app looping the
-    // exported trampoline can't stack 30-120s decodes on the engine lock (the tile/widget paths get
-    // the same coalescing via enqueueUniqueWork(KEEP)).
+    // exported trampoline can't stack 30-120s decodes on the engine lock. (The tile/widget paths run
+    // through their own WorkManager workers, not this service, and coalesce independently.)
     private val inFlight = AtomicBoolean(false)
 
     /** Builds the start intent carrying [payload] for the share run. */
