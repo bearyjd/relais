@@ -90,9 +90,24 @@ class RelaisAutomationService : Service() {
   override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
     latestStartId = startId
     ensureChannel(this)
-    startForeground(PROGRESS_NOTIFICATION_ID, buildProgress(), foregroundType())
 
     val job = jobFromIntent(intent)
+
+    // Enter the foreground BEFORE running any decode. If the OS rejects the FGS start — possible on a
+    // cross-app launch from a backgrounded automation app, or under GrapheneOS's stricter FGS rules —
+    // do NOT let the uncaught exception crash the service: that silently loses the answer, which is the
+    // very #44 failure mode. Report a structured `unavailable` to the caller and stop (only if idle, so
+    // a decode already in flight on this singleton instance is never torn down).
+    val foregrounded =
+      runCatching { startForeground(PROGRESS_NOTIFICATION_ID, buildProgress(), foregroundType()) }
+        .onFailure { Log.w(TAG, "OS rejected the foreground-service start; reporting unavailable", it) }
+        .isSuccess
+    if (!foregrounded) {
+      if (job != null) deliver(job, ok = false, response = null, error = RelaisIntentAbi.ERROR_UNAVAILABLE)
+      stopIfIdle()
+      return START_NOT_STICKY
+    }
+
     if (job == null) {
       // No usable payload reached the service (the activity gates on a non-blank prompt). Stop cleanly
       // (only if idle) without a decode or a misleading result.
@@ -160,7 +175,10 @@ class RelaisAutomationService : Service() {
 
   override fun onDestroy() {
     inFlight.set(false) // defensive: never leave the latch stuck if torn down mid-run
-    scope.cancel() // cancels the decode if the service is torn down (releases the engine lock)
+    // Best-effort: coroutine cancellation only stops the decode at the NEXT token callback. It does
+    // NOT interrupt the engine's in-progress native decode — RelaisEngine holds its lock across an
+    // internal bounded wait, not released by scope.cancel() (litertlm exposes no mid-decode cancel).
+    scope.cancel()
     super.onDestroy()
   }
 
