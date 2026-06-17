@@ -12,20 +12,22 @@
 
 package cc.grepon.relais.embed
 
+import java.util.PriorityQueue
+
 /**
- * Pure-Kotlin SentencePiece **Unigram** encoder (feature #6). No native code, no protobuf dependency,
- * so it builds offline and unit-tests headlessly against golden fixtures.
+ * Pure-Kotlin SentencePiece encoder supporting both **Unigram** (Viterbi best-path) and **BPE** (greedy
+ * highest-priority adjacent-pair merge), dispatched by the model's `model_type` (feature #6). No native
+ * code, no protobuf dependency, so it builds offline and unit-tests headlessly against golden fixtures.
  *
- * Implements the Unigram lattice + byte-fallback algorithm, verified BYTE-EXACT against the reference
- * `SentencePieceProcessor.EncodeAsIds` for **identity-normalizer** models. It does NOT yet apply a
- * `precompiled_charsmap` (e.g. `nmt_nfkc`) or `remove_extra_whitespaces`; the constructor REJECTS
- * (fail-loud) any model needing those, so it can never silently emit wrong ids. EmbeddingGemma's real
- * `sentencepiece.model` carries an nmt_nfkc charsmap → full normalization + the byte-exact-vs-real
- * check land in the follow-up that adds charsmap support.
+ * Verified BYTE-EXACT against the reference `SentencePieceProcessor.EncodeAsIds` for both algorithms on
+ * identity-normalizer models — including the real **EmbeddingGemma** tokenizer (BPE, 262k vocab,
+ * identity normalizer, `byte_fallback`).
  *
- * Pipeline: normalize (escape spaces → `▁`, optional dummy prefix) → Viterbi best-path over the Unigram
- * lattice (per-position, a 1-char "unknown" node scored `minScore - 10` when no single-char piece
- * matches) → resolve unknown nodes to UTF-8 byte pieces (`<0xNN>`) when `byte_fallback`, else `unk`.
+ * Normalization: escape spaces → `▁`, optional dummy prefix. It does NOT apply a `precompiled_charsmap`
+ * (e.g. `nmt_nfkc`) or `remove_extra_whitespaces`; the constructor REJECTS (fail-loud) any model needing
+ * those, so it can never silently emit wrong ids. (EmbeddingGemma needs neither — its normalizer is
+ * identity.) Out-of-vocab code points resolve to UTF-8 byte pieces (`<0xNN>`) when `byte_fallback`,
+ * else `unk`.
  */
 class SentencePieceTokenizer(val model: SentencePieceModel) {
 
@@ -45,8 +47,15 @@ class SentencePieceTokenizer(val model: SentencePieceModel) {
     if (text.isEmpty()) return IntArray(0)
     val normalized = normalize(text)
     if (normalized.isEmpty()) return IntArray(0)
-
     val cps = normalized.codePoints().toArray()
+    return when (model.modelType) {
+      SentencePieceModel.MODEL_TYPE_BPE -> bpeEncode(cps)
+      else -> unigramEncode(cps) // UNIGRAM (default)
+    }
+  }
+
+  /** Unigram: Viterbi best-path over the lattice with a per-position unknown node (minScore − 10). */
+  private fun unigramEncode(cps: IntArray): IntArray {
     val n = cps.size
 
     val best = FloatArray(n + 1) { Float.NEGATIVE_INFINITY }
@@ -113,6 +122,64 @@ class SentencePieceTokenizer(val model: SentencePieceModel) {
   /** Total token count across [texts] (for usage accounting). */
   fun countTokens(texts: List<String>): Int = texts.sumOf { encode(it).size }
 
+  /**
+   * BPE: greedily merge the highest-priority adjacent pair whose concatenation is a vocab piece
+   * (mirrors SentencePiece `bpe_model.cc`). Ties break leftmost. Leftover non-vocab symbols (single
+   * OOV code points) byte-fall-back. Operates over a doubly-linked list of symbol spans.
+   */
+  private fun bpeEncode(cps: IntArray): IntArray {
+    val n = cps.size
+    val symStart = IntArray(n) { it }
+    val symEnd = IntArray(n) { it + 1 }
+    val prev = IntArray(n) { it - 1 }
+    val next = IntArray(n) { if (it + 1 < n) it + 1 else -1 }
+    val alive = BooleanArray(n) { true }
+    val sb = StringBuilder(model.maxPieceCodePoints)
+
+    fun pieceString(start: Int, end: Int): String {
+      sb.setLength(0)
+      for (k in start until end) sb.appendCodePoint(cps[k])
+      return sb.toString()
+    }
+
+    // Max-heap by score, then leftmost — matches SentencePiece's SymbolPair ordering.
+    val pq = PriorityQueue(16, compareByDescending<BpeCand> { it.score }.thenBy { it.left })
+    fun tryPush(left: Int) {
+      val right = next[left]
+      if (right == -1) return
+      val id = model.idOfPiece(pieceString(symStart[left], symEnd[right]))
+      if (id >= 0) pq.add(BpeCand(model.scores[id], left, symEnd[right] - symStart[left]))
+    }
+    for (i in 0 until n) tryPush(i)
+
+    while (pq.isNotEmpty()) {
+      val c = pq.poll()
+      val left = c.left
+      val right = next[left]
+      if (!alive[left] || right == -1 || !alive[right]) continue
+      if (symEnd[right] - symStart[left] != c.len) continue // stale: a neighbor grew since this was pushed
+      // Merge `right` into `left`.
+      symEnd[left] = symEnd[right]
+      alive[right] = false
+      val rn = next[right]
+      next[left] = rn
+      if (rn != -1) prev[rn] = left
+      tryPush(left)
+      if (prev[left] != -1) tryPush(prev[left])
+    }
+
+    val out = ArrayList<Int>(n)
+    var i = 0 // symbol 0 has no left neighbor, so it is never consumed → always the live head
+    while (i != -1) {
+      if (alive[i]) {
+        val id = model.idOfPiece(pieceString(symStart[i], symEnd[i]))
+        if (id >= 0) out.add(id) else for (k in symStart[i] until symEnd[i]) appendUnknown(cps[k], out)
+      }
+      i = next[i]
+    }
+    return out.toIntArray()
+  }
+
   /** Resolves an out-of-vocab code point: its UTF-8 byte pieces when [byteFallback], else `unk`. */
   private fun appendUnknown(codePoint: Int, out: ArrayList<Int>) {
     if (!model.byteFallback) {
@@ -144,3 +211,7 @@ class SentencePieceTokenizer(val model: SentencePieceModel) {
     private const val SPACE = '▁' // ▁ — SentencePiece's whitespace symbol
   }
 }
+
+/** A pending BPE merge: the vocab [score] of merging the symbol at [left] with its right neighbor, plus
+ * the merged piece's code-point [len] — used to discard a stale candidate after a neighbor grew. */
+private class BpeCand(val score: Float, val left: Int, val len: Int)

@@ -41,6 +41,8 @@ private constructor(
   val addDummyPrefix: Boolean,
   val removeExtraWhitespaces: Boolean,
   val escapeWhitespaces: Boolean,
+  /** Encoding algorithm: [MODEL_TYPE_UNIGRAM] or [MODEL_TYPE_BPE] (EmbeddingGemma is BPE). */
+  val modelType: Int,
   /** Whether the model carries a non-empty `precompiled_charsmap` (a non-identity normalizer). */
   val hasPrecompiledCharsmap: Boolean,
 ) {
@@ -84,6 +86,9 @@ private constructor(
     const val TYPE_USER_DEFINED = 4
     const val TYPE_BYTE = 6
 
+    const val MODEL_TYPE_UNIGRAM = 1
+    const val MODEL_TYPE_BPE = 2
+
     private const val KUNK_PENALTY = 10.0f // SentencePiece's fixed unknown penalty.
 
     /** SentencePiece's unknown-node score: [minScore] minus the fixed penalty. */
@@ -100,6 +105,7 @@ private constructor(
       var eosId = 2
       var padId = -1
       var byteFallback = false
+      var modelType = MODEL_TYPE_UNIGRAM
       var addDummyPrefix = true
       var removeExtraWhitespaces = true
       var escapeWhitespaces = true
@@ -132,6 +138,7 @@ private constructor(
             while (!sub.eom()) {
               val t2 = sub.readVarint().toInt()
               when ((t2 ushr 3)) {
+                3 -> modelType = sub.readVarint().toInt()
                 35 -> byteFallback = sub.readVarint() != 0L
                 40 -> unkId = sub.readVarint().toInt()
                 41 -> bosId = sub.readVarint().toInt()
@@ -165,7 +172,7 @@ private constructor(
         unkId = unkId, bosId = bosId, eosId = eosId, padId = padId,
         byteFallback = byteFallback, addDummyPrefix = addDummyPrefix,
         removeExtraWhitespaces = removeExtraWhitespaces, escapeWhitespaces = escapeWhitespaces,
-        hasPrecompiledCharsmap = hasCharsmap,
+        modelType = modelType, hasPrecompiledCharsmap = hasCharsmap,
       )
     }
 
