@@ -54,6 +54,23 @@ class SentencePieceBpeTest {
     }
   }
 
+  /** Tokenizer over a BPE model that also declares `user_defined_symbols` (▁▁, ▁▁▁, \n\n, \n\n\n,
+   * [tag]) — like the real EmbeddingGemma model, which has 6410 of them. */
+  private val udTokenizer: SentencePieceTokenizer by lazy {
+    val bytes = checkNotNull(javaClass.getResourceAsStream("/sp_tiny_bpe_ud.model")) {
+      "sp_tiny_bpe_ud.model test resource missing"
+    }.readBytes()
+    SentencePieceTokenizer(SentencePieceModel.parse(bytes))
+  }
+
+  @Test
+  fun matchesUserDefinedSymbolsAtomically() {
+    assertTrue("fixture must declare user_defined_symbols", udTokenizer.model.hasUserDefined)
+    for ((text, expected) in UD_CASES) {
+      assertArrayEquals("UD-atomic mismatch for \"$text\"", expected, udTokenizer.encode(text))
+    }
+  }
+
   private companion object {
     // Golden token ids from Python `sentencepiece` 0.2.1 `EncodeAsIds` on sp_tiny_bpe.model.
     val CASES: List<Pair<String, IntArray>> = listOf(
@@ -71,6 +88,18 @@ class SentencePieceBpeTest {
       "UPPER lower" to intArrayOf(89, 396, 396, 73, 397, 343, 353, 312, 269),
       "😀 a😀b" to intArrayOf(244, 163, 156, 132, 263, 244, 163, 156, 132, 361),
       "  spaces  " to intArrayOf(343, 304, 347, 317, 343, 343),
+      "" to intArrayOf(),
+    )
+
+    // Golden from reference sentencepiece on sp_tiny_bpe_ud.model (declares user_defined_symbols
+    // ▁▁/▁▁▁/\n\n/\n\n\n/[tag]) — exercises the atomic longest-match pre-split before BPE.
+    val UD_CASES: List<Pair<String, IntArray>> = listOf(
+      "a   b" to intArrayOf(347, 5, 361),
+      "x\n\n\n\ny" to intArrayOf(365, 7, 19, 363),
+      "use [tag] here" to intArrayOf(356, 348, 344, 343, 8, 343, 271, 350, 344),
+      "the quick brown fox" to intArrayOf(331, 336, 295, 362, 343, 361, 350, 317, 346, 322, 349, 365),
+      "  spaces  " to intArrayOf(4, 348, 357, 347, 323, 4),
+      "mix\n\nof things" to intArrayOf(355, 351, 365, 6, 349, 369, 266, 358, 269, 364, 348),
       "" to intArrayOf(),
     )
   }

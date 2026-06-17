@@ -23,6 +23,10 @@ import java.util.PriorityQueue
  * identity-normalizer models — including the real **EmbeddingGemma** tokenizer (BPE, 262k vocab,
  * identity normalizer, `byte_fallback`).
  *
+ * `user_defined_symbols` (e.g. EmbeddingGemma's multi-space / newline / tab runs and `[multimodal]`-
+ * style tags) are matched ATOMICALLY (longest-match, left-to-right) BEFORE the model — never split or
+ * merged — exactly as SentencePiece's PrefixMatcher does.
+ *
  * Normalization: escape spaces → `▁`, optional dummy prefix. It does NOT apply a `precompiled_charsmap`
  * (e.g. `nmt_nfkc`) or `remove_extra_whitespaces`; the constructor REJECTS (fail-loud) any model needing
  * those, so it can never silently emit wrong ids. (EmbeddingGemma needs neither — its normalizer is
@@ -40,6 +44,10 @@ class SentencePieceTokenizer(val model: SentencePieceModel) {
       "precompiled_charsmap (e.g. nmt_nfkc) normalization not yet supported"
     }
     require(!model.removeExtraWhitespaces) { "remove_extra_whitespaces normalization not yet supported" }
+    require(
+      model.modelType == SentencePieceModel.MODEL_TYPE_UNIGRAM ||
+        model.modelType == SentencePieceModel.MODEL_TYPE_BPE
+    ) { "unsupported model_type ${model.modelType} (only UNIGRAM and BPE are implemented)" }
   }
 
   /** Encodes [text] to token ids, byte-exact with SentencePiece `EncodeAsIds` (identity normalizer). */
@@ -48,10 +56,48 @@ class SentencePieceTokenizer(val model: SentencePieceModel) {
     val normalized = normalize(text)
     if (normalized.isEmpty()) return IntArray(0)
     val cps = normalized.codePoints().toArray()
-    return when (model.modelType) {
-      SentencePieceModel.MODEL_TYPE_BPE -> bpeEncode(cps)
-      else -> unigramEncode(cps) // UNIGRAM (default)
+    return if (model.hasUserDefined) encodeWithUserDefined(cps) else encodeRun(cps)
+  }
+
+  /** Encodes a contiguous run (no USER_DEFINED symbols) via the model's algorithm. */
+  private fun encodeRun(cps: IntArray): IntArray = when (model.modelType) {
+    SentencePieceModel.MODEL_TYPE_BPE -> bpeEncode(cps)
+    else -> unigramEncode(cps) // UNIGRAM
+  }
+
+  /**
+   * SentencePiece matches `user_defined_symbols` ATOMICALLY (longest-match, left-to-right) BEFORE the
+   * BPE/Unigram model — they are never split or merged. Segment the normalized code points into atomic
+   * USER_DEFINED spans (e.g. EmbeddingGemma's multi-space/newline/tab runs, `[multimodal]`) and the
+   * [encodeRun]-encoded runs between them.
+   */
+  private fun encodeWithUserDefined(cps: IntArray): IntArray {
+    val n = cps.size
+    val out = ArrayList<Int>(n)
+    val sb = StringBuilder(model.maxUserDefinedCp)
+    var i = 0
+    var runStart = 0
+    while (i < n) {
+      var udLen = 0
+      var udId = -1
+      sb.setLength(0)
+      val maxLen = minOf(model.maxUserDefinedCp, n - i)
+      for (l in 1..maxLen) {
+        sb.appendCodePoint(cps[i + l - 1])
+        val id = model.idOfUserDefined(sb.toString())
+        if (id >= 0) { udLen = l; udId = id } // keep the LONGEST match
+      }
+      if (udLen > 0) {
+        if (i > runStart) for (id in encodeRun(cps.copyOfRange(runStart, i))) out.add(id)
+        out.add(udId)
+        i += udLen
+        runStart = i
+      } else {
+        i++
+      }
     }
+    if (n > runStart) for (id in encodeRun(cps.copyOfRange(runStart, n))) out.add(id)
+    return out.toIntArray()
   }
 
   /** Unigram: Viterbi best-path over the lattice with a per-position unknown node (minScore − 10). */
@@ -129,6 +175,7 @@ class SentencePieceTokenizer(val model: SentencePieceModel) {
    */
   private fun bpeEncode(cps: IntArray): IntArray {
     val n = cps.size
+    if (n == 0) return IntArray(0)
     val symStart = IntArray(n) { it }
     val symEnd = IntArray(n) { it + 1 }
     val prev = IntArray(n) { it - 1 }

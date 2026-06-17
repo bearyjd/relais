@@ -52,32 +52,51 @@ private constructor(
   private val pieceToId: HashMap<String, Int> = HashMap(pieces.size * 2)
   /** Byte value (0..255) → token id, derived from the `<0xNN>` [TYPE_BYTE] pieces. -1 if absent. */
   val byteToId: IntArray = IntArray(256) { -1 }
+  /** USER_DEFINED piece string → id. These are matched ATOMICALLY (longest-match) before BPE/Unigram
+   * — never split or merged — per SentencePiece's PrefixMatcher (e.g. EmbeddingGemma's multi-space /
+   * newline / tab runs and `[multimodal]`-style tags). Kept OUT of [pieceToId] (the mergeable set). */
+  private val userDefinedToId: HashMap<String, Int> = HashMap()
   /** Minimum score over all pieces — the basis for the unknown-node penalty in Viterbi. */
   val minScore: Float
-  /** Longest piece length in Unicode code points — bounds the encoder's match window. */
+  /** Longest NORMAL piece length in Unicode code points — bounds the encoder's merge-match window. */
   val maxPieceCodePoints: Int
+  /** Longest USER_DEFINED piece length in code points — bounds the atomic-match window. */
+  val maxUserDefinedCp: Int
 
   init {
     var mn = Float.MAX_VALUE
     var maxCp = 1
+    var maxUd = 1
     for (i in pieces.indices) {
-      val type = types[i]
-      if (type == TYPE_NORMAL || type == TYPE_USER_DEFINED) {
-        pieceToId[pieces[i]] = i
-        val cp = pieces[i].codePointCount(0, pieces[i].length)
-        if (cp > maxCp) maxCp = cp
+      val cp = pieces[i].codePointCount(0, pieces[i].length)
+      when (types[i]) {
+        TYPE_NORMAL -> {
+          pieceToId[pieces[i]] = i
+          if (cp > maxCp) maxCp = cp
+          // SP's min_score_ (the unknown-node penalty basis) is over NORMAL pieces ONLY —
+          // BYTE/CONTROL/UNKNOWN/USER_DEFINED pieces (often score 0) must not drag it down.
+          if (scores[i] < mn) mn = scores[i]
+        }
+        TYPE_USER_DEFINED -> {
+          userDefinedToId[pieces[i]] = i
+          if (cp > maxUd) maxUd = cp
+        }
+        TYPE_BYTE -> parseBytePiece(pieces[i]).let { if (it in 0..255) byteToId[it] = i }
       }
-      // SentencePiece's min_score_ (the unknown-node penalty basis) is over NORMAL pieces ONLY —
-      // BYTE/CONTROL/UNKNOWN pieces (often score 0) must not drag it down.
-      if (type == TYPE_NORMAL && scores[i] < mn) mn = scores[i]
-      if (type == TYPE_BYTE) parseBytePiece(pieces[i]).let { if (it in 0..255) byteToId[it] = i }
     }
     minScore = if (mn == Float.MAX_VALUE) 0f else mn
     maxPieceCodePoints = maxCp
+    maxUserDefinedCp = maxUd
   }
 
-  /** id of a NORMAL/USER_DEFINED piece string, or -1. */
+  /** id of a NORMAL piece string (the mergeable set), or -1. */
   fun idOfPiece(piece: String): Int = pieceToId[piece] ?: -1
+
+  /** id of a USER_DEFINED piece string (the atomic-match set), or -1. */
+  fun idOfUserDefined(piece: String): Int = userDefinedToId[piece] ?: -1
+
+  /** Whether the model declares any USER_DEFINED pieces (→ the atomic pre-split runs). */
+  val hasUserDefined: Boolean get() = userDefinedToId.isNotEmpty()
 
   companion object {
     const val TYPE_NORMAL = 1
