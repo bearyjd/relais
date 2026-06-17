@@ -13,24 +13,34 @@
 package cc.grepon.relais.embed
 
 /**
- * Pure-Kotlin SentencePiece **Unigram** encoder — byte-for-byte compatible with `SentencePieceProcessor
- * .EncodeAsIds` for the EmbeddingGemma tokenizer (feature #6). No native code, no protobuf dependency,
+ * Pure-Kotlin SentencePiece **Unigram** encoder (feature #6). No native code, no protobuf dependency,
  * so it builds offline and unit-tests headlessly against golden fixtures.
  *
- * Pipeline (mirrors SentencePiece): normalize (escape spaces → `▁`, optional dummy prefix) → Viterbi
- * best-path segmentation over the Unigram lattice (per-position, a single-char "unknown" node with
- * `minScore - 10` is added when no single-char piece matches) → resolve unknown nodes to UTF-8 byte
- * pieces (`<0xNN>`) when `byte_fallback`, else to `unk`.
+ * Implements the Unigram lattice + byte-fallback algorithm, verified BYTE-EXACT against the reference
+ * `SentencePieceProcessor.EncodeAsIds` for **identity-normalizer** models. It does NOT yet apply a
+ * `precompiled_charsmap` (e.g. `nmt_nfkc`) or `remove_extra_whitespaces`; the constructor REJECTS
+ * (fail-loud) any model needing those, so it can never silently emit wrong ids. EmbeddingGemma's real
+ * `sentencepiece.model` carries an nmt_nfkc charsmap → full normalization + the byte-exact-vs-real
+ * check land in the follow-up that adds charsmap support.
  *
- * NOTE: handles the identity normalizer (EmbeddingGemma's `sentencepiece.model` may carry an
- * `nmt_nfkc` precompiled charsmap — [SentencePieceModel.hasPrecompiledCharsmap] flags that; charsmap
- * application is added when validated against the real model).
+ * Pipeline: normalize (escape spaces → `▁`, optional dummy prefix) → Viterbi best-path over the Unigram
+ * lattice (per-position, a 1-char "unknown" node scored `minScore - 10` when no single-char piece
+ * matches) → resolve unknown nodes to UTF-8 byte pieces (`<0xNN>`) when `byte_fallback`, else `unk`.
  */
 class SentencePieceTokenizer(val model: SentencePieceModel) {
 
   private val unkScore: Float = SentencePieceModel.unknownScore(model)
 
-  /** Encodes [text] to token ids, byte-exact with SentencePiece `EncodeAsIds`. */
+  init {
+    // Fail-loud on normalization features not yet implemented, so a model needing them can never be
+    // tokenized to subtly-wrong ids (silent degraded embeddings). Lifted when charsmap support lands.
+    require(!model.hasPrecompiledCharsmap) {
+      "precompiled_charsmap (e.g. nmt_nfkc) normalization not yet supported"
+    }
+    require(!model.removeExtraWhitespaces) { "remove_extra_whitespaces normalization not yet supported" }
+  }
+
+  /** Encodes [text] to token ids, byte-exact with SentencePiece `EncodeAsIds` (identity normalizer). */
   fun encode(text: String): IntArray {
     if (text.isEmpty()) return IntArray(0)
     val normalized = normalize(text)
@@ -77,7 +87,6 @@ class SentencePieceTokenizer(val model: SentencePieceModel) {
     }
 
     // Reconstruct the best path (end → 0), then emit in forward order.
-    val path = ArrayList<Int>() // alternating not needed: store end positions
     var pos = n
     val starts = ArrayList<Int>()
     val ids = ArrayList<Int>()
@@ -122,10 +131,9 @@ class SentencePieceTokenizer(val model: SentencePieceModel) {
    * dummy-prefix space, then escape every space to `▁` (U+2581).
    */
   private fun normalize(text: String): String {
+    // remove_extra_whitespaces is rejected in init; for the identity normalizer only the dummy-prefix
+    // space + space→▁ escaping remain.
     var s = text
-    if (model.removeExtraWhitespaces) {
-      s = s.trim(' ').replace(MULTISPACE, " ")
-    }
     if (model.addDummyPrefix) s = " $s"
     if (model.escapeWhitespaces) s = s.replace(' ', SPACE)
     return s
@@ -134,6 +142,5 @@ class SentencePieceTokenizer(val model: SentencePieceModel) {
   companion object {
     private const val UNKNOWN = -1
     private const val SPACE = '▁' // ▁ — SentencePiece's whitespace symbol
-    private val MULTISPACE = Regex(" +")
   }
 }

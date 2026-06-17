@@ -59,15 +59,16 @@ private constructor(
     var mn = Float.MAX_VALUE
     var maxCp = 1
     for (i in pieces.indices) {
-      if (scores[i] < mn) mn = scores[i]
-      when (types[i]) {
-        TYPE_NORMAL, TYPE_USER_DEFINED -> {
-          pieceToId[pieces[i]] = i
-          val cp = pieces[i].codePointCount(0, pieces[i].length)
-          if (cp > maxCp) maxCp = cp
-        }
-        TYPE_BYTE -> parseBytePiece(pieces[i]).let { if (it in 0..255) byteToId[it] = i }
+      val type = types[i]
+      if (type == TYPE_NORMAL || type == TYPE_USER_DEFINED) {
+        pieceToId[pieces[i]] = i
+        val cp = pieces[i].codePointCount(0, pieces[i].length)
+        if (cp > maxCp) maxCp = cp
       }
+      // SentencePiece's min_score_ (the unknown-node penalty basis) is over NORMAL pieces ONLY —
+      // BYTE/CONTROL/UNKNOWN pieces (often score 0) must not drag it down.
+      if (type == TYPE_NORMAL && scores[i] < mn) mn = scores[i]
+      if (type == TYPE_BYTE) parseBytePiece(pieces[i]).let { if (it in 0..255) byteToId[it] = i }
     }
     minScore = if (mn == Float.MAX_VALUE) 0f else mn
     maxPieceCodePoints = maxCp
@@ -204,7 +205,9 @@ private constructor(
 
       fun readBytes(): ByteArray {
         val len = readVarint().toInt()
-        require(len >= 0 && pos + len <= end) { "bad length-delimited field" }
+        // `len in 0..(end - pos)` is overflow-safe: `end - pos` is non-negative, so a hostile huge
+        // length (which would overflow `pos + len`) fails the check cleanly instead of going negative.
+        require(len in 0..(end - pos)) { "bad length-delimited field" }
         val out = buf.copyOfRange(pos, pos + len)
         pos += len
         return out
@@ -214,7 +217,7 @@ private constructor(
 
       fun readMessage(): Reader {
         val len = readVarint().toInt()
-        require(len >= 0 && pos + len <= end) { "bad sub-message length" }
+        require(len in 0..(end - pos)) { "bad sub-message length" }
         val sub = Reader(buf, pos, pos + len)
         pos += len
         return sub
@@ -224,7 +227,7 @@ private constructor(
         when (wire) {
           0 -> readVarint()
           1 -> pos += 8
-          2 -> { val len = readVarint().toInt(); require(len >= 0 && pos + len <= end); pos += len }
+          2 -> { val len = readVarint().toInt(); require(len in 0..(end - pos)); pos += len }
           5 -> pos += 4
           else -> throw IllegalArgumentException("unknown wire type $wire")
         }

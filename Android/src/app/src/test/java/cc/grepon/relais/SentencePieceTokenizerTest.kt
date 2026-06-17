@@ -16,17 +16,19 @@ import cc.grepon.relais.embed.SentencePieceModel
 import cc.grepon.relais.embed.SentencePieceTokenizer
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * Byte-exactness test for the pure-Kotlin Unigram encoder, against golden fixtures produced by the
- * reference `sentencepiece` library (Python 0.2.1) on a purpose-trained tiny Unigram model
- * (`sp_tiny.model`, vocab 400, byte_fallback=true, add_dummy_prefix=true, normalizer=identity — the
- * same knobs EmbeddingGemma uses). The cases exercise: dummy prefix, inter-word `▁`, multi-char
- * pieces, byte-fallback for OOV ASCII (uppercase) + CJK + emoji, preserved repeated whitespace, and
- * empty input. The real-EmbeddingGemma byte-exact check (incl. its nmt_nfkc charsmap) runs once HF
- * gated access is granted; this proves the algorithm.
+ * Byte-exactness test for the pure-Kotlin Unigram encoder against golden fixtures from the reference
+ * `sentencepiece` 0.2.1 `EncodeAsIds`, on a purpose-trained tiny Unigram model (`sp_tiny.model`, vocab
+ * 400, byte_fallback=true, add_dummy_prefix=true, normalizer=**identity**). This proves the Unigram
+ * lattice + byte-fallback ALGORITHM — NOT EmbeddingGemma compatibility: the real model uses an
+ * nmt_nfkc charsmap the encoder rejects (fail-loud) until charsmap support lands, so the byte-exact-
+ * vs-real check is deferred to when HF gated access is granted. Cases exercise: dummy prefix,
+ * inter-word `▁`, multi-char pieces, byte-fallback for OOV ASCII (uppercase) + CJK + BMP & ASTRAL
+ * (surrogate-pair) emoji, preserved repeated whitespace, and empty input.
  */
 class SentencePieceTokenizerTest {
 
@@ -67,6 +69,19 @@ class SentencePieceTokenizerTest {
     assertEquals(expected, tokenizer.countTokens(texts))
   }
 
+  /** A model needing unimplemented normalization (precompiled charsmap) must FAIL LOUD, not silently
+   * emit wrong ids. EmbeddingGemma's real model carries an nmt_nfkc charsmap — this guards the gap. */
+  @Test
+  fun rejectsCharsmapModelFailLoud() {
+    val bytes = checkNotNull(javaClass.getResourceAsStream("/sp_tiny_charsmap.model")) {
+      "sp_tiny_charsmap.model test resource missing"
+    }.readBytes()
+    val model = SentencePieceModel.parse(bytes)
+    assertTrue("fixture must carry a precompiled charsmap", model.hasPrecompiledCharsmap)
+    val ex = assertThrows(IllegalArgumentException::class.java) { SentencePieceTokenizer(model) }
+    assertTrue("error should name the unsupported feature", ex.message?.contains("charsmap") == true)
+  }
+
   private fun String.quote() = "\"" + replace("\n", "\\n") + "\""
 
   private companion object {
@@ -88,6 +103,9 @@ class SentencePieceTokenizerTest {
         intArrayOf(260, 82, 278, 343, 262, 261, 260, 380, 290, 368, 369, 308, 260, 356, 275, 289),
       "UPPER lower MiXeD" to
         intArrayOf(260, 89, 376, 376, 73, 377, 260, 274, 321, 288, 260, 81, 301, 92, 263, 72),
+      // Astral (surrogate-pair) emoji 😀 U+1F600 → byte-fallback over its 4 UTF-8 bytes.
+      "😀" to intArrayOf(260, 244, 163, 156, 132),
+      "a😀b" to intArrayOf(292, 244, 163, 156, 132, 272),
       "" to intArrayOf(),
     )
   }
