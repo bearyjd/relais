@@ -41,6 +41,8 @@ private constructor(
   val addDummyPrefix: Boolean,
   val removeExtraWhitespaces: Boolean,
   val escapeWhitespaces: Boolean,
+  /** Encoding algorithm: [MODEL_TYPE_UNIGRAM] or [MODEL_TYPE_BPE] (EmbeddingGemma is BPE). */
+  val modelType: Int,
   /** Whether the model carries a non-empty `precompiled_charsmap` (a non-identity normalizer). */
   val hasPrecompiledCharsmap: Boolean,
 ) {
@@ -50,32 +52,51 @@ private constructor(
   private val pieceToId: HashMap<String, Int> = HashMap(pieces.size * 2)
   /** Byte value (0..255) → token id, derived from the `<0xNN>` [TYPE_BYTE] pieces. -1 if absent. */
   val byteToId: IntArray = IntArray(256) { -1 }
+  /** USER_DEFINED piece string → id. These are matched ATOMICALLY (longest-match) before BPE/Unigram
+   * — never split or merged — per SentencePiece's PrefixMatcher (e.g. EmbeddingGemma's multi-space /
+   * newline / tab runs and `[multimodal]`-style tags). Kept OUT of [pieceToId] (the mergeable set). */
+  private val userDefinedToId: HashMap<String, Int> = HashMap()
   /** Minimum score over all pieces — the basis for the unknown-node penalty in Viterbi. */
   val minScore: Float
-  /** Longest piece length in Unicode code points — bounds the encoder's match window. */
+  /** Longest NORMAL piece length in Unicode code points — bounds the encoder's merge-match window. */
   val maxPieceCodePoints: Int
+  /** Longest USER_DEFINED piece length in code points — bounds the atomic-match window. */
+  val maxUserDefinedCp: Int
 
   init {
     var mn = Float.MAX_VALUE
     var maxCp = 1
+    var maxUd = 1
     for (i in pieces.indices) {
-      val type = types[i]
-      if (type == TYPE_NORMAL || type == TYPE_USER_DEFINED) {
-        pieceToId[pieces[i]] = i
-        val cp = pieces[i].codePointCount(0, pieces[i].length)
-        if (cp > maxCp) maxCp = cp
+      val cp = pieces[i].codePointCount(0, pieces[i].length)
+      when (types[i]) {
+        TYPE_NORMAL -> {
+          pieceToId[pieces[i]] = i
+          if (cp > maxCp) maxCp = cp
+          // SP's min_score_ (the unknown-node penalty basis) is over NORMAL pieces ONLY —
+          // BYTE/CONTROL/UNKNOWN/USER_DEFINED pieces (often score 0) must not drag it down.
+          if (scores[i] < mn) mn = scores[i]
+        }
+        TYPE_USER_DEFINED -> {
+          userDefinedToId[pieces[i]] = i
+          if (cp > maxUd) maxUd = cp
+        }
+        TYPE_BYTE -> parseBytePiece(pieces[i]).let { if (it in 0..255) byteToId[it] = i }
       }
-      // SentencePiece's min_score_ (the unknown-node penalty basis) is over NORMAL pieces ONLY —
-      // BYTE/CONTROL/UNKNOWN pieces (often score 0) must not drag it down.
-      if (type == TYPE_NORMAL && scores[i] < mn) mn = scores[i]
-      if (type == TYPE_BYTE) parseBytePiece(pieces[i]).let { if (it in 0..255) byteToId[it] = i }
     }
     minScore = if (mn == Float.MAX_VALUE) 0f else mn
     maxPieceCodePoints = maxCp
+    maxUserDefinedCp = maxUd
   }
 
-  /** id of a NORMAL/USER_DEFINED piece string, or -1. */
+  /** id of a NORMAL piece string (the mergeable set), or -1. */
   fun idOfPiece(piece: String): Int = pieceToId[piece] ?: -1
+
+  /** id of a USER_DEFINED piece string (the atomic-match set), or -1. */
+  fun idOfUserDefined(piece: String): Int = userDefinedToId[piece] ?: -1
+
+  /** Whether the model declares any USER_DEFINED pieces (→ the atomic pre-split runs). */
+  val hasUserDefined: Boolean get() = userDefinedToId.isNotEmpty()
 
   companion object {
     const val TYPE_NORMAL = 1
@@ -83,6 +104,9 @@ private constructor(
     const val TYPE_CONTROL = 3
     const val TYPE_USER_DEFINED = 4
     const val TYPE_BYTE = 6
+
+    const val MODEL_TYPE_UNIGRAM = 1
+    const val MODEL_TYPE_BPE = 2
 
     private const val KUNK_PENALTY = 10.0f // SentencePiece's fixed unknown penalty.
 
@@ -100,6 +124,7 @@ private constructor(
       var eosId = 2
       var padId = -1
       var byteFallback = false
+      var modelType = MODEL_TYPE_UNIGRAM
       var addDummyPrefix = true
       var removeExtraWhitespaces = true
       var escapeWhitespaces = true
@@ -132,6 +157,7 @@ private constructor(
             while (!sub.eom()) {
               val t2 = sub.readVarint().toInt()
               when ((t2 ushr 3)) {
+                3 -> modelType = sub.readVarint().toInt()
                 35 -> byteFallback = sub.readVarint() != 0L
                 40 -> unkId = sub.readVarint().toInt()
                 41 -> bosId = sub.readVarint().toInt()
@@ -165,7 +191,7 @@ private constructor(
         unkId = unkId, bosId = bosId, eosId = eosId, padId = padId,
         byteFallback = byteFallback, addDummyPrefix = addDummyPrefix,
         removeExtraWhitespaces = removeExtraWhitespaces, escapeWhitespaces = escapeWhitespaces,
-        hasPrecompiledCharsmap = hasCharsmap,
+        modelType = modelType, hasPrecompiledCharsmap = hasCharsmap,
       )
     }
 
