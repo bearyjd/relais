@@ -20,6 +20,8 @@ import android.content.Context
 import android.util.Base64
 import android.util.Log
 import cc.grepon.relais.data.RelaisModelRef
+import cc.grepon.relais.embed.EmbeddingGemmaEmbedder
+import cc.grepon.relais.embed.EmbeddingTask
 import cc.grepon.relais.embed.RelaisEmbedderProvider
 import cc.grepon.relais.templates.PromptTemplateStore
 import cc.grepon.relais.templates.parseTemplateId
@@ -373,9 +375,9 @@ class RelaisHttpServer(
           }
 
           method == "POST" && path.startsWith("/v1/embeddings") -> {
-            // OpenAI /v1/embeddings. Auth-gated by the shared gate above. The embedder impl ships in a
-            // later feature #6 follow-up (on-device TFLite + HF-auth); until it registers,
-            // RelaisEmbedderProvider.get() is null → honest 501 (no fake/placeholder vectors).
+            // OpenAI /v1/embeddings. Auth-gated by the shared gate above. Embedding inference runs the
+            // NPU/CPU too, so honor thermal backpressure first (same 503 + Retry-After as inference).
+            if (shedIfHot(::reply)) return
             val body = JSONObject(readBody(reader, contentLength))
             val inputs = parseEmbeddingInputs(body)
             if (inputs == null) {
@@ -388,19 +390,43 @@ class RelaisHttpServer(
               EmbeddingValidation.TooLong ->
                 reply(400, buildEmbeddingsError("an input exceeds the per-item limit ($EMBEDDINGS_MAX_INPUT_CHARS chars)", "invalid_request_error"))
               EmbeddingValidation.Ok -> {
-                val embedder = RelaisEmbedderProvider.get()
-                if (embedder == null || !embedder.isAvailable(context)) {
-                  reply(501, buildEmbeddingsError("embeddings model not provisioned", "not_implemented"))
+                // Optional retrieval-asymmetry selector: queries and documents use different
+                // EmbeddingGemma prefixes. Absent/blank → DOCUMENT (the sensible default for "embed
+                // these inputs"); an unrecognized value → 400. `x_relais_` is the namespaced alias.
+                val taskSel = body.optString("embedding_task").ifBlank { body.optString("x_relais_embedding_task") }
+                val task = EmbeddingTask.fromRequest(taskSel)
+                if (task == null) {
+                  reply(400, buildEmbeddingsError("unknown 'embedding_task' (expected 'query' or 'document')", "invalid_request_error"))
                 } else {
-                  val model = body.optString("model").takeIf { it.isNotBlank() } ?: RelaisConfig.modelId(context)
-                  val vectors = embedder.embed(context, inputs)
-                  // Contract insurance: one vector per input. A misbehaving embedder returning fewer
-                  // would otherwise silently drop entries from the OpenAI response (→ outer catch 500).
-                  check(vectors.size == inputs.size) {
-                    "embedder returned ${vectors.size} vectors for ${inputs.size} inputs"
+                  val embedder = RelaisEmbedderProvider.get()
+                  if (embedder == null || !embedder.isAvailable(context)) {
+                    // Not loaded yet. If it CAN provision (Google Play Services present + an HF token
+                    // set), kick a one-time background download/load and tell the client to retry — the
+                    // request thread never blocks on the ~180 MB fetch. Otherwise it's genuinely
+                    // unavailable on this device (no GMS runtime, or no token for the gated model).
+                    if (embedder is EmbeddingGemmaEmbedder && embedder.canProvision(context)) {
+                      embedder.ensureProvisioningStarted(context)
+                      reply(
+                        503,
+                        buildEmbeddingsError("embeddings model is provisioning; retry shortly", "service_unavailable"),
+                        listOf("Retry-After: 10"),
+                      )
+                    } else {
+                      reply(501, buildEmbeddingsError("embeddings model not provisioned", "not_implemented"))
+                    }
+                  } else {
+                    val model = body.optString("model").takeIf { it.isNotBlank() } ?: RelaisConfig.modelId(context)
+                    val vectors =
+                      if (embedder is EmbeddingGemmaEmbedder) embedder.embed(context, inputs, task)
+                      else embedder.embed(context, inputs)
+                    // Contract insurance: one vector per input. A misbehaving embedder returning fewer
+                    // would otherwise silently drop entries from the OpenAI response (→ outer catch 500).
+                    check(vectors.size == inputs.size) {
+                      "embedder returned ${vectors.size} vectors for ${inputs.size} inputs"
+                    }
+                    val promptTokens = embedder.countTokens(inputs)
+                    reply(200, buildEmbeddingsResponse(vectors, model, promptTokens))
                   }
-                  val promptTokens = embedder.countTokens(inputs)
-                  reply(200, buildEmbeddingsResponse(vectors, model, promptTokens))
                 }
               }
             }

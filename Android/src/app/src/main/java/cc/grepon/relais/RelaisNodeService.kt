@@ -84,6 +84,12 @@ class RelaisNodeService : Service() {
             updateNotification("Downloading model $pct%…")
           }
         RelaisEngine.ensureInitialized(applicationContext, modelPath)
+        // Register the EmbeddingGemma embedder so /v1/embeddings can report availability + provision
+        // on demand. register() is cheap (no download/load). warmIfProvisioned() background-loads an
+        // ALREADY-downloaded model (no token, no fetch) so a restart serves embeddings without a first
+        // 503; on a fresh node it no-ops, and the endpoint provisions on the first embeddings request.
+        cc.grepon.relais.embed.EmbeddingGemmaEmbedder.register()
+        cc.grepon.relais.embed.EmbeddingGemmaEmbedder.INSTANCE.warmIfProvisioned(applicationContext)
         // Security C1: plaintext HTTP is loopback-only (in-device app/dev); the LAN is served only
         // over HTTPS, so the bearer key never crosses the network in cleartext.
         httpServer = RelaisHttpServer(applicationContext, port = 8080, bindAddr = "127.0.0.1").also { it.start() }
