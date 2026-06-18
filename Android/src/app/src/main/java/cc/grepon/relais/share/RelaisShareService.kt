@@ -23,6 +23,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
+import android.net.Uri
 import android.os.Build
 import android.os.Handler
 import android.os.IBinder
@@ -46,6 +47,8 @@ private const val CHANNEL_ID = "relais_share_result"
 private const val PROGRESS_NOTIFICATION_ID = 0x52454C53 // "RELS" — foreground/progress slot
 private const val RESULT_NOTIFICATION_ID = 0x52454C54 // "RELT" — stable result slot, so results don't stack
 private const val EXTRA_PAYLOAD = "cc.grepon.relais.share.PAYLOAD"
+private const val EXTRA_SUBJECT = "cc.grepon.relais.share.SUBJECT" // optional EXTRA_SUBJECT for the image path
+private const val EXTRA_CAPTION = "cc.grepon.relais.share.CAPTION" // optional EXTRA_TEXT alongside an image
 private const val RESULT_CAP = 1_000 // bound the notification body (the shade is a public surface)
 private const val CLIP_LABEL = "Relais"
 
@@ -80,7 +83,11 @@ class RelaisShareService : Service() {
     latestStartId = startId
     ensureChannel(this)
 
-    val payload = intent?.getStringExtra(EXTRA_PAYLOAD)?.takeIf { it.isNotBlank() }
+    val textPayload = intent?.getStringExtra(EXTRA_PAYLOAD)?.takeIf { it.isNotBlank() }
+    val imageUris = readGrantedImageUris(intent) // #13 OCR: granted content:// URIs from the trampoline
+    val subject = intent?.getStringExtra(EXTRA_SUBJECT)
+    val caption = intent?.getStringExtra(EXTRA_CAPTION) // EXTRA_TEXT shared alongside the image, if any
+    val hasWork = textPayload != null || imageUris.isNotEmpty()
 
     // Enter the foreground BEFORE the decode. If the OS rejects the FGS start — possible on a cross-app
     // share from a backgrounded app, or under GrapheneOS's stricter FGS rules — do NOT let the uncaught
@@ -93,15 +100,15 @@ class RelaisShareService : Service() {
     if (!foregrounded) {
       // Report only when idle: if a prior decode is in flight on this singleton it OWNS the single
       // result-notification slot, so don't clobber its eventual result with an "unavailable" notice.
-      if (payload != null && !inFlight.get()) {
+      if (hasWork && !inFlight.get()) {
         postResult(title = "Relais · unavailable", text = "Couldn't start the share service. Try again with Relais in the foreground.")
       }
       stopIfIdle()
       return START_NOT_STICKY
     }
 
-    if (payload == null) {
-      // No usable payload reached the service (shouldn't happen — the trampoline gates on it). Stop
+    if (!hasWork) {
+      // Nothing usable reached the service (shouldn't happen — the trampoline gates on it). Stop
       // cleanly (only if idle) without an inference or a misleading result.
       Log.i(TAG, "no payload; stopping if idle")
       stopIfIdle()
@@ -125,6 +132,22 @@ class RelaisShareService : Service() {
         if (!RelaisInference.isReady()) {
           Log.i(TAG, "engine not resident at run time; skipping share inference")
           postResult(title = "Relais · node not running", text = "Start the node, then share again.")
+          return@launch
+        }
+        // Resolve the prompt: the shared text, or — for an image share (#13) — the on-device OCR of the
+        // shared image(s), with any caption (EXTRA_TEXT shared alongside) prefixed. OCR runs here (off the
+        // trampoline) because it is async; the post-OCR emptiness check is the EMPTY gate the activity
+        // couldn't apply before the text was known.
+        val payload = textPayload ?: run {
+          val ocr = ImageTextRecognizer.recognize(applicationContext, imageUris)
+          val blocks = buildList {
+            caption?.trim()?.takeIf { it.isNotEmpty() }?.let { add(it) }
+            addAll(ocr)
+          }
+          extractSharedText(text = null, subject = subject, extraTexts = blocks, maxChars = MAX_SHARE_CHARS)
+        }
+        if (payload.isNullOrBlank()) {
+          postResult(title = "Relais · no text found", text = "Couldn't read any text from the shared image.")
           return@launch
         }
         val system = RelaisConfig.shareSystemPrompt(applicationContext) ?: DEFAULT_SHARE_SYSTEM
@@ -178,6 +201,14 @@ class RelaisShareService : Service() {
     if (!inFlight.get()) stopSelf(latestStartId)
   }
 
+  /** The granted `content://` image URIs from an image share (#13), read from the intent's ClipData. */
+  private fun readGrantedImageUris(intent: Intent?): List<Uri> {
+    val clip = intent?.clipData ?: return emptyList()
+    return (0 until clip.itemCount)
+      .mapNotNull { clip.getItemAt(it).uri }
+      .filter { it.scheme == "content" }
+  }
+
   private fun copyToClipboard(text: String) {
     val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager ?: return
     runCatching { clipboard.setPrimaryClip(ClipData.newPlainText(CLIP_LABEL, text)) }
@@ -211,7 +242,7 @@ class RelaisShareService : Service() {
   private fun buildProgress(): Notification =
     NotificationCompat.Builder(this, CHANNEL_ID)
       .setContentTitle("Relais · working")
-      .setContentText("Processing shared text on-device…")
+      .setContentText("Processing shared content on-device…")
       .setSmallIcon(R.drawable.ic_relais_tile)
       .setColor(0xFFFFB000.toInt()) // DESIGN.md signal amber accent
       .setOngoing(true)
@@ -233,13 +264,31 @@ class RelaisShareService : Service() {
   }
 
   companion object {
-    // Process-global single-flight: one share decode at a time, so a malicious app looping the
-    // exported trampoline can't stack 30-120s decodes on the engine lock. (The tile/widget paths run
-    // through their own WorkManager workers, not this service, and coalesce independently.)
+    // Process-global single-flight: one share at a time (OCR + decode), so a malicious app looping the
+    // exported trampoline can't stack OCR passes + 30-120s decodes on the engine lock. (The tile/widget
+    // paths run through their own WorkManager workers, not this service, and coalesce independently.)
     private val inFlight = AtomicBoolean(false)
 
-    /** Builds the start intent carrying [payload] for the share run. */
+    /** Builds the start intent carrying [payload] for the text share run. */
     fun startIntent(context: Context, payload: String): Intent =
       Intent(context, RelaisShareService::class.java).putExtra(EXTRA_PAYLOAD, payload)
+
+    /**
+     * Builds the start intent for an image share (#13 OCR): carries the image [uris] as ClipData and
+     * sets FLAG_GRANT_READ_URI_PERMISSION so this (un-exported) service can read them for OCR. The grant
+     * to the service is independent of the trampoline's, so it survives the activity finishing.
+     */
+    fun imageIntent(context: Context, uris: List<Uri>, subject: String?, caption: String?): Intent {
+      val intent = Intent(context, RelaisShareService::class.java)
+      subject?.takeIf { it.isNotBlank() }?.let { intent.putExtra(EXTRA_SUBJECT, it) }
+      caption?.takeIf { it.isNotBlank() }?.let { intent.putExtra(EXTRA_CAPTION, it) }
+      if (uris.isNotEmpty()) {
+        val clip = ClipData.newRawUri(CLIP_LABEL, uris.first())
+        uris.drop(1).forEach { clip.addItem(ClipData.Item(it)) }
+        intent.clipData = clip
+        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+      }
+      return intent
+    }
   }
 }

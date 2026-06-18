@@ -33,6 +33,12 @@ enum class ShareDecision {
 
 private const val SEPARATOR = "\n\n"
 
+/** Prompt cap shared by the text and image (#13 OCR) share paths; on-device context windows are finite. */
+const val MAX_SHARE_CHARS = 16_000
+
+/** Cap on images OCR'd per image share (#13) — a hostile SEND_MULTIPLE list length is attacker-controlled. */
+const val MAX_SHARE_IMAGES = 8
+
 /**
  * Builds the prompt text from an `ACTION_SEND` `EXTRA_TEXT` (+ optional `EXTRA_SUBJECT` prefix) or an
  * `ACTION_SEND_MULTIPLE` `EXTRA_TEXT` list (joined with blank lines). Pure (no Android types) so it's
@@ -78,5 +84,20 @@ fun shouldRunShare(shareEnabled: Boolean, ready: Boolean, payload: String?): Sha
     !shareEnabled -> ShareDecision.DISABLED
     !ready -> ShareDecision.NODE_OFF
     payload.isNullOrBlank() -> ShareDecision.EMPTY
+    else -> ShareDecision.RUN
+  }
+
+/**
+ * The cold-start guard for an IMAGE share (#13 OCR). Same precedence as [shouldRunShare] minus the
+ * payload check — the prompt text isn't known until the service runs OCR off the trampoline's lifecycle,
+ * so the activity only gates on what it knows synchronously (enabled, resident engine, at least one
+ * image). RUN here means "start the service and OCR there"; the post-OCR emptiness check (no recognizable
+ * text in the image) is applied in the service via [shouldRunShare] on the OCR result.
+ */
+fun shouldStartImageShare(shareEnabled: Boolean, ready: Boolean, hasImages: Boolean): ShareDecision =
+  when {
+    !shareEnabled -> ShareDecision.DISABLED
+    !ready -> ShareDecision.NODE_OFF
+    !hasImages -> ShareDecision.EMPTY
     else -> ShareDecision.RUN
   }
