@@ -15,6 +15,7 @@ package cc.grepon.relais
 import cc.grepon.relais.share.ShareDecision
 import cc.grepon.relais.share.extractSharedText
 import cc.grepon.relais.share.shouldRunShare
+import cc.grepon.relais.share.shouldStartImageShare
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
@@ -134,5 +135,28 @@ class SharePayloadTest {
   @Test fun `NODE_OFF takes precedence over an empty payload`() {
     // Node-down is the more actionable message ("start it first") than "nothing to summarize".
     assertEquals(ShareDecision.NODE_OFF, shouldRunShare(shareEnabled = true, ready = false, payload = null))
+  }
+
+  // ---- shouldStartImageShare (#13 OCR pre-OCR gate) ----
+
+  @Test fun `image RUN when enabled and ready with at least one image`() {
+    assertEquals(ShareDecision.RUN, shouldStartImageShare(shareEnabled = true, ready = true, hasImages = true))
+  }
+
+  @Test fun `image DISABLED when the share target is off`() {
+    assertEquals(ShareDecision.DISABLED, shouldStartImageShare(shareEnabled = false, ready = true, hasImages = true))
+  }
+
+  @Test fun `image NODE_OFF when not ready — never cold-start to OCR`() {
+    assertEquals(ShareDecision.NODE_OFF, shouldStartImageShare(shareEnabled = true, ready = false, hasImages = true))
+  }
+
+  @Test fun `image EMPTY when there is no image`() {
+    assertEquals(ShareDecision.EMPTY, shouldStartImageShare(shareEnabled = true, ready = true, hasImages = false))
+  }
+
+  @Test fun `image gate precedence — DISABLED over NODE_OFF over EMPTY`() {
+    assertEquals(ShareDecision.DISABLED, shouldStartImageShare(shareEnabled = false, ready = false, hasImages = false))
+    assertEquals(ShareDecision.NODE_OFF, shouldStartImageShare(shareEnabled = true, ready = false, hasImages = false))
   }
 }

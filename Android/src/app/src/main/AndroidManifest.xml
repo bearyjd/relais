@@ -152,10 +152,11 @@
             android:foregroundServiceType="dataSync"
             android:exported="false" />
 
-        <!-- Share-sheet inference target (#1). Transparent trampoline: extracts the shared text,
-             requests notification permission, hands off to RelaisShareService, then finishes (no
-             window). v1 is text/plain only (image/PDF are separate features). The trampoline gates
-             the run on RelaisInference.isReady() — a share never cold-starts the node. -->
+        <!-- Share-sheet inference target (#1, #13). Transparent trampoline: for text/plain it extracts
+             the shared text; for image/* (#13) it hands the image URIs to RelaisShareService, which OCRs
+             them on-device (bundled ML Kit) and feeds the recognized text to inference. Requests
+             notification permission, hands off, then finishes (no window). The trampoline gates the run
+             on RelaisInference.isReady() — a share never cold-starts the node. (PDF is a separate feature.) -->
         <activity
             android:name=".share.RelaisShareActivity"
             android:exported="true"
@@ -167,11 +168,13 @@
                 <action android:name="android.intent.action.SEND" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <data android:mimeType="text/plain" />
+                <data android:mimeType="image/*" />
             </intent-filter>
             <intent-filter>
                 <action android:name="android.intent.action.SEND_MULTIPLE" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <data android:mimeType="text/plain" />
+                <data android:mimeType="image/*" />
             </intent-filter>
         </activity>
 

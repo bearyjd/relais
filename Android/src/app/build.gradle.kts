@@ -151,6 +151,9 @@ dependencies {
   debugImplementation(libs.androidx.ui.test.manifest)
   ksp(libs.moshi.kotlin.codegen)
   implementation(libs.mlkit.genai.prompt)
+  // On-device Latin OCR for share-in images (#13). Transitively pulls the Play-Services
+  // text-recognition pipeline (NOT GMS-free) — a future de-Googled flavor must exclude this.
+  implementation(libs.mlkit.text.recognition)
   implementation(libs.mcp.kotlin.sdk)
   implementation(libs.ktor.client.android)
   implementation(libs.ktor.client.core)

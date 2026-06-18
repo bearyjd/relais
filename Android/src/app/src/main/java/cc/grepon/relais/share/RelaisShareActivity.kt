@@ -19,8 +19,10 @@ import android.app.NotificationManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Parcelable
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
@@ -32,23 +34,33 @@ import cc.grepon.relais.core.RelaisInference
 private const val TAG = "RelaisShareActivity"
 private const val CHANNEL_ID = "relais_share_status"
 private const val STATUS_NOTIFICATION_ID = 0x52454C55 // "RELU" — share-status slot, separate from results
-private const val MAX_SHARE_CHARS = 16_000 // cap the prompt; on-device context windows are finite
 private const val NOTIF_PERM_REQUEST = 0x53 // 'S'
 
 /**
- * Transparent trampoline (#1): registered for `ACTION_SEND` / `ACTION_SEND_MULTIPLE` `text/plain`.
- * Extracts the shared text via [extractSharedText], requests POST_NOTIFICATIONS on API 33+, then
- * decides via [shouldRunShare]:
- *  - RUN → start [RelaisShareService] (foreground) with the payload — the long decode runs there.
- *  - DISABLED / NODE_OFF / EMPTY → post a short status notification explaining why; never starts the
- *    node or inference (the cold-start guard: a share when the node is off NEVER cold-starts it).
- * Either way it [finish]es immediately — it's a trampoline, no window is ever shown.
+ * Transparent trampoline (#1, #13): registered for `ACTION_SEND` / `ACTION_SEND_MULTIPLE` of
+ * `text/plain` AND any image type. Requests POST_NOTIFICATIONS on API 33+, then:
+ *  - **text** → [extractSharedText] → [shouldRunShare] → start [RelaisShareService] with the payload.
+ *  - **image** (#13 OCR) → collect the `content://` image URIs → [shouldStartImageShare] → start the
+ *    service with the URIs (granting it read access); the service OCRs them off this lifecycle, since
+ *    OCR is async and the trampoline finishes immediately.
+ * For both, RUN starts the foreground service (the long work runs there); DISABLED / NODE_OFF / EMPTY
+ * post a short status notification and never start the node or inference (the cold-start guard).
+ * Either way it [finish]es immediately — no window is ever shown.
  */
 class RelaisShareActivity : Activity() {
 
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
 
+    // Ask for notification permission up front (API 33+). Fire-and-forget: we finish immediately, so
+    // the grant lands for the NEXT share; the service/status posts already no-op without it.
+    requestNotificationPermissionIfNeeded()
+
+    if (intent?.type?.startsWith("image/") == true) handleImageShare() else handleTextShare()
+    finish()
+  }
+
+  private fun handleTextShare() {
     val payload =
       extractSharedText(
         text = readText(),
@@ -56,19 +68,27 @@ class RelaisShareActivity : Activity() {
         extraTexts = readTextList(),
         maxChars = MAX_SHARE_CHARS,
       )
-
-    // Ask for notification permission up front (API 33+). Fire-and-forget: we finish immediately, so
-    // the grant lands for the NEXT share; the service/status posts already no-op without it.
-    requestNotificationPermissionIfNeeded()
-
     when (shouldRunShare(RelaisConfig.shareEnabled(this), RelaisInference.isReady(), payload)) {
       // payload is non-blank here (shouldRunShare guarantees it for RUN); fall back defensively to "".
-      ShareDecision.RUN -> startShareService(payload.orEmpty())
+      ShareDecision.RUN -> launchShareService(RelaisShareService.startIntent(this, payload.orEmpty()))
       ShareDecision.DISABLED -> postStatus("Share target disabled", "Enable it in the Relais control panel.")
       ShareDecision.NODE_OFF -> postStatus("Relais node not running", "Start the node first, then share again.")
       ShareDecision.EMPTY -> postStatus("Nothing to summarize", "The share had no usable text.")
     }
-    finish()
+  }
+
+  /** #13 OCR: an image was shared. Hand the URIs to the service (which OCRs + infers off this lifecycle). */
+  private fun handleImageShare() {
+    val uris = readImageUris()
+    val subject = intent?.getStringExtra(Intent.EXTRA_SUBJECT)
+    // Some apps attach a caption (EXTRA_TEXT) alongside the image — carry it so it prefixes the OCR text.
+    val caption = readText()
+    when (shouldStartImageShare(RelaisConfig.shareEnabled(this), RelaisInference.isReady(), uris.isNotEmpty())) {
+      ShareDecision.RUN -> launchShareService(RelaisShareService.imageIntent(this, uris, subject, caption))
+      ShareDecision.DISABLED -> postStatus("Share target disabled", "Enable it in the Relais control panel.")
+      ShareDecision.NODE_OFF -> postStatus("Relais node not running", "Start the node first, then share again.")
+      ShareDecision.EMPTY -> postStatus("Nothing to read", "The share had no image.")
+    }
   }
 
   private fun readText(): String? = intent?.getCharSequenceExtra(Intent.EXTRA_TEXT)?.toString()
@@ -76,8 +96,41 @@ class RelaisShareActivity : Activity() {
   private fun readTextList(): List<String>? =
     intent?.getCharSequenceArrayListExtra(Intent.EXTRA_TEXT)?.map { it.toString() }
 
-  private fun startShareService(payload: String) {
-    val svc = RelaisShareService.startIntent(this, payload)
+  /**
+   * The shared image URIs, restricted to `content://` (never a `file://` path — a hostile sharer could
+   * point that at an arbitrary readable file; only a content provider URI carries a real grant anyway).
+   */
+  private fun readImageUris(): List<Uri> {
+    val i = intent ?: return emptyList()
+    // runCatching: this activity is exported, so a hostile app can send a malformed EXTRA_STREAM whose
+    // unmarshalling throws BadParcelableException — never crash the trampoline on bad input.
+    val raw =
+      runCatching {
+        when (i.action) {
+          Intent.ACTION_SEND -> listOfNotNull(parcelable(i, Intent.EXTRA_STREAM))
+          Intent.ACTION_SEND_MULTIPLE -> parcelableList(i, Intent.EXTRA_STREAM)
+          else -> emptyList()
+        }
+      }.getOrDefault(emptyList())
+    // content:// only (never a file:// path a hostile sharer could aim at an arbitrary readable file),
+    // and capped so a huge SEND_MULTIPLE list can't drive unbounded OCR/grant work.
+    return raw.filter { it.scheme == "content" }.take(MAX_SHARE_IMAGES)
+  }
+
+  @Suppress("DEPRECATION")
+  private fun parcelable(i: Intent, key: String): Uri? =
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) i.getParcelableExtra(key, Uri::class.java)
+    else i.getParcelableExtra(key) as? Uri
+
+  @Suppress("DEPRECATION")
+  private fun parcelableList(i: Intent, key: String): List<Uri> =
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+      i.getParcelableArrayListExtra(key, Uri::class.java).orEmpty()
+    } else {
+      i.getParcelableArrayListExtra<Parcelable>(key).orEmpty().filterIsInstance<Uri>()
+    }
+
+  private fun launchShareService(svc: Intent) {
     runCatching {
       if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(svc) else startService(svc)
     }.onFailure {
