@@ -102,12 +102,13 @@ class RelaisDatabaseMigrationTest {
   fun `v1 to v2 migration runs and validates against the compiled v2 schema`() {
     createV1Database()
 
-    // Opening a v1 file through Room with MIGRATION_1_2 wired forces the migration to EXECUTE, then
-    // Room VALIDATES the migrated schema's identity hash against the compiled v2 schema (== 2.json).
-    // Any drift between MIGRATION_1_2's SQL and the SessionTurn entity throws here on open.
+    // Opening a v1 file through Room runs the full migration chain to the compiled version (now v3),
+    // so BOTH migrations are wired; Room VALIDATES the final schema's identity hash. This test focuses
+    // on the v1->v2 step: any drift between MIGRATION_1_2's SQL and the SessionTurn entity throws here,
+    // and the assertions below confirm `session_turns` exists + survives the later v2->v3 migration.
     val db =
       Room.databaseBuilder(context, RelaisDatabase::class.java, TEST_DB)
-        .addMigrations(RelaisDatabase.MIGRATION_1_2)
+        .addMigrations(RelaisDatabase.MIGRATION_1_2, RelaisDatabase.MIGRATION_2_3)
         .allowMainThreadQueries()
         .build()
 
@@ -132,6 +133,50 @@ class RelaisDatabaseMigrationTest {
       "expected the (sessionKey, createdAt) index to exist after migration",
       indexNames.contains("index_session_turns_sessionKey_createdAt"),
     )
+
+    db.close()
+  }
+
+  @Test
+  fun `v2 to v3 migration runs and validates against the compiled v3 schema`() {
+    // Start from a real v1 file and let Room run the FULL chain (1->2->3); opening through Room with
+    // both migrations forces them to EXECUTE and VALIDATES the final schema's identity hash against the
+    // compiled v3 schema (== 3.json). Any drift between MIGRATION_2_3's SQL and the RagDocument/RagChunk
+    // entities throws here on open (Feature #4 — guards against bricking an upgrading device).
+    createV1Database()
+
+    val db =
+      Room.databaseBuilder(context, RelaisDatabase::class.java, TEST_DB)
+        .addMigrations(RelaisDatabase.MIGRATION_1_2, RelaisDatabase.MIGRATION_2_3)
+        .allowMainThreadQueries()
+        .build()
+    val supportDb = db.openHelper.writableDatabase
+
+    fun columns(table: String): List<String> {
+      val cols = mutableListOf<String>()
+      supportDb.query("PRAGMA table_info(`$table`)").use { c ->
+        val nameCol = c.getColumnIndexOrThrow("name")
+        while (c.moveToNext()) cols.add(c.getString(nameCol))
+      }
+      return cols
+    }
+
+    fun indices(table: String): List<String> {
+      val names = mutableListOf<String>()
+      supportDb.query("PRAGMA index_list(`$table`)").use { c ->
+        val nameCol = c.getColumnIndexOrThrow("name")
+        while (c.moveToNext()) names.add(c.getString(nameCol))
+      }
+      return names
+    }
+
+    assertEquals(listOf("id", "title", "createdAt"), columns("rag_documents"))
+    assertEquals(
+      listOf("id", "documentId", "chunkIndex", "text", "embedding", "dim", "createdAt"),
+      columns("rag_chunks"),
+    )
+    assertTrue(indices("rag_documents").contains("index_rag_documents_createdAt"))
+    assertTrue(indices("rag_chunks").contains("index_rag_chunks_documentId"))
 
     db.close()
   }

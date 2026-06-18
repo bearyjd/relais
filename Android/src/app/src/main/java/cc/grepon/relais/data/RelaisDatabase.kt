@@ -31,12 +31,18 @@ import androidx.sqlite.db.SupportSQLiteDatabase
  * must survive upgrades. The schema is exported under `app/schemas/` for diffable, migration-testable
  * changes.
  */
-@Database(entities = [SchemaMeta::class, SessionTurn::class], version = 2, exportSchema = true)
+@Database(
+  entities = [SchemaMeta::class, SessionTurn::class, RagDocument::class, RagChunk::class],
+  version = 3,
+  exportSchema = true,
+)
 abstract class RelaisDatabase : RoomDatabase() {
 
   abstract fun schemaMetaDao(): SchemaMetaDao
 
   abstract fun sessionDao(): SessionDao
+
+  abstract fun ragDao(): RagDao
 
   companion object {
     private const val DB_NAME = "relais.db"
@@ -72,8 +78,46 @@ abstract class RelaisDatabase : RoomDatabase() {
         }
       }
 
+    /**
+     * v2 -> v3 (Feature #4): adds the `rag_documents` + `rag_chunks` tables (+ their indices). The
+     * CREATE statements mirror [RagDocument]/[RagChunk] exactly (column order, affinities, NOT NULL,
+     * autoincrement PK, Room's generated index names) — Room validates the schema identity on open and
+     * throws on any mismatch. Additive only; no existing data is touched. `@VisibleForTesting` so
+     * `RelaisDatabaseMigrationTest` can force-run + validate it against the exported `3.json` hash.
+     */
+    @VisibleForTesting
+    internal val MIGRATION_2_3 =
+      object : Migration(2, 3) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+          db.execSQL(
+            "CREATE TABLE IF NOT EXISTS `rag_documents` (" +
+              "`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
+              "`title` TEXT NOT NULL, " +
+              "`createdAt` INTEGER NOT NULL)"
+          )
+          db.execSQL(
+            "CREATE INDEX IF NOT EXISTS `index_rag_documents_createdAt` " +
+              "ON `rag_documents` (`createdAt`)"
+          )
+          db.execSQL(
+            "CREATE TABLE IF NOT EXISTS `rag_chunks` (" +
+              "`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
+              "`documentId` INTEGER NOT NULL, " +
+              "`chunkIndex` INTEGER NOT NULL, " +
+              "`text` TEXT NOT NULL, " +
+              "`embedding` BLOB NOT NULL, " +
+              "`dim` INTEGER NOT NULL, " +
+              "`createdAt` INTEGER NOT NULL)"
+          )
+          db.execSQL(
+            "CREATE INDEX IF NOT EXISTS `index_rag_chunks_documentId` " +
+              "ON `rag_chunks` (`documentId`)"
+          )
+        }
+      }
+
     /** Migrations appended by consumers when they add tables + bump [version]. */
-    val MIGRATIONS: List<Migration> = listOf(MIGRATION_1_2)
+    val MIGRATIONS: List<Migration> = listOf(MIGRATION_1_2, MIGRATION_2_3)
 
     /** Process-wide singleton (single process — see backlog §3). */
     fun get(context: Context): RelaisDatabase =
