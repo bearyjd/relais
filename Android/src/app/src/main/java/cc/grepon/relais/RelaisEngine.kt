@@ -129,6 +129,12 @@ data class RelaisRequest(
    * structured-output paths ignore it (v1).
    */
   val enableThinking: Boolean = false,
+  /**
+   * When true (the `x_relais_node_tools` opt-in), the NODE executes a curated set of safe built-in
+   * tools itself in a single hop (rag_search, calculator, current_datetime, unit_convert) rather than
+   * only emitting the call for the client. Default false. See `cc.grepon.relais.nodetools` (#9).
+   */
+  val nodeToolsEnabled: Boolean = false,
 ) {
   val modalities: RequestModalities
     get() = RequestModalities(hasImage = imagePng != null, hasAudio = audioWav != null)
