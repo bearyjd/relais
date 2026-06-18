@@ -108,7 +108,7 @@ class RelaisDatabaseMigrationTest {
     // and the assertions below confirm `session_turns` exists + survives the later v2->v3 migration.
     val db =
       Room.databaseBuilder(context, RelaisDatabase::class.java, TEST_DB)
-        .addMigrations(RelaisDatabase.MIGRATION_1_2, RelaisDatabase.MIGRATION_2_3)
+        .addMigrations(RelaisDatabase.MIGRATION_1_2, RelaisDatabase.MIGRATION_2_3, RelaisDatabase.MIGRATION_3_4)
         .allowMainThreadQueries()
         .build()
 
@@ -147,7 +147,7 @@ class RelaisDatabaseMigrationTest {
 
     val db =
       Room.databaseBuilder(context, RelaisDatabase::class.java, TEST_DB)
-        .addMigrations(RelaisDatabase.MIGRATION_1_2, RelaisDatabase.MIGRATION_2_3)
+        .addMigrations(RelaisDatabase.MIGRATION_1_2, RelaisDatabase.MIGRATION_2_3, RelaisDatabase.MIGRATION_3_4)
         .allowMainThreadQueries()
         .build()
     val supportDb = db.openHelper.writableDatabase
@@ -177,6 +177,40 @@ class RelaisDatabaseMigrationTest {
     )
     assertTrue(indices("rag_documents").contains("index_rag_documents_createdAt"))
     assertTrue(indices("rag_chunks").contains("index_rag_chunks_documentId"))
+
+    db.close()
+  }
+
+  @Test
+  fun `v3 to v4 migration runs and validates against the compiled v4 schema`() {
+    // Full chain v1->2->3->4; Room validates the final identity hash against compiled 4.json. Drift
+    // between MIGRATION_3_4's SQL and the BatchJob entity throws on open (Feature #14).
+    createV1Database()
+
+    val db =
+      Room.databaseBuilder(context, RelaisDatabase::class.java, TEST_DB)
+        .addMigrations(RelaisDatabase.MIGRATION_1_2, RelaisDatabase.MIGRATION_2_3, RelaisDatabase.MIGRATION_3_4)
+        .allowMainThreadQueries()
+        .build()
+    val supportDb = db.openHelper.writableDatabase
+
+    val cols = mutableListOf<String>()
+    supportDb.query("PRAGMA table_info(`batch_jobs`)").use { c ->
+      val nameCol = c.getColumnIndexOrThrow("name")
+      while (c.moveToNext()) cols.add(c.getString(nameCol))
+    }
+    assertEquals(
+      listOf("id", "jobId", "status", "requestJson", "resultJson", "webhookUrl", "createdAt", "updatedAt"),
+      cols,
+    )
+
+    val idxNames = mutableListOf<String>()
+    supportDb.query("PRAGMA index_list(`batch_jobs`)").use { c ->
+      val nameCol = c.getColumnIndexOrThrow("name")
+      while (c.moveToNext()) idxNames.add(c.getString(nameCol))
+    }
+    assertTrue(idxNames.contains("index_batch_jobs_status_createdAt"))
+    assertTrue(idxNames.contains("index_batch_jobs_jobId"))
 
     db.close()
   }

@@ -225,6 +225,7 @@ object RelaisMetrics {
       raw == "/v1/sessions" -> "/v1/sessions"
       raw == "/v1/rag/documents" -> "/v1/rag/documents" // RAG corpus ingest/list/delete (#4)
       raw == "/v1/rag/query" -> "/v1/rag/query" // RAG retrieval (#4)
+      raw == "/v1/batch" -> "/v1/batch" // async batch jobs (#14)
       raw == "/automation" -> "/automation" // Tasker/Automate intent ABI (#8)
       raw == "/metrics" -> "/metrics"
       raw == "/health" -> "/health"

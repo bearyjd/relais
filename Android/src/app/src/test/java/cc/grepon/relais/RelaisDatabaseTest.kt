@@ -49,15 +49,15 @@ class RelaisDatabaseTest {
   }
 
   @Test fun `migrations array carries the contiguous schema upgrade chain`() {
-    // Feature #5 added `session_turns` at v2; Feature #4 added `rag_documents`/`rag_chunks` at v3.
-    // Each migration must be wired so an upgrade-in-place keeps existing on-device data (no
-    // destructive fallback), and the chain must be contiguous (no version gap).
-    assertEquals(2, RelaisDatabase.MIGRATIONS.size)
+    // #5 added session_turns at v2; #4 added rag_documents/rag_chunks at v3; #14 added batch_jobs at v4.
+    // Each migration must be wired so an upgrade-in-place keeps existing on-device data (no destructive
+    // fallback), and the chain must be contiguous (no version gap).
     val sorted = RelaisDatabase.MIGRATIONS.sortedBy { it.startVersion }
-    assertEquals(1, sorted[0].startVersion)
-    assertEquals(2, sorted[0].endVersion)
-    assertEquals(2, sorted[1].startVersion)
-    assertEquals(3, sorted[1].endVersion)
+    assertEquals(3, sorted.size)
+    sorted.forEachIndexed { i, m ->
+      assertEquals(i + 1, m.startVersion)
+      assertEquals(i + 2, m.endVersion)
+    }
   }
 
   @Test fun `session turn round-trips on the v2 schema`() = runBlocking {

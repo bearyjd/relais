@@ -98,6 +98,8 @@ class RelaisNodeService : Service() {
         // Periodic TTL prune for the optional session memory (Feature #5). Idempotent + no-ops when
         // session memory is disabled, so scheduling it unconditionally is a true no-op by default.
         cc.grepon.relais.worker.SessionPruneWorker.schedule(applicationContext)
+        // Drain any batch jobs left queued by a prior crash/restart (Feature #14); a no-op if empty.
+        cc.grepon.relais.worker.BatchWorker.kick(applicationContext)
         updateNotification("Resident engine ready · http 127.0.0.1:8080 · https :8443 (LAN)")
         Log.i(TAG, "Node up: engine resident; http loopback :8080, https LAN :8443")
         // Security H3: never log the API key — it is shown in the Relais Node control screen.
