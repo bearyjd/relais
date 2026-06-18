@@ -15,10 +15,6 @@ package cc.grepon.relais.embed
 import android.content.Context
 import android.util.Log
 import cc.grepon.relais.RelaisConfig
-import com.google.android.gms.common.ConnectionResult
-import com.google.android.gms.common.GoogleApiAvailability
-import com.google.android.gms.tasks.Tasks
-import com.google.android.gms.tflite.java.TfLite
 import java.io.File
 import java.io.RandomAccessFile
 import java.nio.MappedByteBuffer
@@ -26,12 +22,13 @@ import java.nio.channels.FileChannel
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.concurrent.thread
 import org.tensorflow.lite.DataType
+import org.tensorflow.lite.Interpreter
 import org.tensorflow.lite.InterpreterApi
 
 /**
- * [RelaisEmbedder] backed by the on-device EmbeddingGemma `.tflite` (run through the GMS
- * `InterpreterApi`) plus the pure-Kotlin SentencePiece tokenizer. Produces native 768-dim,
- * L2-normalized vectors.
+ * [RelaisEmbedder] backed by the on-device EmbeddingGemma `.tflite` (run through the BUNDLED LiteRT
+ * runtime — `org.tensorflow.lite.Interpreter`, no Google Play Services, so it works on de-Googled
+ * devices) plus the pure-Kotlin SentencePiece tokenizer. Produces native 768-dim, L2-normalized vectors.
  *
  * The graph's exact I/O is NOT hard-assumed — it is INTROSPECTED at load time and adapted: the
  * token-ids input is located by name/dtype, an attention-mask input is fed if the graph has one, and
@@ -42,8 +39,8 @@ import org.tensorflow.lite.InterpreterApi
  *  - [isAvailable] is true only once the model is actually loaded in memory, so the HTTP request
  *    thread never blocks on the (one-time) ~180 MB download or the interpreter load.
  *  - The endpoint, when not ready, asks [canProvision]; if so it calls [ensureProvisioningStarted]
- *    (a single background download+load) and answers 503-retry. A device with no Google Play Services
- *    runtime, or no HF token for the gated model, reports [canProvision] = false → a stable 501.
+ *    (a single background download+load) and answers 503-retry. No HF token for the gated model →
+ *    [canProvision] = false → a stable 501.
  *  - [warmIfProvisioned] re-loads an already-downloaded model at node startup (no token, no download).
  *
  * Failure handling distinguishes TRANSIENT from INTEGRITY faults so a flaky connection can't brick
@@ -62,7 +59,6 @@ class EmbeddingGemmaEmbedder : RelaisEmbedder {
   @Volatile private var loaded: Loaded? = null
   @Volatile private var integrityFailures: Int = 0
   @Volatile private var lastIntegrityFailureAtMs: Long = 0L
-  @Volatile private var gmsState: Boolean = false // cached only once true (a positive result is durable)
   private val loadLock = Any()
   private val provisioning = AtomicBoolean(false)
 
@@ -78,17 +74,17 @@ class EmbeddingGemmaEmbedder : RelaisEmbedder {
     val outputSeqLen: Int,
   )
 
-  /** Ready to embed right now — the model is loaded in memory (implies GMS + provisioned). */
+  /** Ready to embed right now — the model is loaded in memory (implies provisioned + loaded). */
   override fun isAvailable(context: Context): Boolean = loaded != null
 
   /**
-   * Whether a background provision+load could plausibly succeed: a GMS LiteRT runtime is present, an
-   * HF token is set (the model is license-gated), and the integrity-failure budget isn't exhausted.
-   * The endpoint uses this to decide 503-retry (provisioning) vs a stable 501 (genuinely unavailable).
+   * Whether a background provision+load could plausibly succeed: an HF token is set (the model is
+   * license-gated) and the integrity-failure budget isn't exhausted. (The bundled LiteRT runtime needs
+   * no Play Services, so there is no GMS gate.) The endpoint uses this to decide 503-retry
+   * (provisioning) vs a stable 501 (genuinely unavailable).
    */
   fun canProvision(context: Context): Boolean =
     !integrityBudgetExhausted() &&
-      gmsAvailable(context) &&
       !RelaisConfig.hfToken(context).isNullOrBlank()
 
   override fun embed(context: Context, texts: List<String>): List<FloatArray> =
@@ -126,7 +122,7 @@ class EmbeddingGemmaEmbedder : RelaisEmbedder {
   fun warmIfProvisioned(context: Context) {
     val app = context.applicationContext
     if (loaded != null || integrityBudgetExhausted()) return
-    if (!gmsAvailable(app) || !EmbeddingModelProvisioner.isProvisioned(app)) return
+    if (!EmbeddingModelProvisioner.isProvisioned(app)) return
     startBackgroundLoad(app)
   }
 
@@ -194,9 +190,6 @@ class EmbeddingGemmaEmbedder : RelaisEmbedder {
     // budget (so a flaky connection never permanently disables embeddings) and the provisioner finalizes
     // atomically (no poisoned partial). The next request simply retries.
     val assets = EmbeddingModelProvisioner.ensure(context)
-    // GMS runtime init is gated by the gmsAvailable() preflight; a (rare) failure here is also treated
-    // as transient and does not drop the model.
-    Tasks.await(TfLite.initialize(context))
     // Build phase. A failure now means the on-disk bytes are present but UNUSABLE (corrupt-but-right-
     // size model, incompatible graph shape): drop the on-disk copy so the next attempt re-downloads
     // fresh, and count it toward the bounded, cooldown-reset integrity budget.
@@ -216,9 +209,21 @@ class EmbeddingGemmaEmbedder : RelaisEmbedder {
   }
 
   private fun buildLoaded(assets: EmbeddingAssets): Loaded {
-    val options = InterpreterApi.Options().setRuntime(InterpreterApi.Options.TfLiteRuntime.FROM_SYSTEM_ONLY)
-    val interpreter = InterpreterApi.create(mapModel(assets.modelFile), options)
+    // Bundled CPU/XNNPACK runtime (no Play Services → works on de-Googled devices). Embeddings are a
+    // single forward pass on a ~300M model, so CPU is performance-adequate; the SoC-NPU `.tflite`
+    // variants would need a vendor delegate the bundled runtime lacks, so v1 uses the GENERIC model
+    // everywhere. `Interpreter` implements `InterpreterApi`, so the introspection/run code is unchanged.
+    val interpreter: InterpreterApi =
+      Interpreter(mapModel(assets.modelFile), Interpreter.Options().setNumThreads(EMBED_NUM_THREADS))
+    return try {
+      introspectAndBuild(interpreter, assets)
+    } catch (e: Throwable) {
+      runCatching { interpreter.close() } // incompatible/corrupt model — don't leak the native interpreter
+      throw e
+    }
+  }
 
+  private fun introspectAndBuild(interpreter: InterpreterApi, assets: EmbeddingAssets): Loaded {
     // --- introspect inputs ---
     val inCount = interpreter.inputTensorCount
     require(inCount in 1..2) { "unexpected embedding input count: $inCount" }
@@ -300,18 +305,6 @@ class EmbeddingGemmaEmbedder : RelaisEmbedder {
     return true
   }
 
-  /** True iff a Google Play Services LiteRT runtime is present. A positive result is cached (durable);
-   *  a negative is re-probed each call (it may be transient — e.g. GMS mid-update). */
-  private fun gmsAvailable(context: Context): Boolean {
-    if (gmsState) return true
-    val ok = runCatching {
-      GoogleApiAvailability.getInstance()
-        .isGooglePlayServicesAvailable(context.applicationContext) == ConnectionResult.SUCCESS
-    }.getOrDefault(false)
-    if (ok) gmsState = true
-    return ok
-  }
-
   private fun mapModel(file: File): MappedByteBuffer =
     RandomAccessFile(file, "r").use { raf ->
       // The mapping outlives the closed channel (standard TFLite pattern); reclaimed by the cleaner.
@@ -323,6 +316,10 @@ class EmbeddingGemmaEmbedder : RelaisEmbedder {
 
     /** EmbeddingGemma-300M native embedding dimensionality. */
     const val DIM = 768
+
+    /** XNNPACK threads for the single-pass embed. 4 targets the SoC's performance cores; measured
+     *  ~905 ms/512-token text on a Pixel 10 (Tensor G5). */
+    private const val EMBED_NUM_THREADS = 4
 
     /** Consecutive INTEGRITY failures before backing off; transient download failures don't count. */
     private const val MAX_INTEGRITY_FAILURES = 3

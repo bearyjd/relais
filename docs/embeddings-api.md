@@ -48,15 +48,19 @@ The model is **license-gated** and downloaded on demand (~180 MB, once), not bun
 
 - The operator must set a HuggingFace token (`RelaisConfig.setHfToken`) that has accepted the
   `litert-community/embeddinggemma-300m` license.
-- The model + tokenizer are run via the **Google Play Services LiteRT runtime** (`InterpreterApi`), so
-  a device **without Google Play Services** cannot serve embeddings.
+- The model + tokenizer run via the **bundled LiteRT runtime** (`org.tensorflow.lite.Interpreter`,
+  CPU/XNNPACK) shipped in the APK — **no Play Services in the dependency graph** (verified at build +
+  dependency-resolution time). It is therefore intended to run on **de-Googled devices**, though that
+  has not yet been hardware-verified on one (no GrapheneOS-without-GMS device on hand; validated on a
+  stock Pixel 10). (The GENERIC seq512 model runs on CPU; the SoC-NPU-compiled `.tflite` variants would
+  need a vendor delegate the bundled runtime doesn't carry, so they're not used.)
 
 | status | meaning |
 | ------ | ------- |
 | `200`  | embeddings returned. |
 | `400`  | invalid `input` or an unknown `embedding_task`. |
 | `503` + `Retry-After` | model is downloading/loading in the background — retry shortly (first request after a fresh install or restart). |
-| `501`  | genuinely unavailable: no HF token set, or no Google Play Services runtime on this device. |
+| `501`  | genuinely unavailable: no HF token set (the model is license-gated and can't be fetched). |
 
 The download is triggered by the first `/v1/embeddings` request (not merely by having a token), runs
 off the request thread, and is reused across restarts.
