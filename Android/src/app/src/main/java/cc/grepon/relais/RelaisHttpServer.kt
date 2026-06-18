@@ -549,15 +549,19 @@ class RelaisHttpServer(
               }
             }
             val dao = RelaisDatabase.get(context).batchDao()
-            if (runBlocking { dao.countByStatus(BatchStatus.QUEUED) } >= BATCH_MAX_QUEUED) {
-              reply(429, buildEmbeddingsError("batch queue full (max $BATCH_MAX_QUEUED queued)", "rate_limit_exceeded")); return
-            }
             val jobId = java.util.UUID.randomUUID().toString()
             val now = System.currentTimeMillis()
-            runBlocking {
-              dao.insert(
+            // Atomic count+insert (one transaction): concurrent submits on the multi-threaded pool can't
+            // both pass a stale count and overshoot the cap.
+            val enqueued = runBlocking {
+              dao.insertIfUnderCap(
                 BatchJob(jobId = jobId, status = BatchStatus.QUEUED, requestJson = raw, resultJson = null, webhookUrl = webhook, createdAt = now, updatedAt = now),
+                queuedStatus = BatchStatus.QUEUED,
+                cap = BATCH_MAX_QUEUED,
               )
+            }
+            if (!enqueued) {
+              reply(429, buildEmbeddingsError("batch queue full (max $BATCH_MAX_QUEUED queued)", "rate_limit_exceeded")); return
             }
             BatchWorker.kick(context)
             reply(202, JSONObject().put("object", "batch.job").put("job_id", jobId).put("status", BatchStatus.QUEUED))

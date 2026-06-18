@@ -27,13 +27,18 @@ import java.net.URI
  *    UNLESS the host is allowlisted;
  *  - an unresolvable host is blocked (fail closed).
  *
- * This guard runs both at submit time (reject early) and again at delivery time (a name can re-resolve
- * to a private IP between the two — TOCTOU).
+ * The guard runs at submit time (reject early) AND returns the exact resolved [Verdict.Allowed.addresses]
+ * so the delivery layer can **connect to one of those pinned IPs** rather than re-resolving the name. A
+ * plain "re-check at delivery" does NOT close the TOCTOU window, because `HttpURLConnection`/the socket
+ * would resolve the name a second time — a name that flips to a private IP between the guard's lookup and
+ * the connection's lookup (DNS rebinding) would still connect to the private IP. Pinning the validated
+ * address (see [WebhookDelivery]) is what actually closes it.
  */
 object WebhookGuard {
 
   sealed interface Verdict {
-    data object Allowed : Verdict
+    /** @param addresses the resolved, vetted IPs — delivery MUST connect to one of these (pinning). */
+    data class Allowed(val addresses: List<InetAddress>) : Verdict
     data class Blocked(val reason: String) : Verdict
   }
 
@@ -52,16 +57,20 @@ object WebhookGuard {
     val host = uri.host?.lowercase()
       ?: return Verdict.Blocked("webhook URL has no host")
 
-    if (host in allowlist) return Verdict.Allowed // operator's explicit trust — bypass scheme + IP checks
+    // Resolve even on the allowlist path so the delivery layer can still pin the address (the allowlist
+    // bypasses the scheme + classification checks, not the pin — that keeps an allowlisted name from
+    // being a free re-resolution hole).
+    val addresses = runCatching { resolve(host) }.getOrNull()?.takeIf { it.isNotEmpty() }
+      ?: return Verdict.Blocked("webhook host does not resolve")
+
+    if (host in allowlist) return Verdict.Allowed(addresses.toList()) // operator's explicit trust
 
     if (scheme != "https") return Verdict.Blocked("webhook URL must use https (or allowlist the host)")
 
-    val addresses = runCatching { resolve(host) }.getOrNull()?.takeIf { it.isNotEmpty() }
-      ?: return Verdict.Blocked("webhook host does not resolve")
     for (a in addresses) {
       classify(a)?.let { return Verdict.Blocked("webhook host resolves to a $it address") }
     }
-    return Verdict.Allowed
+    return Verdict.Allowed(addresses.toList())
   }
 
   /** Block reason for a single address, or null if it's a routable public address. */

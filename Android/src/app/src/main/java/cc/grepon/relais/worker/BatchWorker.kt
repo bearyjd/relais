@@ -20,6 +20,7 @@ import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import cc.grepon.relais.RelaisEngine
+import cc.grepon.relais.RelaisMetrics
 import cc.grepon.relais.RelaisRequest
 import cc.grepon.relais.ThermalGovernor
 import cc.grepon.relais.batch.BatchChat
@@ -27,38 +28,64 @@ import cc.grepon.relais.batch.WebhookDelivery
 import cc.grepon.relais.data.BatchJob
 import cc.grepon.relais.data.BatchStatus
 import cc.grepon.relais.data.RelaisDatabase
+import kotlinx.coroutines.CancellationException
 import org.json.JSONObject
 
 /**
- * Drains queued batch jobs (Feature #14) off the request path: marks RUNNING, runs the chat job through
- * [RelaisEngine], writes the result, and (if a webhook is set) POSTs the signed result. Bounded per run
- * ([MAX_PER_RUN]); re-kicks itself if jobs remain (a submit during a run, or > MAX_PER_RUN queued), so
- * nothing sits. Prunes jobs older than the TTL each run.
+ * Drains queued batch jobs (Feature #14) off the request path: atomically claims a job (queued→running),
+ * runs the chat through [RelaisEngine], writes the result, and (if a webhook is set) POSTs the signed
+ * result. Bounded per run ([MAX_PER_RUN]) so a single execution stays well under WorkManager's 10-minute
+ * hard ceiling (each job is capped by the engine's own per-request timeout); it re-kicks itself if jobs
+ * remain, so throughput is preserved across runs. On every start it first reaps jobs stranded `running`
+ * by a previously-killed worker, then TTL-prunes old jobs.
  */
 class BatchWorker(context: Context, params: WorkerParameters) : CoroutineWorker(context, params) {
 
   override suspend fun doWork(): Result {
     val ctx = applicationContext
     val dao = RelaisDatabase.get(ctx).batchDao()
-    runCatching { dao.deleteOlderThan(System.currentTimeMillis() - TTL_MS) }
+    val startMs = System.currentTimeMillis()
+    runCatching { dao.deleteOlderThan(startMs - TTL_MS) }
+    // Recover anything a prior worker left `running` (process death / reboot / time-budget kill) so a
+    // client never polls `running` forever. Cutoff is well past the max single-job time.
+    runCatching {
+      dao.failStaleRunning(
+        running = BatchStatus.RUNNING,
+        failed = BatchStatus.FAILED,
+        errorJson = STALE_ERROR_JSON,
+        now = startMs,
+        cutoffMs = startMs - STALE_RUNNING_MS,
+      )
+    }
 
     var processed = 0
-    while (processed < MAX_PER_RUN) {
+    var iterations = 0
+    // `processed` bounds the per-run inference budget; `iterations` is a cheap safety cap so a burst of
+    // lost claims (another drain raced us) can't spin. Each iteration removes one job from the queued set
+    // (we claim it, or the winner already did), so the loop converges regardless.
+    while (processed < MAX_PER_RUN && iterations < MAX_PER_RUN * 4) {
+      iterations++
       val job = dao.byStatus(BatchStatus.QUEUED, 1).firstOrNull() ?: break
-      dao.updateStatus(job.jobId, BatchStatus.RUNNING, System.currentTimeMillis())
+      val now = System.currentTimeMillis()
+      if (dao.claim(job.jobId, BatchStatus.QUEUED, BatchStatus.RUNNING, now) == 0) continue // lost the race
       val (status, resultJson) = process(ctx, job)
       dao.finish(job.jobId, status, resultJson, System.currentTimeMillis())
-      job.webhookUrl?.takeIf { it.isNotBlank() }?.let { url ->
-        val envelope = JSONObject()
-          .put("job_id", job.jobId).put("status", status).put("result", JSONObject(resultJson))
-          .toString()
-        runCatching { WebhookDelivery.deliver(ctx, url, envelope) }
-      }
+      deliverWebhook(ctx, job, status, resultJson)
       processed++
     }
     // Anything left (submitted mid-run, or beyond the per-run cap) → run again.
     if (runCatching { dao.countByStatus(BatchStatus.QUEUED) }.getOrDefault(0) > 0) kick(ctx)
     return Result.success()
+  }
+
+  /** Best-effort signed webhook; records the delivery outcome so silent loss is observable to operators. */
+  private fun deliverWebhook(ctx: Context, job: BatchJob, status: String, resultJson: String) {
+    val url = job.webhookUrl?.takeIf { it.isNotBlank() } ?: return
+    val envelope = JSONObject()
+      .put("job_id", job.jobId).put("status", status).put("result", JSONObject(resultJson))
+      .toString()
+    val delivered = runCatching { WebhookDelivery.deliver(ctx, url, envelope) }.getOrDefault(false)
+    RelaisMetrics.recordWebhookDelivery(delivered)
   }
 
   private fun process(ctx: Context, job: BatchJob): Pair<String, String> =
@@ -72,6 +99,8 @@ class BatchWorker(context: Context, params: WorkerParameters) : CoroutineWorker(
         shouldCancel = { ThermalGovernor.shouldTruncate() },
       )
       BatchStatus.COMPLETED to BatchChat.envelope(job.jobId, result.text, result.completionTokens, result.finishReason).toString()
+    } catch (e: CancellationException) {
+      throw e // structured-concurrency contract: never swallow cancellation
     } catch (e: Exception) {
       Log.w(TAG, "batch job ${job.jobId} failed: ${e.message}")
       BatchStatus.FAILED to JSONObject().put("error", "job failed: ${e.message}").toString()
@@ -79,7 +108,14 @@ class BatchWorker(context: Context, params: WorkerParameters) : CoroutineWorker(
 
   companion object {
     private const val TAG = "RelaisBatch"
-    private const val MAX_PER_RUN = 20
+    // Bounded so worst-case (MAX_PER_RUN × the engine's per-request timeout) stays under WorkManager's
+    // 10-minute execution ceiling; leftover jobs are drained by the re-kick.
+    private const val MAX_PER_RUN = 3
+    // A `running` job whose updatedAt is older than this was orphaned by a killed worker. Must stay
+    // comfortably above the engine's per-request timeout (~120s) so a legitimately in-flight job is
+    // never reaped; if that timeout is ever raised toward this value, raise this too.
+    private const val STALE_RUNNING_MS = 5L * 60 * 1000
+    private const val STALE_ERROR_JSON = """{"error":"job interrupted (worker stopped before completion)"}"""
     private const val TTL_MS = 7L * 24 * 60 * 60 * 1000 // keep results 7 days
     private const val UNIQUE = "relais-batch-drain"
 

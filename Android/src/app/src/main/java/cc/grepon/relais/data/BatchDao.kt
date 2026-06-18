@@ -15,6 +15,7 @@ package cc.grepon.relais.data
 import androidx.room.Dao
 import androidx.room.Insert
 import androidx.room.Query
+import androidx.room.Transaction
 
 /**
  * Data access for the async batch queue (Feature #14). Parameterized queries only (no injection from a
@@ -24,12 +25,41 @@ import androidx.room.Query
 interface BatchDao {
   @Insert suspend fun insert(job: BatchJob): Long
 
+  /**
+   * Atomic capacity-bounded enqueue: count + insert in ONE transaction so concurrent submits (the HTTP
+   * pool is multi-threaded) can't both pass a stale count and overshoot [cap]. Returns false (caller
+   * → 429) when the queue is already at [cap].
+   */
+  @Transaction
+  suspend fun insertIfUnderCap(job: BatchJob, queuedStatus: String, cap: Int): Boolean {
+    if (countByStatus(queuedStatus) >= cap) return false
+    insert(job)
+    return true
+  }
+
   @Query("SELECT * FROM batch_jobs WHERE jobId = :jobId LIMIT 1")
   suspend fun byJobId(jobId: String): BatchJob?
 
   /** Oldest queued jobs first, capped — the worker drains these. */
   @Query("SELECT * FROM batch_jobs WHERE status = :status ORDER BY createdAt ASC, id ASC LIMIT :limit")
   suspend fun byStatus(status: String, limit: Int): List<BatchJob>
+
+  /**
+   * Atomically claim a queued job for this worker: flip queued→running only if it is STILL queued.
+   * Returns 1 if this worker won the claim, 0 if another concurrent drain already took it. This is the
+   * mutual-exclusion that a separate `byStatus` + `updateStatus` lacks — it prevents double-execution
+   * (and a double webhook) when two drains overlap.
+   */
+  @Query("UPDATE batch_jobs SET status = :running, updatedAt = :now WHERE jobId = :jobId AND status = :queued")
+  suspend fun claim(jobId: String, queued: String, running: String, now: Long): Int
+
+  /**
+   * Recover jobs stranded in `running` by a worker that died mid-job (process kill, reboot, OOM, or the
+   * per-run time budget): flip any running job older than [cutoffMs] to `failed` with [errorJson], so a
+   * client never polls `running` forever. [cutoffMs] must be well past the max single-job time.
+   */
+  @Query("UPDATE batch_jobs SET status = :failed, resultJson = :errorJson, updatedAt = :now WHERE status = :running AND updatedAt < :cutoffMs")
+  suspend fun failStaleRunning(running: String, failed: String, errorJson: String, now: Long, cutoffMs: Long): Int
 
   @Query("UPDATE batch_jobs SET status = :status, updatedAt = :now WHERE jobId = :jobId")
   suspend fun updateStatus(jobId: String, status: String, now: Long)

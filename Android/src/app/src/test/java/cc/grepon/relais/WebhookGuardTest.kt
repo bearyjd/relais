@@ -30,10 +30,18 @@ class WebhookGuardTest {
   private fun assertBlocked(v: WebhookGuard.Verdict) =
     assertTrue("expected Blocked, was $v", v is WebhookGuard.Verdict.Blocked)
 
-  @Test fun `public https destination is allowed`() {
-    assertEquals(
-      WebhookGuard.Verdict.Allowed,
+  /** Allowed AND the vetted address is handed back for pinning (the TOCTOU defence depends on this). */
+  private fun assertAllowedPinning(v: WebhookGuard.Verdict, expectedIp: String) {
+    assertTrue("expected Allowed, was $v", v is WebhookGuard.Verdict.Allowed)
+    val addrs = (v as WebhookGuard.Verdict.Allowed).addresses
+    assertTrue("expected a pinned address", addrs.isNotEmpty())
+    assertEquals(expectedIp, addrs.first().hostAddress)
+  }
+
+  @Test fun `public https destination is allowed and pins the resolved address`() {
+    assertAllowedPinning(
       WebhookGuard.check("https://hooks.example.com/x", resolve = resolvesTo("93.184.216.34")),
+      "93.184.216.34",
     )
   }
 
@@ -61,10 +69,10 @@ class WebhookGuardTest {
     assertBlocked(WebhookGuard.check("https://evil.example.com/x", resolve = resolvesTo("93.184.216.34", "10.0.0.1")))
   }
 
-  @Test fun `allowlisted host bypasses https and private checks`() {
-    assertEquals(
-      WebhookGuard.Verdict.Allowed,
+  @Test fun `allowlisted host bypasses https and private checks but still pins the address`() {
+    assertAllowedPinning(
       WebhookGuard.check("http://internal.lan/hook", allowlist = setOf("internal.lan"), resolve = resolvesTo("10.0.0.7")),
+      "10.0.0.7",
     )
   }
 
