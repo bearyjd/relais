@@ -29,7 +29,7 @@ data class EmbeddingAssets(val modelFile: File, val tokenizerFile: File)
  * main thread.
  *
  * v1 provisions the GENERIC seq512 variant ([EMBEDDING_GENERIC_VARIANT]): it runs anywhere on the
- * CPU (XNNPACK) and so is guaranteed to load via the GMS `InterpreterApi`. The SoC-accelerated
+ * CPU (XNNPACK) and so is guaranteed to load via the bundled LiteRT runtime. The SoC-accelerated
  * variants ([selectEmbeddingVariant]) are AOT-compiled for a specific NPU and need that vendor's
  * delegate — enabling them is a separate, device-verified follow-up.
  */

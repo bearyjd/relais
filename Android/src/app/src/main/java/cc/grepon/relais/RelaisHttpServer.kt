@@ -408,10 +408,10 @@ class RelaisHttpServer(
                 } else {
                   val embedder = RelaisEmbedderProvider.get()
                   if (embedder == null || !embedder.isAvailable(context)) {
-                    // Not loaded yet. If it CAN provision (Google Play Services present + an HF token
-                    // set), kick a one-time background download/load and tell the client to retry — the
+                    // Not loaded yet. If it CAN provision (an HF token is set for the gated model),
+                    // kick a one-time background download/load and tell the client to retry — the
                     // request thread never blocks on the ~180 MB fetch. Otherwise it's genuinely
-                    // unavailable on this device (no GMS runtime, or no token for the gated model).
+                    // unavailable (no token for the gated model).
                     if (embedder is EmbeddingGemmaEmbedder && embedder.canProvision(context)) {
                       embedder.ensureProvisioningStarted(context)
                       reply(

@@ -49,7 +49,7 @@ import org.junit.runner.RunWith
  *     cc.grepon.relais.test/androidx.test.runner.AndroidJUnitRunner
  *
  * It (1) sets the HF token, (2) provisions the GENERIC seq512 `.tflite` + `sentencepiece.model`
- * (downloads ~180 MB on first run; reused after), (3) loads the GMS-`InterpreterApi` graph — which
+ * (downloads ~180 MB on first run; reused after), (3) loads the bundled-LiteRT graph — which
  * LOGS the introspected I/O signature under tag "RelaisEmbedder" (the authoritative shape check), and
  * (4) asserts the embeddings are well-formed and retrieval-sane:
  *   - dim == 768, finite, unit-L2-norm;
@@ -103,6 +103,15 @@ class EmbeddingGemmaProbe {
       "relevant doc must rank above irrelevant ($simRelevant !> $simIrrelevant)",
       simRelevant > simIrrelevant,
     )
+
+    // Performance (bundled CPU/XNNPACK runtime): time a single embed so we know the de-Googled path
+    // is fast enough for RAG — embeddings are a single forward pass, not autoregressive generation.
+    val reps = 5
+    val t0 = System.nanoTime()
+    repeat(reps) { embedder.embed(context, listOf(relevant), EmbeddingTask.DOCUMENT) }
+    val perEmbedMs = (System.nanoTime() - t0) / 1e6 / reps
+    Log.i(TAG, "embed latency (bundled CPU): ${(perEmbedMs * 10).toLong() / 10.0} ms/text over $reps reps")
+    assertTrue("embed latency ${perEmbedMs}ms is too high for RAG", perEmbedMs < 2000.0)
   }
 
   /**

@@ -37,6 +37,11 @@ android {
     versionCode = 33
     versionName = "1.0.15"
 
+    // The bundled LiteRT runtime ships native .so for 4 ABIs, but the litertlm LLM AAR only ships
+    // arm64-v8a + x86_64 — so the node can't run on the others anyway. Match that set to avoid shipping
+    // ~9 MB of armeabi-v7a/x86 TFLite libs that could never execute (and a latent ABI-mismatch trap).
+    ndk { abiFilters += listOf("arm64-v8a", "x86_64") }
+
     // Needed for HuggingFace auth workflows.
     // Use the scheme of the "Redirect URLs" in HuggingFace app.
     manifestPlaceholders["appAuthRedirectScheme"] =
@@ -105,9 +110,7 @@ dependencies {
   implementation("org.bouncycastle:bcpkix-jdk15to18:1.78.1")
   implementation(libs.commonmark)
   implementation(libs.richtext)
-  implementation(libs.tflite)
-  implementation(libs.tflite.gpu)
-  implementation(libs.tflite.support)
+  implementation(libs.litert) // bundled LiteRT runtime (no Play Services) — embeddings work de-Googled
   implementation(libs.camerax.core)
   implementation(libs.camerax.camera2)
   implementation(libs.camerax.lifecycle)
