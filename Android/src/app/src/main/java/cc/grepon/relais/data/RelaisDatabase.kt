@@ -32,8 +32,8 @@ import androidx.sqlite.db.SupportSQLiteDatabase
  * changes.
  */
 @Database(
-  entities = [SchemaMeta::class, SessionTurn::class, RagDocument::class, RagChunk::class],
-  version = 3,
+  entities = [SchemaMeta::class, SessionTurn::class, RagDocument::class, RagChunk::class, BatchJob::class],
+  version = 4,
   exportSchema = true,
 )
 abstract class RelaisDatabase : RoomDatabase() {
@@ -43,6 +43,8 @@ abstract class RelaisDatabase : RoomDatabase() {
   abstract fun sessionDao(): SessionDao
 
   abstract fun ragDao(): RagDao
+
+  abstract fun batchDao(): BatchDao
 
   companion object {
     private const val DB_NAME = "relais.db"
@@ -116,8 +118,39 @@ abstract class RelaisDatabase : RoomDatabase() {
         }
       }
 
+    /**
+     * v3 -> v4 (Feature #14): adds the `batch_jobs` table (+ its `(status, createdAt)` index and the
+     * UNIQUE `jobId` index). CREATE statements mirror [BatchJob] exactly (column order, affinities,
+     * nullability, Room's generated index names) — Room validates the schema identity on open. Additive
+     * only. `@VisibleForTesting` so `RelaisDatabaseMigrationTest` can force-run + validate it vs `4.json`.
+     */
+    @VisibleForTesting
+    internal val MIGRATION_3_4 =
+      object : Migration(3, 4) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+          db.execSQL(
+            "CREATE TABLE IF NOT EXISTS `batch_jobs` (" +
+              "`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
+              "`jobId` TEXT NOT NULL, " +
+              "`status` TEXT NOT NULL, " +
+              "`requestJson` TEXT NOT NULL, " +
+              "`resultJson` TEXT, " +
+              "`webhookUrl` TEXT, " +
+              "`createdAt` INTEGER NOT NULL, " +
+              "`updatedAt` INTEGER NOT NULL)"
+          )
+          db.execSQL(
+            "CREATE INDEX IF NOT EXISTS `index_batch_jobs_status_createdAt` " +
+              "ON `batch_jobs` (`status`, `createdAt`)"
+          )
+          db.execSQL(
+            "CREATE UNIQUE INDEX IF NOT EXISTS `index_batch_jobs_jobId` ON `batch_jobs` (`jobId`)"
+          )
+        }
+      }
+
     /** Migrations appended by consumers when they add tables + bump [version]. */
-    val MIGRATIONS: List<Migration> = listOf(MIGRATION_1_2, MIGRATION_2_3)
+    val MIGRATIONS: List<Migration> = listOf(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
 
     /** Process-wide singleton (single process — see backlog §3). */
     fun get(context: Context): RelaisDatabase =

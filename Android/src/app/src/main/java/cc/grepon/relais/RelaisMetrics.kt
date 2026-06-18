@@ -55,6 +55,11 @@ object RelaisMetrics {
   // gauge holds the last-observed stored-turn count (refreshed by the record path + prune worker).
   // Security M6: fixed metric names, no labels — a session key or IP NEVER enters a metric.
   private val sessionHitsTotal = AtomicLong(0)
+
+  // Batch webhook delivery (Feature #14): split success/failure so a silently-failing receiver is
+  // visible to operators (a job can be `completed` yet its webhook never landed). M6: counters only.
+  private val webhookDeliveredTotal = AtomicLong(0)
+  private val webhookFailedTotal = AtomicLong(0)
   @Volatile private var sessionTurnsGauge = 0L
 
   // Bounded ring buffer for the dashboard recent-request log (last 20 entries).
@@ -127,6 +132,11 @@ object RelaisMetrics {
 
   /** A request that loaded stored session history (Feature #5). M6: counter only, no labels. */
   fun recordSessionHit() = sessionHitsTotal.incrementAndGet()
+
+  /** Records a batch webhook delivery outcome (Feature #14). M6: counter only, no labels. */
+  fun recordWebhookDelivery(delivered: Boolean) {
+    if (delivered) webhookDeliveredTotal.incrementAndGet() else webhookFailedTotal.incrementAndGet()
+  }
 
   /** Updates the stored-turn gauge (Feature #5). Called off the request path (record + prune). */
   fun setSessionTurns(count: Long) {
@@ -225,6 +235,7 @@ object RelaisMetrics {
       raw == "/v1/sessions" -> "/v1/sessions"
       raw == "/v1/rag/documents" -> "/v1/rag/documents" // RAG corpus ingest/list/delete (#4)
       raw == "/v1/rag/query" -> "/v1/rag/query" // RAG retrieval (#4)
+      raw == "/v1/batch" -> "/v1/batch" // async batch jobs (#14)
       raw == "/automation" -> "/automation" // Tasker/Automate intent ABI (#8)
       raw == "/metrics" -> "/metrics"
       raw == "/health" -> "/health"
@@ -395,6 +406,13 @@ object RelaisMetrics {
     line("# TYPE relais_session_hits_total counter")
     line("relais_session_hits_total ${sessionHitsTotal.get()}")
 
+    line("# HELP relais_webhook_delivered_total Batch webhooks delivered (receiver answered 2xx).")
+    line("# TYPE relais_webhook_delivered_total counter")
+    line("relais_webhook_delivered_total ${webhookDeliveredTotal.get()}")
+    line("# HELP relais_webhook_failed_total Batch webhooks that failed to deliver (blocked/non-2xx/error).")
+    line("# TYPE relais_webhook_failed_total counter")
+    line("relais_webhook_failed_total ${webhookFailedTotal.get()}")
+
     return sb.toString()
   }
 
@@ -412,6 +430,8 @@ object RelaisMetrics {
       .put("errors_total", errorsTotal.get())
       .put("shed_total", shedTotal.get())
       .put("queue_rejected_total", queueRejectedTotal.get())
+      .put("webhook_delivered_total", webhookDeliveredTotal.get())
+      .put("webhook_failed_total", webhookFailedTotal.get())
       .put("decode_tokens_per_second", lastDecodeTokS)
       .put("inference_p50_seconds", p50)
       .put("inference_p95_seconds", p95)

@@ -23,9 +23,14 @@ import cc.grepon.relais.data.RelaisModelRef
 import cc.grepon.relais.embed.EmbeddingGemmaEmbedder
 import cc.grepon.relais.embed.EmbeddingTask
 import cc.grepon.relais.embed.RelaisEmbedderProvider
+import cc.grepon.relais.batch.WebhookGuard
+import cc.grepon.relais.data.BatchJob
+import cc.grepon.relais.data.BatchStatus
+import cc.grepon.relais.data.RelaisDatabase
 import cc.grepon.relais.nodetools.NodeTools
 import cc.grepon.relais.rag.RagStore
 import cc.grepon.relais.templates.PromptTemplateStore
+import cc.grepon.relais.worker.BatchWorker
 import cc.grepon.relais.templates.parseTemplateId
 import cc.grepon.relais.templates.parseTemplateMode
 import cc.grepon.relais.templates.resolveSystemPrompt
@@ -84,6 +89,10 @@ private const val RAG_MAX_QUERY_CHARS = 8 * 1024
 private const val RAG_MAX_TITLE_CHARS = 1024
 private const val RAG_DEFAULT_TOP_K = 4
 private const val RAG_MAX_TOP_K = 20
+// /v1/batch bounds (feature-14): cap the stored request, the webhook URL, and the queue depth.
+private const val BATCH_MAX_BODY_CHARS = 256 * 1024
+private const val BATCH_MAX_WEBHOOK_URL_CHARS = 2 * 1024
+private const val BATCH_MAX_QUEUED = 256
 
 /** Fixed-window per-IP rate limiter with stale-entry eviction (bounds the tracking map). */
 private class RateLimiter(private val limit: Int, private val windowMs: Long) {
@@ -516,6 +525,63 @@ class RelaisHttpServer(
               )
             }
             reply(200, JSONObject().put("object", "list").put("data", arr))
+          }
+
+          // Async batch (Feature #14): queue a chat completion to run off the request path; poll via
+          // GET, and optionally deliver the signed result to a webhook.
+          method == "POST" && path.startsWith("/v1/batch") -> {
+            val raw = readBody(reader, contentLength)
+            if (raw.length > BATCH_MAX_BODY_CHARS) {
+              reply(400, buildEmbeddingsError("batch body too large (max $BATCH_MAX_BODY_CHARS chars)", "invalid_request_error")); return
+            }
+            val body = JSONObject(raw)
+            if (body.optJSONArray("messages") == null) {
+              reply(400, buildEmbeddingsError("missing 'messages'", "invalid_request_error")); return
+            }
+            val webhook = body.optString("webhook").takeIf { it.isNotBlank() }
+            if (webhook != null) {
+              if (webhook.length > BATCH_MAX_WEBHOOK_URL_CHARS) {
+                reply(400, buildEmbeddingsError("webhook URL too long", "invalid_request_error")); return
+              }
+              val verdict = WebhookGuard.check(webhook, RelaisConfig.webhookAllowlist(context))
+              if (verdict is WebhookGuard.Verdict.Blocked) {
+                reply(400, buildEmbeddingsError("webhook rejected: ${verdict.reason}", "invalid_request_error")); return
+              }
+            }
+            val dao = RelaisDatabase.get(context).batchDao()
+            val jobId = java.util.UUID.randomUUID().toString()
+            val now = System.currentTimeMillis()
+            // Atomic count+insert (one transaction): concurrent submits on the multi-threaded pool can't
+            // both pass a stale count and overshoot the cap.
+            val enqueued = runBlocking {
+              dao.insertIfUnderCap(
+                BatchJob(jobId = jobId, status = BatchStatus.QUEUED, requestJson = raw, resultJson = null, webhookUrl = webhook, createdAt = now, updatedAt = now),
+                queuedStatus = BatchStatus.QUEUED,
+                cap = BATCH_MAX_QUEUED,
+              )
+            }
+            if (!enqueued) {
+              reply(429, buildEmbeddingsError("batch queue full (max $BATCH_MAX_QUEUED queued)", "rate_limit_exceeded")); return
+            }
+            BatchWorker.kick(context)
+            reply(202, JSONObject().put("object", "batch.job").put("job_id", jobId).put("status", BatchStatus.QUEUED))
+          }
+
+          // Batch job status/result: GET /v1/batch/{job_id}
+          method == "GET" && path.startsWith("/v1/batch/") -> {
+            val jobId = path.removePrefix("/v1/batch/").substringBefore("?").trim()
+            if (jobId.isEmpty()) {
+              reply(400, buildEmbeddingsError("missing job id (GET /v1/batch/{job_id})", "invalid_request_error")); return
+            }
+            val job = runBlocking { RelaisDatabase.get(context).batchDao().byJobId(jobId) }
+            if (job == null) {
+              reply(404, buildEmbeddingsError("batch job not found", "not_found"))
+            } else {
+              val resp = JSONObject().put("object", "batch.job").put("job_id", job.jobId)
+                .put("status", job.status).put("created", job.createdAt / 1000)
+              job.resultJson?.let { resp.put("result", JSONObject(it)) }
+              reply(200, resp)
+            }
           }
 
           method == "GET" && path.startsWith("/v1/clientconfig") -> {
@@ -1137,6 +1203,7 @@ class RelaisHttpServer(
       path.startsWith("/v1/sessions") -> "/v1/sessions"
       path.startsWith("/v1/rag/documents") -> "/v1/rag/documents"
       path.startsWith("/v1/rag/query") -> "/v1/rag/query"
+      path.startsWith("/v1/batch") -> "/v1/batch"
       else -> "other"
     }
 

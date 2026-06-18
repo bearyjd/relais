@@ -48,6 +48,8 @@ object RelaisConfig {
   private const val KEY_SESSION_TTL_HOURS = "session_ttl_hours"
   private const val KEY_SESSION_MAX_TURNS = "session_max_turns"
   private const val KEY_SESSION_GLOBAL_MAX_TURNS = "session_global_max_turns"
+  private const val KEY_WEBHOOK_HMAC_SECRET = "webhook_hmac_secret"
+  private const val KEY_WEBHOOK_ALLOWLIST = "webhook_allowlist"
 
   // Server-side session memory (Feature #5) — DEFAULT-OFF. When disabled the HTTP path never reads
   // the header, opens the DB, or persists anything (zero behavior change). TTL + per-session turn
@@ -234,6 +236,31 @@ object RelaisConfig {
 
   fun setHfToken(context: Context, value: String?) {
     securePrefs(context).edit().putString(KEY_HF_TOKEN, value).apply()
+  }
+
+  /**
+   * HMAC-SHA256 secret for signing batch webhook payloads (the `X-Relais-Signature` header, #14).
+   * Generated + stored (encrypted) on first use; the operator reads it to configure their receiver.
+   */
+  fun webhookHmacSecret(context: Context): String {
+    val sp = securePrefs(context)
+    return sp.getString(KEY_WEBHOOK_HMAC_SECRET, null)
+      ?: java.util.UUID.randomUUID().toString().replace("-", "").also {
+        sp.edit().putString(KEY_WEBHOOK_HMAC_SECRET, it).apply()
+      }
+  }
+
+  /**
+   * Operator-allowlisted webhook hosts (lowercased) that bypass the SSRF https + private-IP checks —
+   * for a trusted internal endpoint. Empty by default (so only public https destinations are allowed).
+   */
+  fun webhookAllowlist(context: Context): Set<String> =
+    prefs(context).getString(KEY_WEBHOOK_ALLOWLIST, null)
+      ?.split(",")?.map { it.trim().lowercase() }?.filter { it.isNotEmpty() }?.toSet()
+      ?: emptySet()
+
+  fun setWebhookAllowlist(context: Context, hosts: Set<String>) {
+    prefs(context).edit().putString(KEY_WEBHOOK_ALLOWLIST, hosts.joinToString(",")).apply()
   }
 
   /**
