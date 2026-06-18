@@ -31,23 +31,26 @@ private const val VARIANT_PREFIX = "embeddinggemma-300M_seq512_mixed-precision"
  * any device whose SoC has no dedicated build, INCLUDING Pixel 9 (Tensor G4): there is NO Tensor-G4
  * artifact, so G4 and every unmatched SoC fall back here.
  */
-val EMBEDDING_GENERIC_VARIANT = EmbeddingModelVariant("$VARIANT_PREFIX.tflite", 179_000_000L)
+val EMBEDDING_GENERIC_VARIANT = EmbeddingModelVariant("$VARIANT_PREFIX.tflite", 179_132_472L)
 
-// Known accelerator-specific builds (sizes from the published artifact list — see CLAUDE.md note:
-// the repo is GATED, so these are pinned from the KNOWN facts, not fetched). Ordered most→least
-// specific isn't required because each substring is unique to one SoC.
+// Accelerator-specific builds. Filenames + byte sizes VERIFIED 2026-06-17 against the live repo
+// tree (`GET https://huggingface.co/api/models/litert-community/embeddinggemma-300m/tree/main`).
+// The repo is GATED for download, but the file *listing* is public — so these are ground-truth, not
+// guessed. CRITICAL: the SoC vendor is separated by a DOT (`.google` / `.qualcomm` / `.mediatek`),
+// NOT an underscore; the underscore form 404s on every accelerator device. Ordering is irrelevant —
+// each substring is unique to one SoC.
 private val EMBEDDING_VARIANTS: List<Pair<List<String>, EmbeddingModelVariant>> = listOf(
   // Google Tensor G5 (Pixel 10). NOTE: no Tensor-G4 build exists → Pixel 9 uses GENERIC.
   listOf("tensor g5", "tensor_g5") to
-    EmbeddingModelVariant("${VARIANT_PREFIX}_google.tensor_g5.tflite", 192_000_000L),
+    EmbeddingModelVariant("${VARIANT_PREFIX}.google.tensor_g5.tflite", 191_971_472L),
   // Qualcomm Snapdragon (SM8550 / SM8650 / SM8750 / SM8850).
-  listOf("sm8550") to EmbeddingModelVariant("${VARIANT_PREFIX}_qualcomm.sm8550.tflite", 184_000_000L),
-  listOf("sm8650") to EmbeddingModelVariant("${VARIANT_PREFIX}_qualcomm.sm8650.tflite", 186_000_000L),
-  listOf("sm8750") to EmbeddingModelVariant("${VARIANT_PREFIX}_qualcomm.sm8750.tflite", 188_000_000L),
-  listOf("sm8850") to EmbeddingModelVariant("${VARIANT_PREFIX}_qualcomm.sm8850.tflite", 190_000_000L),
+  listOf("sm8550") to EmbeddingModelVariant("${VARIANT_PREFIX}.qualcomm.sm8550.tflite", 190_290_464L),
+  listOf("sm8650") to EmbeddingModelVariant("${VARIANT_PREFIX}.qualcomm.sm8650.tflite", 190_294_560L),
+  listOf("sm8750") to EmbeddingModelVariant("${VARIANT_PREFIX}.qualcomm.sm8750.tflite", 184_363_552L),
+  listOf("sm8850") to EmbeddingModelVariant("${VARIANT_PREFIX}.qualcomm.sm8850.tflite", 184_474_144L),
   // MediaTek Dimensity (MT6991 / MT6993).
-  listOf("mt6991") to EmbeddingModelVariant("${VARIANT_PREFIX}_mediatek.mt6991.tflite", 184_000_000L),
-  listOf("mt6993") to EmbeddingModelVariant("${VARIANT_PREFIX}_mediatek.mt6993.tflite", 188_000_000L),
+  listOf("mt6991") to EmbeddingModelVariant("${VARIANT_PREFIX}.mediatek.mt6991.tflite", 187_803_028L),
+  listOf("mt6993") to EmbeddingModelVariant("${VARIANT_PREFIX}.mediatek.mt6993.tflite", 183_543_612L),
 )
 
 /**

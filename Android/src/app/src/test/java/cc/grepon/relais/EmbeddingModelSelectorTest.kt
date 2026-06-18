@@ -18,6 +18,7 @@ import cc.grepon.relais.embed.downloadUrlFor
 import cc.grepon.relais.embed.selectEmbeddingVariant
 import cc.grepon.relais.embed.tokenizerDownloadUrl
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -34,7 +35,7 @@ class EmbeddingModelSelectorTest {
 
   @Test fun `Tensor G5 selects the tensor_g5 variant`() {
     val v = selectEmbeddingVariant("Tensor G5", "Google")
-    assertEquals("embeddinggemma-300M_seq512_mixed-precision_google.tensor_g5.tflite", v.fileName)
+    assertEquals("embeddinggemma-300M_seq512_mixed-precision.google.tensor_g5.tflite", v.fileName)
   }
 
   @Test fun `Tensor G4 falls back to GENERIC (no G4 build exists)`() {
@@ -56,41 +57,41 @@ class EmbeddingModelSelectorTest {
 
   @Test fun `Qualcomm SM8550 selects the sm8550 variant`() {
     val v = selectEmbeddingVariant("SM8550", "Qualcomm")
-    assertEquals("embeddinggemma-300M_seq512_mixed-precision_qualcomm.sm8550.tflite", v.fileName)
+    assertEquals("embeddinggemma-300M_seq512_mixed-precision.qualcomm.sm8550.tflite", v.fileName)
   }
 
   @Test fun `Qualcomm SM8650 selects the sm8650 variant`() {
     val v = selectEmbeddingVariant("SM8650", "QTI")
-    assertEquals("embeddinggemma-300M_seq512_mixed-precision_qualcomm.sm8650.tflite", v.fileName)
+    assertEquals("embeddinggemma-300M_seq512_mixed-precision.qualcomm.sm8650.tflite", v.fileName)
   }
 
   @Test fun `Qualcomm SM8750 selects the sm8750 variant`() {
     val v = selectEmbeddingVariant("SM8750", "Qualcomm")
-    assertEquals("embeddinggemma-300M_seq512_mixed-precision_qualcomm.sm8750.tflite", v.fileName)
+    assertEquals("embeddinggemma-300M_seq512_mixed-precision.qualcomm.sm8750.tflite", v.fileName)
   }
 
   @Test fun `Qualcomm SM8850 selects the sm8850 variant`() {
     val v = selectEmbeddingVariant("SM8850", "Qualcomm")
-    assertEquals("embeddinggemma-300M_seq512_mixed-precision_qualcomm.sm8850.tflite", v.fileName)
+    assertEquals("embeddinggemma-300M_seq512_mixed-precision.qualcomm.sm8850.tflite", v.fileName)
   }
 
   @Test fun `MediaTek MT6991 selects the mt6991 variant`() {
     val v = selectEmbeddingVariant("MT6991", "MediaTek")
-    assertEquals("embeddinggemma-300M_seq512_mixed-precision_mediatek.mt6991.tflite", v.fileName)
+    assertEquals("embeddinggemma-300M_seq512_mixed-precision.mediatek.mt6991.tflite", v.fileName)
   }
 
   @Test fun `MediaTek MT6993 selects the mt6993 variant`() {
     val v = selectEmbeddingVariant("MT6993", "MediaTek")
-    assertEquals("embeddinggemma-300M_seq512_mixed-precision_mediatek.mt6993.tflite", v.fileName)
+    assertEquals("embeddinggemma-300M_seq512_mixed-precision.mediatek.mt6993.tflite", v.fileName)
   }
 
   @Test fun `matching is case-insensitive on substrings`() {
     assertEquals(
-      "embeddinggemma-300M_seq512_mixed-precision_google.tensor_g5.tflite",
+      "embeddinggemma-300M_seq512_mixed-precision.google.tensor_g5.tflite",
       selectEmbeddingVariant("tensor g5", "google").fileName,
     )
     assertEquals(
-      "embeddinggemma-300M_seq512_mixed-precision_qualcomm.sm8650.tflite",
+      "embeddinggemma-300M_seq512_mixed-precision.qualcomm.sm8650.tflite",
       selectEmbeddingVariant("qualcomm sm8650-ab", "qualcomm").fileName,
     )
   }
@@ -109,11 +110,52 @@ class EmbeddingModelSelectorTest {
     }
   }
 
+  /**
+   * Regression guard for the SoC-separator bug: the real HF files separate the SoC vendor with a
+   * DOT (`…mixed-precision.google.tensor_g5.tflite`), not an underscore. An underscore-vendor name
+   * 404s on every accelerator device, so no produced filename may contain one.
+   */
+  @Test fun `no SoC variant uses the underscore-vendor separator that 404s`() {
+    for (soc in listOf("Tensor G5", "SM8550", "SM8650", "SM8750", "SM8850", "MT6991", "MT6993")) {
+      val name = selectEmbeddingVariant(soc, null).fileName
+      assertFalse(
+        "filename '$name' uses the underscore-vendor form that does not exist on HuggingFace",
+        name.contains("_google") || name.contains("_qualcomm") || name.contains("_mediatek"),
+      )
+    }
+  }
+
+  /**
+   * Pins the full filename + byte-size inventory to the live `litert-community/embeddinggemma-300m`
+   * repo, verified 2026-06-17 via `GET /api/models/.../tree/main`. Filenames determine the download
+   * URL and MUST stay byte-exact; sizes drive the download-progress %. If HuggingFace re-exports and
+   * a size assertion fails, re-verify against the tree API and bump — do not relax the filename.
+   */
+  @Test fun `variant inventory matches the verified HuggingFace tree`() {
+    val expected = mapOf(
+      "Tensor G5" to ("embeddinggemma-300M_seq512_mixed-precision.google.tensor_g5.tflite" to 191_971_472L),
+      "SM8550" to ("embeddinggemma-300M_seq512_mixed-precision.qualcomm.sm8550.tflite" to 190_290_464L),
+      "SM8650" to ("embeddinggemma-300M_seq512_mixed-precision.qualcomm.sm8650.tflite" to 190_294_560L),
+      "SM8750" to ("embeddinggemma-300M_seq512_mixed-precision.qualcomm.sm8750.tflite" to 184_363_552L),
+      "SM8850" to ("embeddinggemma-300M_seq512_mixed-precision.qualcomm.sm8850.tflite" to 184_474_144L),
+      "MT6991" to ("embeddinggemma-300M_seq512_mixed-precision.mediatek.mt6991.tflite" to 187_803_028L),
+      "MT6993" to ("embeddinggemma-300M_seq512_mixed-precision.mediatek.mt6993.tflite" to 183_543_612L),
+    )
+    for ((soc, fileAndSize) in expected) {
+      val v = selectEmbeddingVariant(soc, null)
+      assertEquals(fileAndSize.first, v.fileName)
+      assertEquals("approxBytes for $soc", fileAndSize.second, v.approxBytes)
+    }
+    // GENERIC (no SoC suffix) — the seq512 default that every unmatched SoC + Pixel 9 (G4) falls to.
+    assertEquals("embeddinggemma-300M_seq512_mixed-precision.tflite", EMBEDDING_GENERIC_VARIANT.fileName)
+    assertEquals(179_132_472L, EMBEDDING_GENERIC_VARIANT.approxBytes)
+  }
+
   @Test fun `downloadUrlFor builds the HF resolve URL for the selected file`() {
     val v = selectEmbeddingVariant("Tensor G5", "Google")
     assertEquals(
       "https://huggingface.co/litert-community/embeddinggemma-300m/resolve/main/" +
-        "embeddinggemma-300M_seq512_mixed-precision_google.tensor_g5.tflite",
+        "embeddinggemma-300M_seq512_mixed-precision.google.tensor_g5.tflite",
       downloadUrlFor(v),
     )
   }
