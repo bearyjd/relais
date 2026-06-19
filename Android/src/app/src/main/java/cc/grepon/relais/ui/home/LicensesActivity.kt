@@ -17,7 +17,12 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.systemBarsPadding
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
@@ -72,7 +77,9 @@ class LicensesActivity : ComponentActivity() {
             error = StopRed,
           )
       ) {
-        Surface(modifier = Modifier.fillMaxSize(), color = Charcoal) { LicensesScreen() }
+        Surface(modifier = Modifier.fillMaxSize(), color = Charcoal) {
+          LicensesScreen(onBack = ::finish)
+        }
       }
     }
   }
@@ -80,8 +87,11 @@ class LicensesActivity : ComponentActivity() {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun LicensesScreen() {
+private fun LicensesScreen(onBack: () -> Unit) {
+  // systemBarsPadding so the TopAppBar clears the status bar — the removed GMS theme opted out of
+  // edge-to-edge, and targetSdk 35 enforces it (DESIGN.md: always apply systemBarsPadding).
   Scaffold(
+    modifier = Modifier.systemBarsPadding(),
     topBar = {
       TopAppBar(
         title = {
@@ -93,6 +103,15 @@ private fun LicensesScreen() {
             fontSize = 16.sp,
             letterSpacing = 3.sp,
           )
+        },
+        navigationIcon = {
+          IconButton(onClick = onBack) {
+            Icon(
+              imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+              contentDescription = "Back",
+              tint = Amber,
+            )
+          }
         },
         colors =
           TopAppBarDefaults.topAppBarColors(
