@@ -584,11 +584,9 @@ private fun AppTitle(enableAnimation: Boolean) {
       animationDurationMs = if (enableAnimation) TITLE_FIRST_LINE_ANIMATION_DURATION else 0,
     )
   }
-  // Second line text "Edge Gallery" and its animation.
-  //
-  // The initial animation is the same as the first line text. Right before it is done, the final
-  // text with a gradient is revealed.
-  Box(modifier = Modifier.clearAndSetSemantics {}) {
+  // Second line — empty for the single-word "RELAIS" wordmark (was "Edge Gallery"); render the whole
+  // second-line block only when the string is set, so the home title is just the wordmark.
+  if (secondLineText.isNotEmpty()) Box(modifier = Modifier.clearAndSetSemantics {}) {
     var delay = TITLE_SECOND_LINE_ANIMATION_START
     if (enableAnimation) {
       SwipingText(
@@ -625,12 +623,9 @@ private fun AppTitle(enableAnimation: Boolean) {
 
 @Composable
 fun AppTitleGm4(enableAnimation: Boolean) {
-  val text1 = "Google"
-  val text2 = "AI Edge Gallery"
+  // Single-word amber "RELAIS" wordmark (DESIGN.md), replacing the "Google AI Edge Gallery" title.
   val annotatedText = buildAnnotatedString {
-    withStyle(style = SpanStyle(color = MaterialTheme.colorScheme.onSurface)) { append(text1) }
-    append(" ")
-    withStyle(style = SpanStyle(color = MaterialTheme.colorScheme.primary)) { append(text2) }
+    withStyle(style = SpanStyle(color = MaterialTheme.colorScheme.primary)) { append("RELAIS") }
   }
 
   RevealingText(

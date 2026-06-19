@@ -29,7 +29,7 @@ import dagger.hilt.android.EntryPointAccessors
 
 class NotificationReceiver : BroadcastReceiver() {
   private val DEFAULT_CHANNEL_ID = "ai_edge_gallery_notification_channel"
-  private val DEFAULT_CHANNEL_NAME = "AI Edge Gallery Notifications"
+  private val DEFAULT_CHANNEL_NAME = "Relais Notifications"
 
   override fun onReceive(context: Context, intent: Intent) {
     Log.d(TAG, "onReceive called with intent: $intent")
