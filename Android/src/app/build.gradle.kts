@@ -21,11 +21,10 @@ plugins {
   alias(libs.plugins.kotlin.serialization)
   alias(libs.plugins.protobuf)
   alias(libs.plugins.hilt.application)
-  // Build-time only: generates the third-party-licenses resources consumed by the GMS OSS-licenses
-  // viewer (full flavor). It emits NO GMS runtime classes (CI dex-scan enforces the degoogled APK is
-  // GMS-class-free), so applying it to all flavors is safe; the degoogled flavor just carries small
-  // unused license-text resources until the FOSS license screen lands (follow-up).
-  alias(libs.plugins.oss.licenses)
+  // Build-time only: scans the real dependency graph and generates R.raw.aboutlibraries, consumed by
+  // the FOSS license screen (LicensesActivity). Fully GMS-free, so it applies to BOTH flavors (CI
+  // dex-scan enforces the degoogled APK stays GMS-class-free). Replaces the GMS oss-licenses plugin.
+  alias(libs.plugins.aboutlibraries)
   alias(libs.plugins.ksp)
   kotlin("kapt")
 }
@@ -66,9 +65,9 @@ android {
   // Distribution flavor split. `full` is the Play-Store build (includes the Google-Mobile-Services-
   // pulling deps); `degoogled` is the IzzyOnDroid / self-hosted-F-Droid build that excludes ALL of
   // them. The GMS-touching code lives in src/full/ and is replaced by GMS-free stubs in src/degoogled/
-  // (see RelaisAicore, AICoreModelHelper, ImageTextRecognizer, OssLicenses). Inference is already
-  // non-GMS (bundled litertlm + litert), so `degoogled` is a fully functional node — it just drops
-  // ML Kit OCR (#13), AICore/Gemini-Nano, and the Play-Services OSS-licenses viewer.
+  // (see RelaisAicore, AICoreModelHelper, ImageTextRecognizer). Inference is already non-GMS (bundled
+  // litertlm + litert), so `degoogled` is a fully functional node — it just drops ML Kit OCR (#13) and
+  // AICore/Gemini-Nano. (Third-party licenses are handled by the FOSS AboutLibraries screen in both.)
   flavorDimensions += "dist"
   productFlavors {
     create("full") {
@@ -147,9 +146,10 @@ dependencies {
   implementation(libs.protobuf.javalite)
   implementation(libs.hilt.android)
   implementation(libs.hilt.navigation.compose)
-  // GMS dep — `full` flavor only. The Play-Services OSS-licenses viewer. `degoogled` hides the row
-  // (src/degoogled OssLicenses stub reports unavailable).
-  "fullImplementation"(libs.play.services.oss.licenses)
+  // FOSS third-party-license screen (LicensesActivity) — no GMS, works in BOTH flavors. Replaces the
+  // Play-Services OSS-licenses viewer; the plugin (above) generates R.raw.aboutlibraries.
+  implementation(libs.aboutlibraries.core)
+  implementation(libs.aboutlibraries.compose.m3)
   implementation(libs.androidx.exifinterface)
   // DocumentFile (SAF) was previously on the classpath transitively via Firebase; declare it
   // explicitly now that Firebase is removed.

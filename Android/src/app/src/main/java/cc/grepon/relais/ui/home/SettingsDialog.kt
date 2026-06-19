@@ -18,6 +18,7 @@ package cc.grepon.relais.ui.home
 
 import android.app.UiModeManager
 import android.content.Context
+import android.content.Intent
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -289,18 +290,17 @@ fun SettingsDialog(
             }
           }
 
-          // Third-party licenses. The viewer is GMS-backed (play-services-oss-licenses), so it ships
-          // in the `full` flavor only; the de-Googled flavor hides this row (OssLicenses.available ==
-          // false). Launch is delegated to the flavored OssLicenses seam. FOSS license screen: TODO.
-          if (OssLicenses.available) {
-            Column(modifier = Modifier.fillMaxWidth().semantics(mergeDescendants = true) {}) {
-              Text(
-                "Third-party libraries",
-                style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Medium),
-              )
-              OutlinedButton(onClick = { OssLicenses.open(context) }) {
-                Text("View licenses")
-              }
+          // Third-party licenses. The FOSS AboutLibraries screen (LicensesActivity) works in BOTH
+          // flavors (no GMS), so the row is always shown — it scans the real dependency graph.
+          Column(modifier = Modifier.fillMaxWidth().semantics(mergeDescendants = true) {}) {
+            Text(
+              "Third-party libraries",
+              style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Medium),
+            )
+            OutlinedButton(
+              onClick = { context.startActivity(Intent(context, LicensesActivity::class.java)) }
+            ) {
+              Text("View licenses")
             }
           }
 

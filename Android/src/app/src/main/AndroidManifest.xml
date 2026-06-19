@@ -91,8 +91,18 @@
             </intent-filter>
         </activity>
 
-        <!-- OSS-licenses viewer activities (GMS-backed) are declared in src/full/AndroidManifest.xml
-             so the de-Googled flavor's merged manifest never references com.google.android.gms.* -->
+        <!-- FOSS third-party-license screen (AboutLibraries). Internal-only: launched solely from the
+             Settings dialog — not exported, no launcher icon. Up-navigates to MainActivity. Works in
+             both flavors (no GMS), replacing the old play-services-oss-licenses viewer. -->
+        <activity
+            android:name="cc.grepon.relais.ui.home.LicensesActivity"
+            android:exported="false"
+            android:label="Open-source licenses"
+            android:parentActivityName=".MainActivity">
+            <meta-data
+                android:name="android.support.PARENT_ACTIVITY"
+                android:value="cc.grepon.relais.MainActivity" />
+        </activity>
 
         <provider
             android:name="androidx.core.content.FileProvider"
