@@ -41,8 +41,8 @@ class LicensesActivityProbe {
     assertTrue("expected non-empty AboutLibraries license data", libs.libraries.isNotEmpty())
   }
 
-  /** Launching composes the whole screen (Scaffold/TopAppBar/LibrariesContainer); reaching RESUMED
-   * without the scenario throwing proves no render-time crash. */
+  /** Launching composes the whole screen (Scaffold/TopAppBar/LazyColumn); reaching RESUMED without
+   * the scenario throwing proves no render-time crash. */
   @Test
   fun activityLaunchesToResumedWithoutCrash() {
     ActivityScenario.launch(LicensesActivity::class.java).use { scenario ->

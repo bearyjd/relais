@@ -13,12 +13,15 @@
 package cc.grepon.relais.ui.home
 
 import android.os.Bundle
+import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.systemBarsPadding
 import androidx.compose.foundation.lazy.LazyColumn
@@ -46,6 +49,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
@@ -106,14 +110,20 @@ class LicensesActivity : ComponentActivity() {
 @Composable
 private fun LicensesScreen(onBack: () -> Unit) {
   val context = LocalContext.current
-  // Parse off the main thread (a few hundred entries). core only — no Compose dependency here.
+  // Parse off the main thread (a few hundred entries). core only — no Compose dependency here. null =
+  // still loading; a parse failure degrades to an empty list (logged) so the UI shows a notice, not a
+  // crash or a silent blank.
   val libraries by
-    produceState(initialValue = emptyList<Library>(), context) {
+    produceState<List<Library>?>(initialValue = null, context) {
       value =
         withContext(Dispatchers.IO) {
-          Libs.Builder().withJson(context, R.raw.aboutlibraries).build().libraries.sortedBy {
-            it.name.lowercase()
-          }
+          runCatching {
+              Libs.Builder().withJson(context, R.raw.aboutlibraries).build().libraries.sortedBy {
+                it.name.lowercase()
+              }
+            }
+            .onFailure { Log.w("Licenses", "Failed to load license data", it) }
+            .getOrDefault(emptyList())
         }
     }
   var selected by remember { mutableStateOf<Library?>(null) }
@@ -144,11 +154,20 @@ private fun LicensesScreen(onBack: () -> Unit) {
       )
     },
   ) { innerPadding ->
-    LazyColumn(modifier = Modifier.fillMaxSize().padding(innerPadding)) {
-      items(libraries, key = { it.uniqueId }) { lib ->
-        LibraryRow(lib) { selected = lib }
-        HorizontalDivider(color = Line)
-      }
+    val content = Modifier.fillMaxSize().padding(innerPadding)
+    val libs = libraries
+    when {
+      libs == null -> CenteredNotice("Loading…", content)
+      libs.isEmpty() -> CenteredNotice("No license data.", content)
+      else ->
+        // No `key` on purpose: the list is loaded once and never reordered, so positional keys are
+        // safe and can't collide (uniqueId can repeat across a future dependency graph).
+        LazyColumn(modifier = content) {
+          items(libs) { lib ->
+            LibraryRow(lib) { selected = lib }
+            HorizontalDivider(color = Line)
+          }
+        }
     }
   }
 
@@ -156,10 +175,19 @@ private fun LicensesScreen(onBack: () -> Unit) {
 }
 
 @Composable
+private fun CenteredNotice(text: String, modifier: Modifier) {
+  Box(modifier, contentAlignment = Alignment.Center) {
+    Text(text, color = Muted, fontFamily = FontFamily.Monospace, fontSize = 13.sp)
+  }
+}
+
+@Composable
 private fun LibraryRow(library: Library, onClick: () -> Unit) {
   Column(
     modifier =
-      Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 20.dp, vertical = 14.dp)
+      Modifier.fillMaxWidth()
+        .clickable(onClickLabel = "View license", onClick = onClick)
+        .padding(horizontal = 20.dp, vertical = 14.dp)
   ) {
     Text(library.name, color = Paper, fontWeight = FontWeight.Medium, fontSize = 15.sp)
     val subtitle = buildString {
@@ -201,7 +229,7 @@ private fun LicenseDialog(library: Library, onDismiss: () -> Unit) {
         color = Paper,
         fontFamily = FontFamily.Monospace,
         fontSize = 11.sp,
-        modifier = Modifier.verticalScroll(rememberScrollState()),
+        modifier = Modifier.heightIn(max = 420.dp).verticalScroll(rememberScrollState()),
       )
     },
     confirmButton = { TextButton(onClick = onDismiss) { Text("Close", color = Amber) } },
