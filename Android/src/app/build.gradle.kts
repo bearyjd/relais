@@ -147,9 +147,11 @@ dependencies {
   implementation(libs.hilt.android)
   implementation(libs.hilt.navigation.compose)
   // FOSS third-party-license screen (LicensesActivity) — no GMS, works in BOTH flavors. Replaces the
-  // Play-Services OSS-licenses viewer; the plugin (above) generates R.raw.aboutlibraries.
+  // Play-Services OSS-licenses viewer; the plugin (above) generates R.raw.aboutlibraries. We use
+  // core (pure-Kotlin parsing) ONLY and render the list ourselves — the prebuilt aboutlibraries-
+  // compose-m3 UI calls a FlowRow overload absent from this project's Compose BOM (runtime crash),
+  // and its 14.x fix needs compileSdk 36.
   implementation(libs.aboutlibraries.core)
-  implementation(libs.aboutlibraries.compose.m3)
   implementation(libs.androidx.exifinterface)
   // DocumentFile (SAF) was previously on the classpath transitively via Firebase; declare it
   // explicitly now that Firebase is removed.
