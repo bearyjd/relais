@@ -59,6 +59,19 @@ android {
       signingConfig = signingConfigs.getByName("debug")
     }
   }
+  // Distribution flavor split. `full` is the Play-Store build (includes the Google-Mobile-Services-
+  // pulling deps); `degoogled` is the IzzyOnDroid / self-hosted-F-Droid build that excludes ALL of
+  // them. The GMS-touching code lives in src/full/ and is replaced by GMS-free stubs in src/degoogled/
+  // (see RelaisAicore, AICoreModelHelper, ImageTextRecognizer, OssLicenses). Inference is already
+  // non-GMS (bundled litertlm + litert), so `degoogled` is a fully functional node — it just drops
+  // ML Kit OCR (#13), AICore/Gemini-Nano, and the Play-Services OSS-licenses viewer.
+  flavorDimensions += "dist"
+  productFlavors {
+    create("full") { dimension = "dist" }
+    // Same applicationId as `full` (drop-in replacement for the alt-store channel); not installable
+    // side-by-side with `full` on one device without an applicationIdSuffix (intentional).
+    create("degoogled") { dimension = "dist" }
+  }
   compileOptions {
     sourceCompatibility = JavaVersion.VERSION_11
     targetCompatibility = JavaVersion.VERSION_11
@@ -120,7 +133,9 @@ dependencies {
   implementation(libs.protobuf.javalite)
   implementation(libs.hilt.android)
   implementation(libs.hilt.navigation.compose)
-  implementation(libs.play.services.oss.licenses)
+  // GMS dep — `full` flavor only. The Play-Services OSS-licenses viewer. `degoogled` hides the row
+  // (src/degoogled OssLicenses stub reports unavailable).
+  "fullImplementation"(libs.play.services.oss.licenses)
   implementation(libs.androidx.exifinterface)
   // DocumentFile (SAF) was previously on the classpath transitively via Firebase; declare it
   // explicitly now that Firebase is removed.
@@ -150,10 +165,11 @@ dependencies {
   debugImplementation(libs.androidx.ui.tooling)
   debugImplementation(libs.androidx.ui.test.manifest)
   ksp(libs.moshi.kotlin.codegen)
-  implementation(libs.mlkit.genai.prompt)
-  // On-device Latin OCR for share-in images (#13). Transitively pulls the Play-Services
-  // text-recognition pipeline (NOT GMS-free) — a future de-Googled flavor must exclude this.
-  implementation(libs.mlkit.text.recognition)
+  // GMS deps — `full` flavor only. AICore/Gemini-Nano (genai-prompt) + the ML Kit Latin OCR
+  // pipeline for share-in images (#13), which transitively pulls play-services-mlkit-text-recognition
+  // (NOT GMS-free). `degoogled` excludes both; the touching code is stubbed out in src/degoogled/.
+  "fullImplementation"(libs.mlkit.genai.prompt)
+  "fullImplementation"(libs.mlkit.text.recognition)
   implementation(libs.mcp.kotlin.sdk)
   implementation(libs.ktor.client.android)
   implementation(libs.ktor.client.core)

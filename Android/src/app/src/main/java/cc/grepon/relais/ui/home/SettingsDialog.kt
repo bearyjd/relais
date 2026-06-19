@@ -16,10 +16,8 @@
 
 package cc.grepon.relais.ui.home
 
-import com.google.android.gms.oss.licenses.OssLicensesMenuActivity
 import android.app.UiModeManager
 import android.content.Context
-import android.content.Intent
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -291,21 +289,18 @@ fun SettingsDialog(
             }
           }
 
-          // Third party licenses.
-          Column(modifier = Modifier.fillMaxWidth().semantics(mergeDescendants = true) {}) {
-            Text(
-              "Third-party libraries",
-              style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Medium),
-            )
-            OutlinedButton(
-              onClick = {
-                // Create an Intent to launch a license viewer that displays a list of
-                // third-party library names. Clicking a name will show its license content.
-                val intent = Intent(context, OssLicensesMenuActivity::class.java)
-                context.startActivity(intent)
+          // Third-party licenses. The viewer is GMS-backed (play-services-oss-licenses), so it ships
+          // in the `full` flavor only; the de-Googled flavor hides this row (OssLicenses.available ==
+          // false). Launch is delegated to the flavored OssLicenses seam. FOSS license screen: TODO.
+          if (OssLicenses.available) {
+            Column(modifier = Modifier.fillMaxWidth().semantics(mergeDescendants = true) {}) {
+              Text(
+                "Third-party libraries",
+                style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Medium),
+              )
+              OutlinedButton(onClick = { OssLicenses.open(context) }) {
+                Text("View licenses")
               }
-            ) {
-              Text("View licenses")
             }
           }
 
