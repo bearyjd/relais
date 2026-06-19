@@ -21,6 +21,10 @@ plugins {
   alias(libs.plugins.kotlin.serialization)
   alias(libs.plugins.protobuf)
   alias(libs.plugins.hilt.application)
+  // Build-time only: generates the third-party-licenses resources consumed by the GMS OSS-licenses
+  // viewer (full flavor). It emits NO GMS runtime classes (CI dex-scan enforces the degoogled APK is
+  // GMS-class-free), so applying it to all flavors is safe; the degoogled flavor just carries small
+  // unused license-text resources until the FOSS license screen lands (follow-up).
   alias(libs.plugins.oss.licenses)
   alias(libs.plugins.ksp)
   kotlin("kapt")
@@ -67,10 +71,20 @@ android {
   // ML Kit OCR (#13), AICore/Gemini-Nano, and the Play-Services OSS-licenses viewer.
   flavorDimensions += "dist"
   productFlavors {
-    create("full") { dimension = "dist" }
+    create("full") {
+      dimension = "dist"
+      // AICore (Gemini Nano) is available — see isAICoreSupported() / the RelaisAicore impl.
+      buildConfigField("boolean", "SUPPORTS_AICORE", "true")
+    }
     // Same applicationId as `full` (drop-in replacement for the alt-store channel); not installable
     // side-by-side with `full` on one device without an applicationIdSuffix (intentional).
-    create("degoogled") { dimension = "dist" }
+    create("degoogled") {
+      dimension = "dist"
+      // No AICore: Gemini Nano needs Play Services. This flag makes isAICoreSupported() return false
+      // regardless of device model, so AICORE models are filtered out of the catalog entirely (they
+      // can't run on the GMS-free stub) — not just listed-then-perma-failed.
+      buildConfigField("boolean", "SUPPORTS_AICORE", "false")
+    }
   }
   compileOptions {
     sourceCompatibility = JavaVersion.VERSION_11
