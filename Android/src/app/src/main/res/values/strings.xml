@@ -486,4 +486,9 @@
   <!-- Content description spoken when the "chat history" icon is focused. [CHAR_LIMIT=NONE] -->
   <string name="cd_chat_history">Chat history</string>
 
+  <!-- Title of the notification-triage control screen (#7). [CHAR_LIMIT=NONE] -->
+  <string name="triage_title">Notification Triage</string>
+  <!-- Label for the notification-triage listener service shown in Android Notification Access. [CHAR_LIMIT=NONE] -->
+  <string name="triage_listener_label">Relais Notification Triage</string>
+
 </resources>

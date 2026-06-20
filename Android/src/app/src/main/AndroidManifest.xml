@@ -50,6 +50,15 @@
     <uses-feature android:name="android.hardware.camera.flash"
         android:required="false" />
 
+    <!-- Package visibility (Android 11+): the notification-triage allowlist picker (#7) lists
+         launchable apps so the user can choose which apps to triage. AOSP-only; no QUERY_ALL_PACKAGES. -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
+    </queries>
+
     <application
         android:name="${applicationName}"
         android:allowBackup="false"
@@ -147,6 +156,32 @@
                 android:name="android.support.PARENT_ACTIVITY"
                 android:value="cc.grepon.relais.RelaisControlActivity" />
         </activity>
+
+        <!-- Notification-triage control panel (#7). Internal screen launched only from the control
+             panel — not exported, no launcher icon. Up-navigates to RelaisControlActivity. -->
+        <activity
+            android:name="cc.grepon.relais.triage.TriageControlActivity"
+            android:exported="false"
+            android:label="@string/triage_title"
+            android:parentActivityName=".RelaisControlActivity">
+            <meta-data
+                android:name="android.support.PARENT_ACTIVITY"
+                android:value="cc.grepon.relais.RelaisControlActivity" />
+        </activity>
+
+        <!-- On-device notification triage listener (#7). The user-facing grant is Android's
+             Notification Access (system-bound via BIND_NOTIFICATION_LISTENER_SERVICE); the in-app
+             default-deny allowlist gates what is actually read. Not exported. Strictly opt-in:
+             inert until TriageConfig.enabled is set from the control panel. -->
+        <service
+            android:name="cc.grepon.relais.triage.RelaisNotificationListenerService"
+            android:exported="false"
+            android:label="@string/triage_listener_label"
+            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
+            <intent-filter>
+                <action android:name="android.service.notification.NotificationListenerService" />
+            </intent-filter>
+        </service>
 
         <!-- Relais node: headless resident multimodal LLM + LAN endpoint -->
         <service
