@@ -31,8 +31,12 @@ netOpenidAppauth = "0.11.1"
 splashscreen = "1.2.0-beta01"
 hilt = "2.58"
 hiltNavigation = "1.3.0"
-ossLicenses = "0.10.6"
-playServicesOssLicenses = "17.1.0"
+# FOSS third-party-license screen (replaces the GMS play-services-oss-licenses viewer). The Gradle
+# plugin scans the real dependency graph and generates R.raw.aboutlibraries at build time; works
+# identically in both flavors (no GMS). Pinned to the 11.6.x line: it tracks androidx.core 1.15.0
+# (matches coreKtx above), so it's compileSdk-35 / AGP-8.8.2 compatible. The 14.x line pulls
+# androidx.core 1.18.0, which hard-requires compileSdk 36 + AGP 8.9.1 (a project-wide bump).
+aboutLibraries = "11.6.3"
 exifinterface = "1.4.1"
 securityCrypto = "1.1.0"
 kotlinReflect = "2.2.21"
@@ -90,7 +94,7 @@ hilt-android = { module = "com.google.dagger:hilt-android", version.ref = "hilt"
 hilt-navigation-compose = { module = "androidx.hilt:hilt-navigation-compose", version.ref = "hiltNavigation" }
 hilt-android-testing = { module = "com.google.dagger:hilt-android-testing", version.ref = "hilt" }
 hilt-android-compiler = { module = "com.google.dagger:hilt-android-compiler", version.ref = "hilt" }
-play-services-oss-licenses = { module = "com.google.android.gms:play-services-oss-licenses", version.ref = "playServicesOssLicenses"}
+aboutlibraries-core = { module = "com.mikepenz:aboutlibraries-core", version.ref = "aboutLibraries" }
 androidx-exifinterface = { group = "androidx.exifinterface", name = "exifinterface", version.ref = "exifinterface" }
 moshi-kotlin = { group = "com.squareup.moshi", name = "moshi-kotlin", version.ref = "moshi" }
 moshi-kotlin-codegen = { group = "com.squareup.moshi", name = "moshi-kotlin-codegen", version.ref = "moshi" }
@@ -113,5 +117,5 @@ kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "ko
 kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "serializationPlugin" }
 protobuf = {id = "com.google.protobuf", version.ref = "protobuf"}
 hilt-application = { id = "com.google.dagger.hilt.android", version.ref = "hilt" }
-oss-licenses = {id = "com.google.android.gms.oss-licenses-plugin", version.ref = "ossLicenses"}
+aboutlibraries = { id = "com.mikepenz.aboutlibraries.plugin", version.ref = "aboutLibraries" }
 ksp = { id = "com.google.devtools.ksp", version.ref = "ksp" }

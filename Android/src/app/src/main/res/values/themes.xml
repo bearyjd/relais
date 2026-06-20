@@ -23,7 +23,4 @@
       <item name="windowSplashScreenAnimatedIcon">@drawable/splash_screen_animated_icon</item>
       <item name="postSplashScreenTheme">@style/Theme.Gallery</item>
   </style>
-  <style name="Theme.Gallery.OssLicenses" parent="Theme.AppCompat.Light.DarkActionBar">
-      <item name="android:windowOptOutEdgeToEdgeEnforcement" tools:targetApi="35">true</item>
-  </style>
 </resources>
