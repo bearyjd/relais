@@ -40,7 +40,6 @@
     <uses-permission android:name="android.permission.USE_EXACT_ALARM" />
     <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
-    <uses-permission android:name="com.google.android.apps.aicore.service.BIND_SERVICE" />
 
     <!-- Resurface scheduled notifications + auto-start the node after boot (opt-in) -->
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
@@ -92,15 +91,8 @@
             </intent-filter>
         </activity>
 
-        <!-- Set themes for activities that are used for viewing open source licenses -->
-        <activity
-            android:name="com.google.android.gms.oss.licenses.OssLicensesMenuActivity"
-            android:exported="true"
-            android:theme="@style/Theme.Gallery.OssLicenses" />
-        <activity
-            android:name="com.google.android.gms.oss.licenses.OssLicensesActivity"
-            android:exported="true"
-            android:theme="@style/Theme.Gallery.OssLicenses" />
+        <!-- OSS-licenses viewer activities (GMS-backed) are declared in src/full/AndroidManifest.xml
+             so the de-Googled flavor's merged manifest never references com.google.android.gms.* -->
 
         <provider
             android:name="androidx.core.content.FileProvider"

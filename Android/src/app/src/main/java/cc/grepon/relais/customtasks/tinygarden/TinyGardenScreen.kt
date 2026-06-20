@@ -109,8 +109,8 @@ import cc.grepon.relais.ui.common.textandvoiceinput.VoiceRecognizerOverlay
 import cc.grepon.relais.ui.modelmanager.ModelManagerViewModel
 import cc.grepon.relais.ui.theme.customColors
 import com.google.ai.edge.litertlm.ToolProvider
-import com.google.common.io.BaseEncoding
 import java.security.MessageDigest
+import java.util.Base64
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.launch
@@ -735,7 +735,7 @@ private fun String.sha256(): String {
   return try {
     val sha256 = MessageDigest.getInstance("SHA-256")
     val digest = sha256.digest(inputBytes)
-    BaseEncoding.base64().encode(digest)
+    Base64.getEncoder().encodeToString(digest)
   } catch (e: Exception) {
     e.printStackTrace()
     ""

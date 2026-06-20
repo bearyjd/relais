@@ -24,6 +24,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.util.Log
+import cc.grepon.relais.BuildConfig
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.ime
 import androidx.compose.runtime.LaunchedEffect
@@ -448,6 +449,10 @@ fun Modifier.clearFocusOnKeyboardDismiss(): Modifier = composed {
 }
 
 fun isAICoreSupported(allowedDeviceModels: Set<String>?): Boolean {
+  // AICore (Gemini Nano) requires Google Play Services, excluded from the de-Googled flavor. Gate
+  // here so AICORE models are never listed/auto-downloaded in that flavor regardless of device model
+  // (the device-string check below is GMS-blind on its own). full flavor: SUPPORTS_AICORE == true.
+  if (!BuildConfig.SUPPORTS_AICORE) return false
   if (allowedDeviceModels.isNullOrEmpty()) return false
   val currentModel = Build.MODEL?.lowercase() ?: return false
   return allowedDeviceModels.contains(currentModel)

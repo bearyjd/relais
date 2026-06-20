@@ -26,7 +26,22 @@ jobs:
           distribution: 'temurin'
           java-version: '21'
       - name: Build
+        # assembleRelease is an aggregate task — it builds BOTH flavors (fullRelease + degoogledRelease).
         run: ./gradlew assembleRelease
+      - name: Verify the degoogled flavor ships no Google-Mobile-Services classes
+        # Hard gate for the flavor split: the de-Googled APK's dex must contain zero
+        # com.google.android.gms / com.google.android.apps.aicore / com.google.mlkit class descriptors.
+        run: |
+          APK=$(find app/build/outputs/apk/degoogled/release -name "*.apk" | head -1)
+          echo "Scanning $APK for GMS / AICore / ML Kit classes…"
+          COUNT=$(unzip -p "$APK" 'classes*.dex' | strings | grep -Ec "Lcom/google/(android/(gms|apps/aicore)|mlkit)" || true)
+          echo "Found $COUNT GMS/AICore/ML Kit class descriptors (expected 0)."
+          if [ "$COUNT" -ne 0 ]; then
+            echo "::error::degoogled flavor leaked GMS/AICore/ML Kit classes — flavor split is broken"
+            unzip -p "$APK" 'classes*.dex' | strings \
+              | grep -Eo "Lcom/google/(android/(gms|apps/aicore)|mlkit)[A-Za-z0-9/]*" | sort -u | head -50
+            exit 1
+          fi
 
   unit_tests:
     name: JVM unit tests
@@ -42,4 +57,5 @@ jobs:
           distribution: 'temurin'
           java-version: '21'
       - name: Unit tests
-        run: ./gradlew testDebugUnitTest
+        # With the flavor split, `testDebugUnitTest` is ambiguous — run both flavors' debug unit tests.
+        run: ./gradlew testFullDebugUnitTest testDegoogledDebugUnitTest
