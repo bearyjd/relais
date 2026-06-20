@@ -80,6 +80,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import cc.grepon.relais.templates.PromptTemplateEditorActivity
+import cc.grepon.relais.triage.TriageControlActivity
 import java.net.Inet4Address
 import java.net.NetworkInterface
 import kotlinx.coroutines.delay
@@ -292,6 +293,9 @@ class RelaisControlActivity : ComponentActivity() {
             Divider()
             ActionLink("PROMPT TEMPLATES ›") {
               ctx.startActivity(Intent(ctx, PromptTemplateEditorActivity::class.java))
+            }
+            ActionLink("NOTIFICATION TRIAGE ›") {
+              ctx.startActivity(Intent(ctx, TriageControlActivity::class.java))
             }
 
             // Share-sheet inference target (#1): on/off. The manifest entry is always present; this

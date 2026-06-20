@@ -60,6 +60,11 @@ object RelaisMetrics {
   // visible to operators (a job can be `completed` yet its webhook never landed). M6: counters only.
   private val webhookDeliveredTotal = AtomicLong(0)
   private val webhookFailedTotal = AtomicLong(0)
+
+  // Notification triage (Feature #7): digest runs completed + total items the model surfaced as
+  // urgent. M6: counters only — notification content NEVER enters a metric (no labels at all).
+  private val triageDigestsTotal = AtomicLong(0)
+  private val triageUrgentTotal = AtomicLong(0)
   @Volatile private var sessionTurnsGauge = 0L
 
   // Bounded ring buffer for the dashboard recent-request log (last 20 entries).
@@ -136,6 +141,14 @@ object RelaisMetrics {
   /** Records a batch webhook delivery outcome (Feature #14). M6: counter only, no labels. */
   fun recordWebhookDelivery(delivered: Boolean) {
     if (delivered) webhookDeliveredTotal.incrementAndGet() else webhookFailedTotal.incrementAndGet()
+  }
+
+  /** A completed notification-triage digest run (Feature #7). M6: counter only, no content. */
+  fun recordTriageDigest() = triageDigestsTotal.incrementAndGet()
+
+  /** Items the triage model surfaced as urgent (Feature #7). M6: counter only, no content. */
+  fun recordTriageUrgent(count: Int) {
+    if (count > 0) triageUrgentTotal.addAndGet(count.toLong())
   }
 
   /** Updates the stored-turn gauge (Feature #5). Called off the request path (record + prune). */
@@ -412,6 +425,13 @@ object RelaisMetrics {
     line("# HELP relais_webhook_failed_total Batch webhooks that failed to deliver (blocked/non-2xx/error).")
     line("# TYPE relais_webhook_failed_total counter")
     line("relais_webhook_failed_total ${webhookFailedTotal.get()}")
+
+    line("# HELP relais_triage_digests_total Notification-triage digest runs completed.")
+    line("# TYPE relais_triage_digests_total counter")
+    line("relais_triage_digests_total ${triageDigestsTotal.get()}")
+    line("# HELP relais_triage_urgent_total Notifications the triage model surfaced as urgent.")
+    line("# TYPE relais_triage_urgent_total counter")
+    line("relais_triage_urgent_total ${triageUrgentTotal.get()}")
 
     return sb.toString()
   }
