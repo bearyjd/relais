@@ -20,6 +20,7 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.nfc.NfcAdapter
 import android.os.Bundle
 import android.os.PowerManager
 import android.provider.Settings
@@ -79,6 +80,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import cc.grepon.relais.nfc.NfcWriteActivity
 import cc.grepon.relais.templates.PromptTemplateEditorActivity
 import cc.grepon.relais.triage.TriageControlActivity
 import java.net.Inet4Address
@@ -150,6 +152,8 @@ class RelaisControlActivity : ComponentActivity() {
           var showModelSheet by remember { mutableStateOf(false) }
           var hfToken by remember { mutableStateOf(RelaisConfig.hfToken(ctx) ?: "") }
           var shareEnabled by remember { mutableStateOf(RelaisConfig.shareEnabled(ctx)) }
+          val nfcAvailable = remember { NfcAdapter.getDefaultAdapter(ctx) != null }
+          var nfcEnabled by remember { mutableStateOf(RelaisConfig.nfcEnabled(ctx)) }
           var savedNote by remember { mutableStateOf("") }
           val ip = remember { lanIpv4() }
           val powerManager = remember { ctx.getSystemService(Context.POWER_SERVICE) as PowerManager }
@@ -305,6 +309,20 @@ class RelaisControlActivity : ComponentActivity() {
               val next = !shareEnabled
               RelaisConfig.setShareEnabled(ctx, next)
               shareEnabled = next
+            }
+
+            // NFC workflow triggers (#15): opt-in, only when the device has NFC. When on, tapping a
+            // tag that encodes cc.grepon.relais://workflow/<id> runs that prompt template.
+            if (nfcAvailable) {
+              Readout("NFC WORKFLOWS", if (nfcEnabled) "on" else "off")
+              ActionLink(if (nfcEnabled) "DISABLE NFC" else "ENABLE NFC") {
+                val next = !nfcEnabled
+                RelaisConfig.setNfcEnabled(ctx, next)
+                nfcEnabled = next
+              }
+              if (nfcEnabled) {
+                ActionLink("WRITE NFC TAG ›") { ctx.startActivity(Intent(ctx, NfcWriteActivity::class.java)) }
+              }
             }
 
             Spacer(Modifier.height(4.dp))

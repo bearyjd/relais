@@ -44,6 +44,7 @@ object RelaisConfig {
   private const val KEY_TILE_TEMPLATE_ID = "tile_canned_template_id"
   private const val KEY_SHARE_ENABLED = "share_enabled"
   private const val KEY_SHARE_SYSTEM = "share_system_prompt"
+  private const val KEY_NFC_ENABLED = "nfc_enabled"
   private const val KEY_SESSION_MEMORY = "session_memory_enabled"
   private const val KEY_SESSION_TTL_HOURS = "session_ttl_hours"
   private const val KEY_SESSION_MAX_TURNS = "session_max_turns"
@@ -370,6 +371,13 @@ object RelaisConfig {
 
   fun setShareEnabled(context: Context, enabled: Boolean) {
     prefs(context).edit().putBoolean(KEY_SHARE_ENABLED, enabled).apply()
+  }
+
+  /** Opt-in NFC workflow triggers (#15). Default OFF — a tag does nothing until the operator enables it. */
+  fun nfcEnabled(context: Context): Boolean = prefs(context).getBoolean(KEY_NFC_ENABLED, false)
+
+  fun setNfcEnabled(context: Context, enabled: Boolean) {
+    prefs(context).edit().putBoolean(KEY_NFC_ENABLED, enabled).apply()
   }
 
   /**

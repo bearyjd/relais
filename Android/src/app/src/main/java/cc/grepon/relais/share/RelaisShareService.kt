@@ -49,6 +49,7 @@ private const val RESULT_NOTIFICATION_ID = 0x52454C54 // "RELT" — stable resul
 private const val EXTRA_PAYLOAD = "cc.grepon.relais.share.PAYLOAD"
 private const val EXTRA_SUBJECT = "cc.grepon.relais.share.SUBJECT" // optional EXTRA_SUBJECT for the image path
 private const val EXTRA_CAPTION = "cc.grepon.relais.share.CAPTION" // optional EXTRA_TEXT alongside an image
+private const val EXTRA_SYSTEM = "cc.grepon.relais.share.SYSTEM" // optional system-prompt override (NFC #15 workflows)
 private const val RESULT_CAP = 1_000 // bound the notification body (the shade is a public surface)
 private const val CLIP_LABEL = "Relais"
 
@@ -87,6 +88,7 @@ class RelaisShareService : Service() {
     val imageUris = readGrantedImageUris(intent) // #13 OCR: granted content:// URIs from the trampoline
     val subject = intent?.getStringExtra(EXTRA_SUBJECT)
     val caption = intent?.getStringExtra(EXTRA_CAPTION) // EXTRA_TEXT shared alongside the image, if any
+    val systemOverride = intent?.getStringExtra(EXTRA_SYSTEM)?.takeIf { it.isNotBlank() } // NFC #15 template system
     val hasWork = textPayload != null || imageUris.isNotEmpty()
 
     // Enter the foreground BEFORE the decode. If the OS rejects the FGS start — possible on a cross-app
@@ -150,7 +152,7 @@ class RelaisShareService : Service() {
           postResult(title = "Relais · no text found", text = "Couldn't read any text from the shared image.")
           return@launch
         }
-        val system = RelaisConfig.shareSystemPrompt(applicationContext) ?: DEFAULT_SHARE_SYSTEM
+        val system = systemOverride ?: RelaisConfig.shareSystemPrompt(applicationContext) ?: DEFAULT_SHARE_SYSTEM
         // No caller-supplied timeout here (unlike the automation ABI's withTimeout(job.timeoutMs)): the
         // share sheet has no timeout param, and the decode is already bounded by RelaisEngine's internal
         // wait, so a wedged decode releases (then the next share proceeds) rather than hanging forever.
@@ -272,6 +274,15 @@ class RelaisShareService : Service() {
     /** Builds the start intent carrying [payload] for the text share run. */
     fun startIntent(context: Context, payload: String): Intent =
       Intent(context, RelaisShareService::class.java).putExtra(EXTRA_PAYLOAD, payload)
+
+    /**
+     * Like [startIntent] but with a system-prompt override — used by NFC workflows (#15) to run a
+     * resolved prompt template's system prompt instead of the share default.
+     */
+    fun promptIntent(context: Context, payload: String, system: String?): Intent =
+      startIntent(context, payload).apply {
+        system?.takeIf { it.isNotBlank() }?.let { putExtra(EXTRA_SYSTEM, it) }
+      }
 
     /**
      * Builds the start intent for an image share (#13 OCR): carries the image [uris] as ClipData and
