@@ -41,6 +41,9 @@
     <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
+    <!-- NFC workflow triggers (#15): tap a tag to run a prompt template. Optional at runtime. -->
+    <uses-permission android:name="android.permission.NFC" />
+
     <!-- Resurface scheduled notifications + auto-start the node after boot (opt-in) -->
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
@@ -48,6 +51,8 @@
         android:name="android.hardware.camera"
         android:required="false" />
     <uses-feature android:name="android.hardware.camera.flash"
+        android:required="false" />
+    <uses-feature android:name="android.hardware.nfc"
         android:required="false" />
 
     <!-- Package visibility (Android 11+): the notification-triage allowlist picker (#7) lists
@@ -222,6 +227,38 @@
             android:name=".share.RelaisShareService"
             android:foregroundServiceType="dataSync"
             android:exported="false" />
+
+        <!-- NFC workflow tap (#15). Exported no-UI trampoline: a tag encoding
+             cc.grepon.relais://workflow/<templateId> launches this, which resolves the #12 template
+             and runs it via RelaisShareService → result notification. Opt-in (RelaisConfig.nfcEnabled,
+             default false) — inert until enabled; the tag's inline prompt is treated as untrusted and
+             runs through plain inference only (no node-tools, no LAN). Consumer of the resident engine
+             (gates on RelaisInference.isReady; never cold-starts). -->
+        <activity
+            android:name=".nfc.RelaisNfcActivity"
+            android:exported="true"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar"
+            android:label="Relais NFC">
+            <intent-filter>
+                <action android:name="android.nfc.action.NDEF_DISCOVERED" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:scheme="cc.grepon.relais" android:host="workflow" />
+            </intent-filter>
+        </activity>
+
+        <!-- NFC tag writer (#15). Internal screen launched only from the control panel — not exported.
+             Picks a workflow id and writes it to a presented tag via foreground dispatch. -->
+        <activity
+            android:name=".nfc.NfcWriteActivity"
+            android:exported="false"
+            android:label="Write NFC Tag"
+            android:parentActivityName=".RelaisControlActivity">
+            <meta-data
+                android:name="android.support.PARENT_ACTIVITY"
+                android:value="cc.grepon.relais.RelaisControlActivity" />
+        </activity>
 
         <!-- Tasker/Automate intent ABI (#8). Exported transparent trampoline: an automation app (or
              adb) sends cc.grepon.relais.action.INFER with a prompt + the node's API key and captures
