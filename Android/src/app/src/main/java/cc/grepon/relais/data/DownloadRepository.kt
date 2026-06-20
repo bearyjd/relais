@@ -278,7 +278,7 @@ class DefaultDownloadRepository(
     }
 
     val channelId = "download_notification"
-    val channelName = "AI Edge Gallery download notification"
+    val channelName = "Relais download notification"
 
     // Create the NotificationChannel, but only on API 26+ because
     // the NotificationChannel class is new and not in the support library

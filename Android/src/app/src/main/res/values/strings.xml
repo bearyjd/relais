@@ -28,9 +28,9 @@
   <string name="aichat_initializing_title" translatable="false">Initializing model</string>
   <string name="aichat_initializing_content" translatable="false">Sit tight, this can take up to 1 minute</string>
   <string name="app_intro" translatable="false">Explore a world of amazing on-device models from</string>
-  <string name="app_name" translatable="false">Google AI Edge Gallery</string>
-  <string name="app_name_first_part" translatable="false">Google AI</string>
-  <string name="app_name_second_part" translatable="false">Edge Gallery</string>
+  <string name="app_name" translatable="false">Relais</string>
+  <string name="app_name_first_part" translatable="false">RELAIS</string>
+  <string name="app_name_second_part" translatable="false"></string>
   <string name="askimage_emptystate_title" translatable="false">Ask Image</string>
   <string name="askimage_emptystate_content" translatable="false">To get started, tap the + below to add an image (max 10 images per chat) and type a prompt to ask a question about it!</string>
   <string name="askimage_emptystate_content_aicore" translatable="false">To get started, tap the + below to add an image (max 1 image per chat) and type a prompt to ask a question about it!</string>
@@ -187,7 +187,7 @@
   <string name="test" translatable="false">Test</string>
   <string name="text_image_generation_text_field_placeholder" translatable="false">Type prompt…</string>
   <string name="text_input_placeholder_llm_chat" translatable="false">Type prompt…</string>
-  <string name="tos_dialog_title_app" translatable="false">Welcome to Google AI Edge Gallery</string>
+  <string name="tos_dialog_title_app" translatable="false">Welcome to Relais</string>
   <string name="tos_dialog_title_gemma" translatable="false">Gemma Terms of Use</string>
   <string name="tos_dialog_accept_and_continue_button_label" translatable="false">Accept &amp; continue</string>
   <string name="tos_dialog_agree_and_continue_button_label" translatable="false">Agree &amp; continue</string>
@@ -339,7 +339,7 @@
   <string name="mcp_tool_revoke_permission_content" translatable="false">Are you sure you want to revoke permission to automatically call this tool?</string>
   <string name="manage_mcp_servers" translatable="false">Manage MCP servers</string>
   <string name="add_mcp_server" translatable="false">Add MCP server</string>
-  <string name="learn_more_about_mcp" translatable="false">Learn more about MCP in Google AI Edge Gallery</string>
+  <string name="learn_more_about_mcp" translatable="false">Learn more about MCP in Relais</string>
   <string name="learn_more_about_mcp_short" translatable="false">Learn more</string>
   <string name="search_mcp_server" translatable="false">Search for an MCP server</string>
   <plurals name="mcp_servers_count" translatable="false">
