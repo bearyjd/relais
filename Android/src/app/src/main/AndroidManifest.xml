@@ -68,7 +68,7 @@
         android:label="Relais"
         android:roundIcon="${appIcon}"
         android:supportsRtl="true"
-        android:theme="@style/Theme.Gallery"
+        android:theme="@style/Theme.Relais"
         tools:targetApi="31">
         <!--
           android:configChanges="uiMode" tells the system don't destroy and
@@ -78,7 +78,7 @@
         <activity
             android:name="cc.grepon.relais.MainActivity"
             android:exported="true"
-            android:theme="@style/Theme.Gallery.SplashScreen"
+            android:theme="@style/Theme.Relais.SplashScreen"
             android:screenOrientation="portrait"
             android:windowSoftInputMode="adjustResize"
             android:configChanges="uiMode"
