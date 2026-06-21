@@ -34,6 +34,10 @@ interface RelaisImageGenerator {
    * (~15 s/image on a high-end GPU) — call off-main, single-flight, behind the admission gate. The
    * route loops this for `n > 1`, bounding total wall-clock + heat between images.
    *
+   * NOTE: the MediaPipe backend's seed is a 32-bit Int, so a 64-bit [seed] is narrowed to its low 32
+   * bits — two seeds differing only above bit 32 produce the same image. Pass a value in Int range for
+   * exact reproducibility.
+   *
    * [shouldCancel] lets the heaviest decode on the device bail mid-flight under thermal pressure, the
    * same seam [cc.grepon.relais.RelaisEngine.generate] exposes. The param exists from the start (with
    * a no-op default) so wiring it into a concrete impl later is not a breaking interface change.

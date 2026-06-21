@@ -137,6 +137,10 @@ dependencies {
   implementation(libs.commonmark)
   implementation(libs.richtext)
   implementation(libs.litert) // bundled LiteRT runtime (no Play Services) — embeddings work de-Googled
+  // On-device text-to-image (#16): MediaPipe Image Generator (SD 1.5). Task-0 verified transitively
+  // GMS-free → `implementation` in BOTH flavors (the degoogled dex gate stays 0). arm64-v8a + OpenCL
+  // GPU only; gated at runtime in MediaPipeImageGenerator. Not registered yet (endpoint stays 501).
+  implementation(libs.mediapipe.image.generator)
   implementation(libs.camerax.core)
   implementation(libs.camerax.camera2)
   implementation(libs.camerax.lifecycle)
