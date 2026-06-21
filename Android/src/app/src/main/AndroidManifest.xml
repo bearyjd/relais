@@ -348,9 +348,6 @@
 
         <uses-native-library android:name="libvndksupport.so" android:required="false"/>
         <uses-native-library android:name="libOpenCL.so" android:required="false"/>
-        <!-- Pixel OpenCL vendor variant — MediaPipe Image Generator (#16) needs OpenCL GPU; Pixels
-             expose it as libOpenCL-pixel.so. required=false so non-OpenCL devices still install. -->
-        <uses-native-library android:name="libOpenCL-pixel.so" android:required="false"/>
         <uses-native-library android:name="libcdsprpc.so" android:required="false" />
         <uses-native-library android:name="libedgetpu_litert.so" android:required="false" />
     </application>

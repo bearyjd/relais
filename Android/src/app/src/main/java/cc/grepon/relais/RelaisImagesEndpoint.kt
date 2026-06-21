@@ -28,8 +28,8 @@ import java.util.Base64
 
 /**
  * A parsed + bounded image-generation request, ready to drive the generator. [size] is validated
- * against the supported set but carried (not yet passed to the backend): MediaPipe SD 1.5 is
- * fixed-512x512 so the value is implied today, but the field is kept for a future multi-size backend.
+ * against the supported set but carried (not yet passed to the backend): the v1 endpoint accepts a
+ * single 512x512 size today, but the field is kept for a future multi-size backend.
  */
 internal data class ImageGenRequest(
   val prompt: String,
@@ -72,8 +72,8 @@ internal sealed interface ImageRequestResult {
  * - `prompt`: required, must be a non-blank string.
  * - `response_format`: only `b64_json` (default when absent). A LAN node serves no hosted URLs, so
  *   `url` is rejected rather than silently downgraded.
- * - `size`: must be one of [ImageGenLimits.supportedSizes] (default when absent). MediaPipe SD 1.5 is
- *   fixed-resolution, so unsupported sizes are a hard 400, not an upscale.
+ * - `size`: must be one of [ImageGenLimits.supportedSizes] (default when absent). The v1 endpoint
+ *   supports a single fixed size, so unsupported sizes are a hard 400, not an upscale.
  * - `n`: integer in `[1, maxImages]`; out of range → 400 (mirrors how `/v1/embeddings` rejects an
  *   over-cap batch rather than silently clamping).
  * - `x_relais_steps`: integer; **clamped** to `[minSteps, maxSteps]` (a quality/time knob, so clamping

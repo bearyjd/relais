@@ -26,11 +26,6 @@ richtext = "1.0.0-alpha02"
 # Bundled (in-APK) LiteRT runtime — works WITHOUT Google Play Services (de-Googled devices). v1.x
 # track keeps org.tensorflow.lite.Interpreter (implements InterpreterApi). Replaces play-services-tflite.
 litert = "1.4.2"
-# On-device text-to-image (#16): MediaPipe Image Generator (Stable Diffusion v1.5). Task-0 VERIFIED
-# transitively GMS-FREE (no play-services in the closure; only com.google.android.datatransport) → an
-# `implementation` dep in BOTH flavors, no degoogled stub. Officially "no longer actively maintained";
-# latest = 0.10.26.1 (2025-07-15). arm64-v8a only; OpenCL GPU required at runtime.
-mediapipe-image-generator = "0.10.26.1"
 cameraX = "1.4.2"
 netOpenidAppauth = "0.11.1"
 splashscreen = "1.2.0-beta01"
@@ -88,7 +83,6 @@ litertlm = { group = "com.google.ai.edge.litertlm", name = "litertlm-android", v
 commonmark = { group = "com.halilibo.compose-richtext", name = "richtext-commonmark", version.ref = "commonmark" }
 richtext = { group = "com.halilibo.compose-richtext", name = "richtext-ui-material3", version.ref = "richtext" }
 litert = { group = "com.google.ai.edge.litert", name = "litert", version.ref = "litert" }
-mediapipe-image-generator = { group = "com.google.mediapipe", name = "tasks-vision-image-generator", version.ref = "mediapipe-image-generator" }
 camerax-core = { group = "androidx.camera", name = "camera-core", version.ref = "cameraX"}
 camerax-camera2 = { group = "androidx.camera", name = "camera-camera2", version.ref = "cameraX"}
 camerax-lifecycle = { group = "androidx.camera", name = "camera-lifecycle", version.ref = "cameraX"}

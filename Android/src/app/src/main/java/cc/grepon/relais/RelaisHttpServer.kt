@@ -94,9 +94,9 @@ private const val RAG_MAX_TOP_K = 20
 private const val BATCH_MAX_BODY_CHARS = 256 * 1024
 private const val BATCH_MAX_WEBHOOK_URL_CHARS = 2 * 1024
 private const val BATCH_MAX_QUEUED = 256
-// /v1/images/generations bounds (feature-16): image gen is the heaviest decode (~15 s/image GPU), so
-// cap the batch tightly and the step count to bound wall-clock + heat. MediaPipe SD 1.5 is fixed at
-// 512x512 — the supported-size set is intentionally narrow (a fixed-resolution model can't upscale).
+// /v1/images/generations bounds (feature-16): image gen is the heaviest decode (the viable backend,
+// sd.cpp, is ~60-90 s/image — see docs/images-generations-api.md), so cap the batch tightly and the
+// step count to bound wall-clock + heat. v1 supports a single narrow 512x512 size (no upscale).
 private val IMAGE_GEN_LIMITS = ImageGenLimits(
   maxImages = 4,
   defaultSteps = 20,
@@ -465,9 +465,10 @@ class RelaisHttpServer(
           method == "POST" && path.startsWith("/v1/images/generations") -> {
             // OpenAI /v1/images/generations (Feature #16). Image gen is the heaviest decode, so honor
             // thermal backpressure first (same 503 + Retry-After as inference). On-device generation is
-            // a SEPARATE runtime from LiteRT-LM (text-out only); the only viable path is MediaPipe Image
-            // Generator (SD 1.5). Until that backend registers a RelaisImageGenerator, the provider is
-            // null and this returns an honest 501 — exactly how /v1/embeddings shipped before #6's impl.
+            // a SEPARATE runtime from LiteRT-LM (text-out only); per the verdict (docs/images-
+            // generations-api.md) the viable path is sd.cpp via a process-isolated backend (MediaPipe is
+            // a dead end here). Until a backend registers a RelaisImageGenerator, the provider is null
+            // and this returns an honest 501 — exactly how /v1/embeddings shipped before #6's impl.
             if (shedIfHot(::reply)) return
             val body = JSONObject(readBody(reader, contentLength))
             when (val parsed = parseImageRequest(body, IMAGE_GEN_LIMITS)) {
@@ -476,7 +477,7 @@ class RelaisHttpServer(
               is ImageRequestResult.Valid -> {
                 val generator = RelaisImageGeneratorProvider.get()
                 if (generator == null || !generator.isAvailable(context)) {
-                  // Honest 501: no backend yet. When the MediaPipe provisioner lands (#16 follow-up),
+                  // Honest 501: no backend yet. When an image-gen provisioner lands (#16 follow-up),
                   // this gains a 503 + Retry-After background-provisioning branch, mirroring how the
                   // embeddings route 503s while EmbeddingGemma downloads.
                   reply(501, buildImagesError("image generation model not provisioned", "not_implemented"))
