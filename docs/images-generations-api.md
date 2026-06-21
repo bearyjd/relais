@@ -8,10 +8,11 @@ endpoint returns base64 PNGs.
 POST /v1/images/generations          Authorization: Bearer <node key>
 ```
 
-> **Status: scaffold (honest 501).** The endpoint, request validation, and response envelope are wired
-> and tested, but no image-generation backend is registered yet — every request returns `501` until the
-> MediaPipe backend follow-up lands (see *Provisioning & status codes*). This mirrors how `/v1/embeddings`
-> shipped before its EmbeddingGemma impl.
+> **Status: endpoint scaffold ships honest 501; no backend wired.** The route, validation, and response
+> envelope exist, but no generator is registered → every request returns `501`. **The MediaPipe backend
+> below is a DEAD END** (proven incompatible on-device — see *On-device engine evaluation* at the bottom);
+> the real path is **stable-diffusion.cpp behind a process-isolated runtime**. Read the evaluation section
+> before building. The MediaPipe-specific request/provisioning notes below are retained only for history.
 
 ## Request
 
@@ -74,3 +75,56 @@ HuggingFace token is required**. The raw checkpoint must first be converted to M
   in **both** the `full` and `degoogled` flavors with no stub. It does pull `com.google.android.datatransport`
   (Cloud Client Telemetry plumbing — passes the degoogled dex gate; present ≠ used) and re-introduces
   Guava to the classpath.
+
+---
+
+## On-device engine evaluation (2026-06-21) — read before building the backend
+
+We prototyped the actual backend on real hardware (Pixel 10 Pro Fold, Tensor G5). **Verdict: MediaPipe
+is dead; stable-diffusion.cpp is the only viable engine, but it's slow and its convenient wrapper is
+multiply-unstable, so the production design must be process isolation.** The `MediaPipeImageGenerator`
+class + dep currently on `main` are a **dead end** — they will never run on this stack (see below).
+
+### Engine matrix (what was tried)
+| Engine | protobuf-clash? | GPU on Tensor G5 | Verdict |
+| --- | --- | --- | --- |
+| **MediaPipe Image Generator** | **YES — fatal** | n/a | `ImageGenerator.createFromOptions` throws `NoSuchMethodError: Any$Builder.build()Lcom/google/protobuf/Any;`. MediaPipe's Java API needs **full `protobuf-java`**; the app is hard-locked to **`protobuf-javalite`** (6 protos + 7 DataStore serializers, plugin `option("lite")`). Both define `com.google.protobuf.*` → can't coexist; process isolation doesn't help (build-time dex clash). **DEAD.** |
+| **stable-diffusion.cpp (ggml/Vulkan)** via `io.github.aatricks:llmedge` AAR | No (pure C++/ggml) | **Vulkan works** (OpenCL is Adreno-only → N/A on Tensor) | Generates valid 512×512 images, coexists with the resident E2B LLM **without OOM** (`lowMemory=false`; E2B ~5.3 GB PSS, peak ~6.7 GB, ~3.4 GB free). **VIABLE but slow + wrapper-unstable.** |
+| raw `.tflite` via bundled LiteRT | n/a | n/a | DEAD — TFLite FlatBuffer 2 GB hard limit; SD-1.5 UNet is ~3.4 GB. |
+| ONNX Runtime | likely safe (verify) | NNAPI-only, SD ops fall back to CPU = slow | down-ranked |
+| MNN | unverified | OpenCL+Vulkan | down-ranked (no Maven AAR, build-from-source) |
+
+### Performance (sd.cpp, all cold runs, LLM resident, Vulkan)
+- SD-1.5 q4_0, 20 steps → **184 s**; SD-Turbo, 4 steps → **90 s**.
+- `timePerStep` *rose* 9.2 s→22.4 s as steps dropped 20→4 ⇒ a **large fixed per-generate overhead
+  (~50–70 s: model→GPU load + ggml-vulkan shader compile + VAE)** dominates. Few steps do **not** rescue
+  it. Realistic floor ~**60–90 s/image**. (Operator deemed ~90 s acceptable; stability is the blocker.)
+
+### Stability — the decisive finding (llmedge, on G5)
+Three independent failure modes, all reproduced:
+1. **Reuse** (same `ImageClient`, 2nd generate) → **SIGSEGV** (null-deref in `libsdcpp.so`
+   `nativeTxt2ImgArgb`, identical offset every time; not fixed by `RuntimeCacheConfig` keep-resident).
+2. **Fresh client per image** (close + recreate in one process) → **deadlock** on teardown/recreate.
+3. **`LLMEdge` facade path** → **hangs on the *first* generate** (>450 s; not thermal — SoC was only
+   `mStatus=1` LIGHT).
+The **one proven-stable primitive: a direct `ImageClient.create(ctx, scope)` doing exactly ONE generate**
+(~90 s, succeeded ~5×). Everything past the first in-process operation breaks.
+
+### Recommended path forward — process isolation
+Run image-gen in a **separate process** (`android:process=":imagegen"`): the process loads the model,
+does **one** `ImageClient.generate`, writes the PNG, and **exits (is killed)**. Never reuse a context,
+never close+recreate in-process, never use the facade. This is stable *by construction* (every image is a
+fresh process's first-and-only generate) and contains any native crash/hang to a disposable process — the
+node never dies. Wire it behind the already-shipped `RelaisImageGenerator` interface (the seam from #63).
+- **Packaging (operator decision):** image-gen rides the **`full` flagship** via `fullImplementation(llmedge)`
+  (its onnxruntime/mlkit/play-services transitives are fine there); the **`degoogled`** flavor gets a
+  best-effort stub → 501. Never compromise `full` for `degoogled`.
+- **Cleanup owed:** revert the dead MediaPipe dep + `MediaPipeImageGenerator.kt` (ships ~tens of MB of
+  native libs that can never run). Keep the `RelaisImageGenerator` interface/provider + this endpoint
+  (honest 501).
+- **Open infra:** host the converted/GGUF model (operator-set URL → tarball, HF default, SHA-pinned),
+  mirroring the embedder. SD-1.5 q4_0 / SD-Turbo GGUFs verified loadable (`second-state/…`,
+  `Green-Sky/SD-Turbo-GGUF`).
+- A throwaway on-device probe harness (Tier-1 Vulkan check, perf sweep, the three stability tests) was
+  used to establish all of the above; recreate it against `llmedge` `LLMEdge.isVulkanAvailable()` /
+  `ImageClient.create(...).generate(ImageGenerationRequest(...))` if re-validating.
