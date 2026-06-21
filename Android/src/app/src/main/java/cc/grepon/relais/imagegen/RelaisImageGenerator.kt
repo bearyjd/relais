@@ -16,12 +16,14 @@ import android.content.Context
 
 /**
  * Text-to-image generation facade. LiteRT-LM is text-OUT only, so on-device image generation is a
- * SEPARATE runtime — the only viable path is MediaPipe Image Generator (Stable Diffusion v1.5),
- * delivered as a follow-up to feature #16 (`com.google.mediapipe:tasks-vision-image-generator`,
- * verified GMS-free → ships in both flavors). This mirrors the #6 embeddings architecture exactly:
- * an interface + a process-wide provider singleton + an honest 501 until a concrete impl registers.
+ * SEPARATE runtime. Per the on-device verdict (`docs/images-generations-api.md`), MediaPipe Image
+ * Generator is a DEAD END on this stack: its Java API needs full `protobuf-java`, while the app is
+ * hard-locked to `protobuf-javalite` — an irreconcilable build-time clash. The viable path is sd.cpp
+ * (Stable Diffusion via Vulkan) in a process-isolated `:imagegen` backend, a follow-up to feature
+ * #16. This mirrors the #6 embeddings architecture: an interface + a process-wide provider singleton
+ * + an honest 501 until a concrete impl registers.
  *
- * Until the MediaPipe backend lands, [RelaisImageGeneratorProvider.get] is null and
+ * Until an image-gen backend registers, [RelaisImageGeneratorProvider.get] is null and
  * `POST /v1/images/generations` returns 501.
  */
 interface RelaisImageGenerator {
@@ -30,13 +32,10 @@ interface RelaisImageGenerator {
 
   /**
    * Generates ONE image for [prompt] and returns it as PNG bytes. [steps] is the diffusion iteration
-   * count (quality/time knob); [seed] is optional (null → impl picks one). Blocking and heavy
-   * (~15 s/image on a high-end GPU) — call off-main, single-flight, behind the admission gate. The
+   * count (quality/time knob); [seed] is optional (null → impl picks one). Blocking and heavy (the
+   * heaviest decode on the device — ~60–90 s/image for sd.cpp on a Tensor GPU) — call off-main,
+   * single-flight, behind the admission gate. The
    * route loops this for `n > 1`, bounding total wall-clock + heat between images.
-   *
-   * NOTE: the MediaPipe backend's seed is a 32-bit Int, so a 64-bit [seed] is narrowed to its low 32
-   * bits — two seeds differing only above bit 32 produce the same image. Pass a value in Int range for
-   * exact reproducibility.
    *
    * [shouldCancel] lets the heaviest decode on the device bail mid-flight under thermal pressure, the
    * same seam [cc.grepon.relais.RelaisEngine.generate] exposes. The param exists from the start (with
@@ -54,7 +53,7 @@ interface RelaisImageGenerator {
 /**
  * Process-wide registration seam — the single source of truth `POST /v1/images/generations` reads to
  * decide 200 vs 501. Keeping it null until a real impl registers means no half-wired image path can
- * exist before the MediaPipe backend lands. The concrete impl will call [register] once at init
+ * exist before an image-gen backend registers. The concrete impl will call [register] once at init
  * (mirroring how feature #6 registers its [cc.grepon.relais.embed.RelaisEmbedder]).
  */
 object RelaisImageGeneratorProvider {
