@@ -23,6 +23,7 @@ import cc.grepon.relais.data.RelaisModelRef
 import cc.grepon.relais.embed.EmbeddingGemmaEmbedder
 import cc.grepon.relais.embed.EmbeddingTask
 import cc.grepon.relais.embed.RelaisEmbedderProvider
+import cc.grepon.relais.imagegen.RelaisImageGeneratorProvider
 import cc.grepon.relais.batch.WebhookGuard
 import cc.grepon.relais.data.BatchJob
 import cc.grepon.relais.data.BatchStatus
@@ -93,6 +94,17 @@ private const val RAG_MAX_TOP_K = 20
 private const val BATCH_MAX_BODY_CHARS = 256 * 1024
 private const val BATCH_MAX_WEBHOOK_URL_CHARS = 2 * 1024
 private const val BATCH_MAX_QUEUED = 256
+// /v1/images/generations bounds (feature-16): image gen is the heaviest decode (~15 s/image GPU), so
+// cap the batch tightly and the step count to bound wall-clock + heat. MediaPipe SD 1.5 is fixed at
+// 512x512 — the supported-size set is intentionally narrow (a fixed-resolution model can't upscale).
+private val IMAGE_GEN_LIMITS = ImageGenLimits(
+  maxImages = 4,
+  defaultSteps = 20,
+  minSteps = 1,
+  maxSteps = 50,
+  supportedSizes = setOf("512x512"),
+  defaultSize = "512x512",
+)
 
 /** Fixed-window per-IP rate limiter with stale-entry eviction (bounds the tracking map). */
 private class RateLimiter(private val limit: Int, private val windowMs: Long) {
@@ -444,6 +456,54 @@ class RelaisHttpServer(
                     }
                     val promptTokens = embedder.countTokens(inputs)
                     reply(200, buildEmbeddingsResponse(vectors, model, promptTokens))
+                  }
+                }
+              }
+            }
+          }
+
+          method == "POST" && path.startsWith("/v1/images/generations") -> {
+            // OpenAI /v1/images/generations (Feature #16). Image gen is the heaviest decode, so honor
+            // thermal backpressure first (same 503 + Retry-After as inference). On-device generation is
+            // a SEPARATE runtime from LiteRT-LM (text-out only); the only viable path is MediaPipe Image
+            // Generator (SD 1.5). Until that backend registers a RelaisImageGenerator, the provider is
+            // null and this returns an honest 501 — exactly how /v1/embeddings shipped before #6's impl.
+            if (shedIfHot(::reply)) return
+            val body = JSONObject(readBody(reader, contentLength))
+            when (val parsed = parseImageRequest(body, IMAGE_GEN_LIMITS)) {
+              is ImageRequestResult.Invalid ->
+                reply(400, buildImagesError(parsed.message, "invalid_request_error"))
+              is ImageRequestResult.Valid -> {
+                val generator = RelaisImageGeneratorProvider.get()
+                if (generator == null || !generator.isAvailable(context)) {
+                  // Honest 501: no backend yet. When the MediaPipe provisioner lands (#16 follow-up),
+                  // this gains a 503 + Retry-After background-provisioning branch, mirroring how the
+                  // embeddings route 503s while EmbeddingGemma downloads.
+                  reply(501, buildImagesError("image generation model not provisioned", "not_implemented"))
+                } else {
+                  // Single-flight via the admission gate (image gen would otherwise OOM/overheat if it
+                  // ran concurrently with LLM decode). Release in finally so a crash never leaks a slot.
+                  if (rejectIfQueueFull(::reply)) return
+                  val inferStartNs = System.nanoTime()
+                  try {
+                    val req = parsed.request
+                    val pngs = ArrayList<ByteArray>(req.n)
+                    // Thermal-cancellation seam, like /generate (RelaisEngine.generate shouldCancel).
+                    // TODO(#16 backend): the 200 response materializes up to maxImages base64 PNGs in
+                    // memory with no explicit output-size cap — add one (or stream) when a real
+                    // generator registers; harmless today (this path is unreachable while 501).
+                    repeat(req.n) {
+                      pngs.add(
+                        generator.generate(
+                          context, req.prompt, req.steps, req.seed,
+                          shouldCancel = { ThermalGovernor.shouldTruncate() },
+                        )
+                      )
+                    }
+                    reply(200, buildImagesResponse(pngs, System.currentTimeMillis() / 1000))
+                  } finally {
+                    RelaisMetrics.recordEndpointLatency("/v1/images/generations", (System.nanoTime() - inferStartNs) / 1e9)
+                    admissionGate.release()
                   }
                 }
               }
@@ -1198,6 +1258,7 @@ class RelaisHttpServer(
       path.startsWith("/generate") -> "/generate"
       path.startsWith("/v1/chat/completions") -> "/v1/chat/completions"
       path.startsWith("/v1/embeddings") -> "/v1/embeddings"
+      path.startsWith("/v1/images/generations") -> "/v1/images/generations"
       path.startsWith("/v1/models") -> "/v1/models"
       path.startsWith("/v1/clientconfig") -> "/v1/clientconfig"
       path.startsWith("/v1/sessions") -> "/v1/sessions"
