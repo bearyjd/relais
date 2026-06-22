@@ -186,6 +186,19 @@ dependencies {
   // (NOT GMS-free). `degoogled` excludes both; the touching code is stubbed out in src/degoogled/.
   "fullImplementation"(libs.mlkit.genai.prompt)
   "fullImplementation"(libs.mlkit.text.recognition)
+  // On-device image generation (sd.cpp/Vulkan) — feature #16, FULL FLAVOR ONLY (#16 PR-A). Used only
+  // from the process-isolated :imagegen service (src/full/imagegen/), never the node process. Two
+  // excludes (the set the plan scopes for PR-A): `sentence-embeddings` drags in onnxruntime (we have
+  // our own embedder); llmedge's `io.ktor` is only its HF-download path (we provision via
+  // ModelSpec.localFile, and Relais's own ktor 3.4.3 is a separate direct dep, untouched by this).
+  // NOTE: llmedge also transitively pulls features image-gen doesn't use — com.tom-roush:pdfbox-android,
+  // com.google.mlkit:image-labeling, kotlinx-coroutines-play-services — left in for now (full APK bloat
+  // only; all isolated to `full`, so degoogled stays GMS=0). Trimming them needs an on-device
+  // generate-still-works check (a wrong exclude → NoClassDefFoundError in :imagegen) — a PR-D footnote.
+  "fullImplementation"(libs.llmedge) {
+    exclude(group = "io.gitlab.shubham0204", module = "sentence-embeddings")
+    exclude(group = "io.ktor")
+  }
   implementation(libs.mcp.kotlin.sdk)
   implementation(libs.ktor.client.android)
   implementation(libs.ktor.client.core)

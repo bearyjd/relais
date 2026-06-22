@@ -34,6 +34,12 @@ dependencyResolutionManagement {
     //        mavenLocal()
     google()
     mavenCentral()
+    // JitPack hosts the sd.cpp/Vulkan image-gen AAR (io.github.aatricks:llmedge, full flavor only —
+    // feature #16). Scoped to that one group so it can't silently shadow google()/mavenCentral().
+    maven {
+      url = uri("https://jitpack.io")
+      content { includeGroup("io.github.aatricks") }
+    }
   }
 }
 

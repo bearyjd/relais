@@ -53,6 +53,12 @@ ktor = "3.4.3"
 robolectric = "4.14.1"  # https://github.com/robolectric/robolectric/releases/tag/robolectric-4.14.1
 room = "2.7.1"  # KSP2-compatible line (Kotlin 2.2.0 uses KSP2); 2.6.x predates KSP2 Room support
 glance = "1.1.1"  # Glance app-widget (#3); pinned to the cached version so --offline builds resolve
+# On-device text-to-image (sd.cpp / Stable Diffusion via Vulkan) — feature #16, FULL FLAVOR ONLY. Its
+# libsdcpp.so ships with Vulkan; the only on-device engine proven to run (MediaPipe is a protobuf dead
+# end — see docs/images-generations-api.md). Transitively pulls com.google.mlkit + play-services (would
+# break the degoogled GMS=0 dex gate), so it is `fullImplementation` with onnxruntime/ktor transitives
+# excluded (unused image-gen-irrelevant llmedge features). JitPack-hosted (scoped repo in settings).
+llmedge = "0.3.9"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -109,6 +115,7 @@ androidx-room-ktx = { group = "androidx.room", name = "room-ktx", version.ref = 
 androidx-room-compiler = { group = "androidx.room", name = "room-compiler", version.ref = "room" }
 androidx-room-testing = { group = "androidx.room", name = "room-testing", version.ref = "room" }
 androidx-glance-appwidget = { group = "androidx.glance", name = "glance-appwidget", version.ref = "glance" }
+llmedge = { group = "io.github.aatricks", name = "llmedge", version.ref = "llmedge" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }
