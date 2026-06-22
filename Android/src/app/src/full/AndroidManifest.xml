@@ -10,10 +10,30 @@
  (AICore) and is kept OUT of src/main so the `degoogled` flavor's merged manifest stays free of
  com.google.android.gms.* / AICore references. (Third-party licenses now use the FOSS AboutLibraries
  screen — LicensesActivity in src/main — so there's nothing GMS-licenses-related left here.)
+
+ Also holds the FULL-FLAVOR-ONLY image-gen (#16) service + native-library declaration: the sd.cpp
+ (llmedge) backend pulls GMS transitives, so the whole feature lives in src/full and is absent from
+ the degoogled merged manifest.
 -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <!-- Bind to the on-device AICore service (Gemini Nano via ML Kit GenAI) — full flavor only. -->
     <uses-permission android:name="com.google.android.apps.aicore.service.BIND_SERVICE" />
+
+    <application>
+        <!-- Process-isolated image-gen backend (#16). Runs in a SEPARATE OS process (:imagegen) so a
+             native sd.cpp/ggml-vulkan crash or hang is contained to a disposable process the node can
+             kill — the node never dies. One generate per process, ever: it loads → generates ONCE →
+             self-kills (the node also hard-kills it on reply/timeout). Bound, not started; not exported
+             (in-package binder only). Full flavor only (the GMS-pulling llmedge dep). -->
+        <service
+            android:name="cc.grepon.relais.imagegen.ImageGenService"
+            android:process=":imagegen"
+            android:exported="false" />
+
+        <!-- sd.cpp's libsdcpp.so links libvulkan.so for GPU diffusion. required=false so non-Vulkan
+             devices still install (isAvailable gates on LLMEdge.isVulkanAvailable() → clean 501). -->
+        <uses-native-library android:name="libvulkan.so" android:required="false" />
+    </application>
 
 </manifest>
