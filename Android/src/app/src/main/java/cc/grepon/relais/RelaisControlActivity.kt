@@ -312,7 +312,7 @@ class RelaisControlActivity : ComponentActivity() {
             }
 
             // NFC workflow triggers (#15): opt-in, only when the device has NFC. When on, tapping a
-            // tag that encodes cc.grepon.relais://workflow/<id> runs that prompt template.
+            // tag that encodes com.ventouxlabs.relais://workflow/<id> runs that prompt template.
             if (nfcAvailable) {
               Readout("NFC WORKFLOWS", if (nfcEnabled) "on" else "off")
               ActionLink(if (nfcEnabled) "DISABLE NFC" else "ENABLE NFC") {

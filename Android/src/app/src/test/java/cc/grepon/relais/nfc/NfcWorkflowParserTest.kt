@@ -18,14 +18,22 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class NfcWorkflowParserTest {
+  @Test fun `scheme is the ventouxlabs canonical scheme`() {
+    // The deep-link / NFC / Tasker ABI is branded to ventouxlabs.com (matches the channel
+    // applicationIds). The scheme is a fixed string, NOT the per-channel applicationId, so a
+    // single value works across the izzy / playsafe / degoogled builds.
+    assertEquals("com.ventouxlabs.relais", NfcWorkflowParser.SCHEME)
+  }
+
   @Test fun `valid uri parses the template id`() {
-    val tap = NfcWorkflowParser.parse("cc.grepon.relais://workflow/terse-coder")
+    val tap = NfcWorkflowParser.parse("com.ventouxlabs.relais://workflow/terse-coder")
     assertEquals("terse-coder", tap?.templateId)
     assertNull(tap?.prompt)
   }
 
   @Test fun `inline q is decoded into the prompt`() {
-    val tap = NfcWorkflowParser.parse("cc.grepon.relais://workflow/translator-fr?q=hello%20world")
+    val tap =
+      NfcWorkflowParser.parse("com.ventouxlabs.relais://workflow/translator-fr?q=hello%20world")
     assertEquals("translator-fr", tap?.templateId)
     assertEquals("hello world", tap?.prompt)
   }
@@ -34,13 +42,19 @@ class NfcWorkflowParserTest {
     assertNull(NfcWorkflowParser.parse("https://workflow/terse-coder"))
   }
 
+  @Test fun `legacy cc grepon relais scheme is rejected`() {
+    // Clean cutover: the app has not shipped, so there are no field-written tags carrying the old
+    // scheme to support. The parser must NOT accept the legacy scheme.
+    assertNull(NfcWorkflowParser.parse("cc.grepon.relais://workflow/terse-coder"))
+  }
+
   @Test fun `wrong host is rejected`() {
-    assertNull(NfcWorkflowParser.parse("cc.grepon.relais://other/terse-coder"))
+    assertNull(NfcWorkflowParser.parse("com.ventouxlabs.relais://other/terse-coder"))
   }
 
   @Test fun `missing template id is rejected`() {
-    assertNull(NfcWorkflowParser.parse("cc.grepon.relais://workflow/"))
-    assertNull(NfcWorkflowParser.parse("cc.grepon.relais://workflow"))
+    assertNull(NfcWorkflowParser.parse("com.ventouxlabs.relais://workflow/"))
+    assertNull(NfcWorkflowParser.parse("com.ventouxlabs.relais://workflow"))
   }
 
   @Test fun `null and blank are rejected`() {
@@ -51,7 +65,7 @@ class NfcWorkflowParserTest {
 
   @Test fun `over-long template id is rejected`() {
     val longId = "a".repeat(NfcWorkflowParser.MAX_ID + 1)
-    assertNull(NfcWorkflowParser.parse("cc.grepon.relais://workflow/$longId"))
+    assertNull(NfcWorkflowParser.parse("com.ventouxlabs.relais://workflow/$longId"))
   }
 
   @Test fun `over-long inline prompt is capped`() {
@@ -61,7 +75,7 @@ class NfcWorkflowParserTest {
   }
 
   @Test fun `scheme and host match case-insensitively`() {
-    val tap = NfcWorkflowParser.parse("CC.GREPON.RELAIS://WORKFLOW/default")
+    val tap = NfcWorkflowParser.parse("COM.VENTOUXLABS.RELAIS://WORKFLOW/default")
     assertEquals("default", tap?.templateId)
   }
 
@@ -74,6 +88,6 @@ class NfcWorkflowParserTest {
 
   @Test fun `build without prompt omits the query`() {
     val uri = NfcWorkflowParser.buildUri("default")
-    assertTrue(uri == "cc.grepon.relais://workflow/default")
+    assertTrue(uri == "com.ventouxlabs.relais://workflow/default")
   }
 }

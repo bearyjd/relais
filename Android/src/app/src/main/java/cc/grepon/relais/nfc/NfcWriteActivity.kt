@@ -63,7 +63,7 @@ import cc.grepon.relais.templates.WorkflowRegistry
 
 /**
  * Internal writer screen for NFC workflow tags (#15). Pick a #12 prompt template, then hold a blank
- * (or rewritable) NFC tag to the phone — it writes `cc.grepon.relais://workflow/<id>`. Uses
+ * (or rewritable) NFC tag to the phone — it writes `com.ventouxlabs.relais://workflow/<id>`. Uses
  * foreground dispatch so taps land here while this screen is visible. Reachable from the control panel.
  */
 class NfcWriteActivity : ComponentActivity() {
@@ -158,7 +158,7 @@ private fun WriteScreen(selectedId: String?, status: String, onSelect: (String, 
       letterSpacing = 3.sp,
     )
     Text(
-      "Tap-to-run: writes cc.grepon.relais://workflow/<id> to a tag.",
+      "Tap-to-run: writes com.ventouxlabs.relais://workflow/<id> to a tag.",
       color = Muted,
       fontFamily = FontFamily.Monospace,
       fontSize = 11.sp,

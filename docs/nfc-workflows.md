@@ -6,7 +6,7 @@ on-device and offline — no app to open, no typing, no network.
 
 ## How it works
 
-1. An NDEF tag encodes `cc.grepon.relais://workflow/<templateId>` (optionally `?q=<inline prompt>`).
+1. An NDEF tag encodes `com.ventouxlabs.relais://workflow/<templateId>` (optionally `?q=<inline prompt>`).
 2. Tapping the tag launches `RelaisNfcActivity` (a no-UI trampoline) via `ACTION_NDEF_DISCOVERED`.
 3. It resolves `<templateId>` against the #12 prompt-template registry (`WorkflowRegistry.resolve`).
 4. It runs the template's **system** prompt with the inline `q` (or a default prompt) on the resident
@@ -31,7 +31,7 @@ deferred — see the AskUserQuestion decision in the session handoff.
 ## Writing tags
 
 Control panel → enable NFC → **WRITE NFC TAG ›** opens `NfcWriteActivity`: pick a workflow (template),
-then hold a blank/rewritable tag to the phone. It writes `cc.grepon.relais://workflow/<id>` via
+then hold a blank/rewritable tag to the phone. It writes `com.ventouxlabs.relais://workflow/<id>` via
 foreground dispatch and reports success / read-only / too-small / failure.
 
 ## Components

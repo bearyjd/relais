@@ -468,8 +468,8 @@ fun GalleryNavHost(
     intent.data = null
     val uriStr = data.toString()
     Log.d(TAG, "navigation link clicked: $data")
-    // 1. Precise model deep links: cc.grepon.relais://model/<taskId>/<modelName>
-    if (uriStr.startsWith("cc.grepon.relais://model/")) {
+    // 1. Precise model deep links: com.ventouxlabs.relais://model/<taskId>/<modelName>
+    if (uriStr.startsWith("com.ventouxlabs.relais://model/")) {
       if (data.pathSegments.size >= 2) {
         val taskId = data.pathSegments.get(data.pathSegments.size - 2)
         val modelName = data.pathSegments.last()
@@ -486,10 +486,10 @@ fun GalleryNavHost(
       } else {
         Log.e(TAG, "Malformed deep link URI received: $data")
       }
-    } else if (uriStr == "cc.grepon.relais://global_model_manager") {
+    } else if (uriStr == "com.ventouxlabs.relais://global_model_manager") {
       navController.navigate(ROUTE_MODEL_MANAGER)
     } else {
-      // 2. Dynamic task-level deep links: cc.grepon.relais://<taskId>
+      // 2. Dynamic task-level deep links: com.ventouxlabs.relais://<taskId>
       val host = data.host
       if (host != null) {
         val queryStr = data.getQueryParameter("query")
