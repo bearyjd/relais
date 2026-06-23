@@ -55,9 +55,19 @@ import org.junit.runner.RunWith
  *
  * Lives in `androidTestFull` — the sd.cpp/llmedge backend is full-flavor only.
  *
- * [bindGenerateOnceAndProcessExits] needs a Vulkan device + a pushed GGUF (SD-Turbo by default,
- * ~90 s/image). The other two tests exercise the IPC + error/CAS + self-kill paths and need NEITHER a
- * model NOR Vulkan (they fail fast at the model-readability check) — so they run on any device.
+ * [bindGenerateOnceAndProcessExits] needs a Vulkan device + a pushed GGUF (SD-Turbo by default). The
+ * other two tests exercise the IPC + error/CAS + self-kill paths and need NEITHER a model NOR Vulkan
+ * (they fail fast at the model-readability check) — so they run on any device.
+ *
+ * Per-device outcome (verified 2026-06-22 — see GitHub issue #69):
+ *  - **Mali (e.g. Tensor G3 / Pixel 8 Pro):** PASSES, but **~5 min/image COLD** — cold ggml-vulkan
+ *    shader compile (VAE-dominated, ~200 s). There is NO warm path: ggml-vulkan's pipeline cache does
+ *    not survive the one-generate-per-process design, so every image pays the full cold compile
+ *    (confirmed: two back-to-back fresh processes were identical). Usable latency needs a custom sd.cpp
+ *    JNI (persisted VkPipelineCache, or a warm reused ctx).
+ *  - **PowerVR-DXT (Tensor G5 / Pixel 10):** the real-generate test **DEADLOCKS** at the first
+ *    ggml-vulkan compute submit (0 % CPU, never reaches sampling) — an upstream llmedge/sd.cpp ↔
+ *    PowerVR driver bug (#69). The two control tests still pass on G5.
  *
  *   adb push sdturbo.gguf /data/local/tmp/relais/imagegen/sdturbo/sdturbo.gguf   # happy path only
  *   adb shell am instrument -w -e class cc.grepon.relais.imagegen.ImageGenServiceProbe \
