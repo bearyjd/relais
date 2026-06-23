@@ -68,7 +68,7 @@ android {
   // (see RelaisAicore, AICoreModelHelper, ImageTextRecognizer). Inference is already non-GMS (bundled
   // litertlm + litert), so `degoogled` is a fully functional node — it just drops ML Kit OCR (#13) and
   // AICore/Gemini-Nano. (Third-party licenses are handled by the FOSS AboutLibraries screen in both.)
-  flavorDimensions += "dist"
+  flavorDimensions += listOf("dist", "policy")
   productFlavors {
     create("full") {
       dimension = "dist"
@@ -83,6 +83,21 @@ android {
       // regardless of device model, so AICORE models are filtered out of the catalog entirely (they
       // can't run on the GMS-free stub) — not just listed-then-perma-failed.
       buildConfigField("boolean", "SUPPORTS_AICORE", "false")
+    }
+    // Policy dimension (ventouxlabs channels). `open` = all power-user features (IzzyOnDroid /
+    // GrapheneOS); `playsafe` = the (future) Google-Play-compliant subset. NOTE: this is
+    // FOUNDATION-ONLY — playsafe currently equals open APART FROM the appId. A follow-up PR will add
+    // src/playsafe/AndroidManifest.xml (tools:node="remove") to drop the risky perms/components and
+    // will consume POLICY_OPEN (generated below but not yet read) to gate their entry points. Shipping
+    // combos: fullOpen→IzzyOnDroid, fullPlaysafe→Play, degoogledOpen→GrapheneOS (degoogled+playsafe is
+    // filtered out — see androidComponents below).
+    create("open") {
+      dimension = "policy"
+      buildConfigField("boolean", "POLICY_OPEN", "true")
+    }
+    create("playsafe") {
+      dimension = "policy"
+      buildConfigField("boolean", "POLICY_OPEN", "false")
     }
   }
   compileOptions {
@@ -107,6 +122,27 @@ android {
       // Context-touching tests as JVM unit tests (PR5).
       isIncludeAndroidResources = true
     }
+  }
+}
+
+androidComponents {
+  // Ship only 3 of the 4 dist×policy combos: drop degoogled+playsafe (GrapheneOS doesn't need the
+  // Play-compliant subset — it sideloads the open build).
+  beforeVariants(selector().withFlavor("dist" to "degoogled").withFlavor("policy" to "playsafe")) {
+    it.enable = false
+  }
+  // appId follows the CHANNEL, not a flavor suffix — composing suffixes across two dimensions would
+  // double-suffix the degoogled+open case. namespace stays cc.grepon.relais (no source-package churn).
+  onVariants(selector().all()) { variant ->
+    val dist = variant.productFlavors.firstOrNull { it.first == "dist" }?.second
+    val policy = variant.productFlavors.firstOrNull { it.first == "policy" }?.second
+    variant.applicationId.set(
+      when {
+        dist == "full" && policy == "playsafe" -> "com.ventouxlabs.relais"          // Play Store
+        dist == "full" && policy == "open" -> "com.ventouxlabs.relais.izzy"         // IzzyOnDroid
+        else -> "com.ventouxlabs.relais.degoogled"                                   // GrapheneOS (degoogled+open)
+      }
+    )
   }
 }
 

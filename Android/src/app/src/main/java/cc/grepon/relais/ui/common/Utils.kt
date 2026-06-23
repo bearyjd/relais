@@ -170,7 +170,11 @@ fun Context.createTempPictureUri(
 
   return FileProvider.getUriForFile(
     applicationContext,
-    "cc.grepon.relais.provider" /* {applicationId}.provider */,
+    // Authority = the manifest's "${applicationId}.provider". Context.packageName IS the installed
+    // applicationId, so this tracks the per-channel id (com.ventouxlabs.relais[.izzy|.degoogled]) with
+    // no hardcoded string — same idiom as shareBitmap/copyBitmapToClipboard below. (The old hardcoded
+    // "cc.grepon.relais.provider" would have crashed FileProvider once the appId changed per channel.)
+    "$packageName.provider",
     tempFile,
   )
 }
