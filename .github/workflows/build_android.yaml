@@ -58,7 +58,16 @@ jobs:
             echo "$PERMS"
             exit 1
           fi
-          echo "OK — playsafe declares none of the Play-restricted permissions."
+          # aapt2 dump permissions only covers <uses-permission>; the notification-listener service +
+          # triage activity are <service>/<activity> nodes, so assert their absence via the manifest tree.
+          COMPONENTS=$("$AAPT2" dump xmltree --file AndroidManifest.xml "$APK" 2>/dev/null \
+            | grep -E "RelaisNotificationListenerService|TriageControlActivity" || true)
+          if [ -n "$COMPONENTS" ]; then
+            echo "::error::playsafe build still ships a stripped component (notification listener / triage activity)"
+            echo "$COMPONENTS"
+            exit 1
+          fi
+          echo "OK — playsafe declares none of the restricted permissions and ships none of the stripped components."
 
   unit_tests:
     name: JVM unit tests

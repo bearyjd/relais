@@ -229,7 +229,10 @@ class RelaisControlActivity : ComponentActivity() {
             Readout("LAN (https)", "$ip:8443")
             Readout("LOCAL (http)", "127.0.0.1:8080")
             Readout("POWER", if (batteryUnrestricted) "unrestricted" else "restricted")
-            if (!batteryUnrestricted) {
+            // The direct battery-exemption request needs REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, which is
+            // stripped from the Play (playsafe) build — hide the action there (POLICY_OPEN=false) rather
+            // than surface a button that silently degrades to the generic settings list.
+            if (BuildConfig.POLICY_OPEN && !batteryUnrestricted) {
               ActionLink("ALLOW UNRESTRICTED ›") { requestIgnoreBatteryOptimizations(ctx) }
             }
             Spacer(Modifier.height(2.dp))
