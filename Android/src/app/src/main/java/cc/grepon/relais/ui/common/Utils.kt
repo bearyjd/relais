@@ -59,6 +59,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
+import cc.grepon.relais.BuildConfig
 import cc.grepon.relais.data.Model
 import cc.grepon.relais.data.Task
 import cc.grepon.relais.ui.modelmanager.ModelManagerViewModel
@@ -170,7 +171,10 @@ fun Context.createTempPictureUri(
 
   return FileProvider.getUriForFile(
     applicationContext,
-    "cc.grepon.relais.provider" /* {applicationId}.provider */,
+    // Must track the per-variant applicationId — the manifest authority is "${applicationId}.provider",
+    // and applicationId now differs per channel (com.ventouxlabs.relais[.izzy|.degoogled]). A hardcoded
+    // string would crash FileProvider with "couldn't find meta-data for provider with authority …".
+    "${BuildConfig.APPLICATION_ID}.provider",
     tempFile,
   )
 }
