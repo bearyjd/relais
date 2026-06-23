@@ -300,6 +300,16 @@ constructor(
         val skillMdUrl = "$normalizedUrl/SKILL.md"
         Log.d(TAG, "Fetching SKILL.md from: $skillMdUrl")
 
+        // 1b. SSRF guard: the NODE fetches this user-supplied URL (and later runs the skill's scripts
+        // as JS in a WebView), so block non-https / loopback / private / link-local / cloud-metadata
+        // hosts BEFORE connecting. See SkillUrlPolicy (reuses the batch WebhookGuard).
+        SkillUrlPolicy.validate(skillMdUrl)?.let { guardError ->
+          Log.w(TAG, "Blocked unsafe skill URL '$skillMdUrl': $guardError")
+          setValidationError(guardError)
+          onValidationError(guardError)
+          return@launch
+        }
+
         // 2. Read url/SKILL.md.
         val mdContent =
           try {
