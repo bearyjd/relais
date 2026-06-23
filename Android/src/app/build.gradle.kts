@@ -85,10 +85,12 @@ android {
       buildConfigField("boolean", "SUPPORTS_AICORE", "false")
     }
     // Policy dimension (ventouxlabs channels). `open` = all power-user features (IzzyOnDroid /
-    // GrapheneOS); `playsafe` = the Google-Play-compliant subset — risky perms/components are removed
-    // by src/playsafe/AndroidManifest.xml (tools:node="remove"), and POLICY_OPEN gates their entry
-    // points. The `dist` × `policy` combos that ship: fullOpen→IzzyOnDroid, fullPlaysafe→Play,
-    // degoogledOpen→GrapheneOS. (degoogled+playsafe is filtered out — see androidComponents below.)
+    // GrapheneOS); `playsafe` = the (future) Google-Play-compliant subset. NOTE: this is
+    // FOUNDATION-ONLY — playsafe currently equals open APART FROM the appId. A follow-up PR will add
+    // src/playsafe/AndroidManifest.xml (tools:node="remove") to drop the risky perms/components and
+    // will consume POLICY_OPEN (generated below but not yet read) to gate their entry points. Shipping
+    // combos: fullOpen→IzzyOnDroid, fullPlaysafe→Play, degoogledOpen→GrapheneOS (degoogled+playsafe is
+    // filtered out — see androidComponents below).
     create("open") {
       dimension = "policy"
       buildConfigField("boolean", "POLICY_OPEN", "true")
