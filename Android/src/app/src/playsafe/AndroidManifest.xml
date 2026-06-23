@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+ Copyright (C) 2026 Entrevoix / grepon.cc
+
+ This program is free software: you can redistribute it and/or modify it under the terms of the
+ GNU Affero General Public License as published by the Free Software Foundation, either version 3
+ of the License, or (at your option) any later version.
+
+ PLAYSAFE policy flavor — the Google-Play-compliant subset. Google reviews the MERGED manifest, so
+ a runtime BuildConfig flag is NOT enough: the Play-restricted permissions + components must be
+ physically ABSENT here (their code paths are additionally gated by BuildConfig.POLICY_OPEN so the
+ build doesn't reach them). Removed:
+  - USE_EXACT_ALARM / SCHEDULE_EXACT_ALARM — restricted to clock/calendar apps; the node's watchdog
+    falls back to inexact alarms automatically (RelaisWatchdog catches the SecurityException), so the
+    RelaisWatchdogReceiver itself stays and the node still self-revives.
+  - REQUEST_IGNORE_BATTERY_OPTIMIZATIONS — restricted allowlist; the direct-request button is hidden
+    in playsafe (the user can still exempt the app manually via system Settings).
+  - READ_CALENDAR — calendar-data policy; the read-calendar-events agent skill's handler is gated off.
+  - BIND_NOTIFICATION_LISTENER_SERVICE listener + its control activity (notification-access feature).
+ (Image generation rides the full flavor only and the endpoint is an honest 501, so there is no
+ :imagegen service in any playsafe-eligible variant to remove here.)
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <uses-permission android:name="android.permission.USE_EXACT_ALARM" tools:node="remove" />
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" tools:node="remove" />
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" tools:node="remove" />
+    <uses-permission android:name="android.permission.READ_CALENDAR" tools:node="remove" />
+
+    <application>
+        <service android:name="cc.grepon.relais.triage.RelaisNotificationListenerService" tools:node="remove" />
+        <activity android:name="cc.grepon.relais.triage.TriageControlActivity" tools:node="remove" />
+    </application>
+
+</manifest>

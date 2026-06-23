@@ -33,6 +33,7 @@ import androidx.compose.material.icons.outlined.SentimentVerySatisfied
 import androidx.documentfile.provider.DocumentFile
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import cc.grepon.relais.BuildConfig
 import cc.grepon.relais.GalleryEvent
 import cc.grepon.relais.common.LOCAL_URL_BASE
 import cc.grepon.relais.common.SkillTryOutChip
@@ -282,6 +283,13 @@ constructor(
     onSuccess: () -> Unit,
     onValidationError: (error: String) -> Unit,
   ) {
+    // Adding a skill from an arbitrary URL downloads code that then runs as JS in a WebView — disabled
+    // in the Play (playsafe) build per Google's dynamic-code policy. Built-in + locally-imported skills
+    // are unaffected. POLICY_OPEN=true for the IzzyOnDroid/GrapheneOS builds.
+    if (!BuildConfig.POLICY_OPEN) {
+      onValidationError("Adding skills from a URL isn't available in this build.")
+      return
+    }
     setValidating(true)
     setValidationError(null)
 

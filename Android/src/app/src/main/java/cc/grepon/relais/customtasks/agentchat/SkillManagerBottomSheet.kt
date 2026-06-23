@@ -105,6 +105,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
+import cc.grepon.relais.BuildConfig
 import cc.grepon.relais.GalleryEvent
 import cc.grepon.relais.R
 import cc.grepon.relais.common.clearFocusOnKeyboardDismiss
@@ -134,26 +135,33 @@ private data class AddSkillOption(
   val icon: ImageVector,
 )
 
+// RemoteUrl + ViewCommunitySkills fetch/run skill code from the network (Google dynamic-code policy),
+// so they're hidden in the Play (playsafe) build; LocalImport (user-chosen SAF files) stays. This is
+// defense-in-depth with the POLICY_OPEN gate in SkillManagerViewModel.validateAndAddSkillFromUrl.
 private val ADD_SKILL_OPTIONS =
-  listOf(
-    AddSkillOption(
-      type = AddSkillOptionType.RemoteUrl,
-      titleResId = R.string.add_skill_option_url_title,
-      descriptionResId = R.string.add_skill_option_url_description,
-      icon = Icons.Rounded.Link,
-    ),
+  listOfNotNull(
+    if (BuildConfig.POLICY_OPEN)
+      AddSkillOption(
+        type = AddSkillOptionType.RemoteUrl,
+        titleResId = R.string.add_skill_option_url_title,
+        descriptionResId = R.string.add_skill_option_url_description,
+        icon = Icons.Rounded.Link,
+      )
+    else null,
     AddSkillOption(
       type = AddSkillOptionType.LocalImport,
       titleResId = R.string.add_skill_option_local_title,
       descriptionResId = R.string.add_skill_option_local_description,
       icon = Icons.Outlined.DriveFolderUpload,
     ),
-    AddSkillOption(
-      type = AddSkillOptionType.ViewCommunitySkills,
-      titleResId = R.string.add_skill_option_view_community_skills_title,
-      descriptionResId = R.string.add_skill_option_view_community_skills_description,
-      icon = Icons.AutoMirrored.Outlined.OpenInNew,
-    ),
+    if (BuildConfig.POLICY_OPEN)
+      AddSkillOption(
+        type = AddSkillOptionType.ViewCommunitySkills,
+        titleResId = R.string.add_skill_option_view_community_skills_title,
+        descriptionResId = R.string.add_skill_option_view_community_skills_description,
+        icon = Icons.AutoMirrored.Outlined.OpenInNew,
+      )
+    else null,
   )
 
 val BUTTON_CONTENT_PADDING = PaddingValues(start = 12.dp, top = 2.dp, end = 12.dp, bottom = 2.dp)
