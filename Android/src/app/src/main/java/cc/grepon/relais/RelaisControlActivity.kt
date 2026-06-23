@@ -298,8 +298,13 @@ class RelaisControlActivity : ComponentActivity() {
             ActionLink("PROMPT TEMPLATES ›") {
               ctx.startActivity(Intent(ctx, PromptTemplateEditorActivity::class.java))
             }
-            ActionLink("NOTIFICATION TRIAGE ›") {
-              ctx.startActivity(Intent(ctx, TriageControlActivity::class.java))
+            // Notification triage is stripped from the Play (playsafe) build — its listener service +
+            // control activity are removed from that manifest (notification-access policy), so hide the
+            // entry there or the launch would ActivityNotFoundException. POLICY_OPEN=false in playsafe.
+            if (BuildConfig.POLICY_OPEN) {
+              ActionLink("NOTIFICATION TRIAGE ›") {
+                ctx.startActivity(Intent(ctx, TriageControlActivity::class.java))
+              }
             }
 
             // Share-sheet inference target (#1): on/off. The manifest entry is always present; this

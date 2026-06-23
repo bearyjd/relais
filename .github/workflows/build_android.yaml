@@ -44,6 +44,21 @@ jobs:
               | grep -Eo "Lcom/google/(android/(gms|apps/aicore)|mlkit)[A-Za-z0-9/]*" | sort -u | head -50
             exit 1
           fi
+      - name: Verify the Play (playsafe) build drops the Play-restricted permissions
+        # Hard gate for Play compliance: the playsafe APK's merged manifest must declare none of the
+        # restricted permissions (a runtime BuildConfig flag wouldn't satisfy Google's manifest review).
+        run: |
+          APK=$(find app/build/outputs/apk/fullPlaysafe/release -name "*.apk" | head -1)
+          AAPT2=$(ls "$ANDROID_HOME"/build-tools/*/aapt2 | sort -V | tail -1)
+          echo "Scanning $APK permissions with $AAPT2…"
+          PERMS=$("$AAPT2" dump permissions "$APK" \
+            | grep -E "USE_EXACT_ALARM|SCHEDULE_EXACT_ALARM|REQUEST_IGNORE_BATTERY_OPTIMIZATIONS|READ_CALENDAR" || true)
+          if [ -n "$PERMS" ]; then
+            echo "::error::playsafe build still declares Play-restricted permissions — src/playsafe manifest removal is broken"
+            echo "$PERMS"
+            exit 1
+          fi
+          echo "OK — playsafe declares none of the Play-restricted permissions."
 
   unit_tests:
     name: JVM unit tests
