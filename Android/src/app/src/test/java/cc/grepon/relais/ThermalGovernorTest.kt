@@ -22,6 +22,7 @@ import android.os.PowerManager
 import androidx.test.core.app.ApplicationProvider
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -130,5 +131,68 @@ class ThermalGovernorTest {
     ThermalGovernor.resetThroughputForTest() // no throughput samples -> floor signal cannot fire
     ThermalGovernor.setStatusForTest(PowerManager.THERMAL_STATUS_SEVERE)
     assertTrue("SEVERE must remain a non-bypassable shed backstop", ThermalGovernor.shouldShed())
+  }
+
+  // --- throughput-floor signal (the third signal: GPU-clock collapse before the OS reports SEVERE) -
+  //
+  // With register() never called, powerManager is null so headroomOrSentinel() returns -1f (< the
+  // 0.95 default headroom), and status is forced to NONE. shouldShed() therefore reduces to exactly
+  // the throughput-floor signal, letting these tests pin it in isolation.
+
+  @Test
+  fun `throughput floor does not shed below the minimum sample count`() {
+    // Fewer than MIN_THROUGHPUT_SAMPLES (3) readings must not trip the floor even when they are far
+    // below it — otherwise a single cold/slow first decode would shed. The sample-count guard exists
+    // precisely so the floor reflects SUSTAINED throughput, not one slow measurement.
+    ThermalGovernor.resetThresholdsForTest() // floor = 3.0 tok/s
+    ThermalGovernor.setStatusForTest(PowerManager.THERMAL_STATUS_NONE)
+    ThermalGovernor.resetThroughputForTest()
+    ThermalGovernor.onDecodeThroughput(0.5) // 1 sample, well below floor
+    ThermalGovernor.onDecodeThroughput(0.5) // 2 samples
+    assertFalse("two sub-floor samples must not shed (needs >= 3)", ThermalGovernor.shouldShed())
+  }
+
+  @Test
+  fun `throughput floor sheds once enough samples sit below the floor`() {
+    ThermalGovernor.resetThresholdsForTest() // floor = 3.0 tok/s
+    ThermalGovernor.setStatusForTest(PowerManager.THERMAL_STATUS_NONE)
+    ThermalGovernor.resetThroughputForTest()
+    repeat(3) { ThermalGovernor.onDecodeThroughput(1.0) } // 3 samples, EWMA = 1.0 < 3.0
+    assertTrue("sustained sub-floor throughput must shed", ThermalGovernor.shouldShed())
+  }
+
+  @Test
+  fun `healthy throughput above the floor does not shed`() {
+    ThermalGovernor.resetThresholdsForTest() // floor = 3.0 tok/s
+    ThermalGovernor.setStatusForTest(PowerManager.THERMAL_STATUS_NONE)
+    ThermalGovernor.resetThroughputForTest()
+    repeat(5) { ThermalGovernor.onDecodeThroughput(20.0) } // EWMA -> ~20, well above the floor
+    assertFalse("healthy throughput must not shed", ThermalGovernor.shouldShed())
+  }
+
+  @Test
+  fun `non-positive throughput readings are ignored and never trip the floor`() {
+    // onDecodeThroughput drops <= 0 readings (a failed/instant decode), so they neither count toward
+    // the sample threshold nor drag the EWMA into the breach band.
+    ThermalGovernor.resetThresholdsForTest()
+    ThermalGovernor.setStatusForTest(PowerManager.THERMAL_STATUS_NONE)
+    ThermalGovernor.resetThroughputForTest()
+    repeat(5) { ThermalGovernor.onDecodeThroughput(0.0) } // all ignored -> 0 samples
+    assertFalse("zero-throughput readings are not samples", ThermalGovernor.shouldShed())
+    repeat(3) { ThermalGovernor.onDecodeThroughput(20.0) } // only these 3 healthy reads count
+    assertFalse("EWMA reflects only the healthy reads -> no shed", ThermalGovernor.shouldShed())
+  }
+
+  @Test
+  fun `EWMA recovers above the floor after a slow start and clears the shed`() {
+    // The floor reads the EWMA, not the last sample. Sub-floor samples pull it into the breach band;
+    // a run of healthy samples must lift it back above the floor and clear the shed.
+    ThermalGovernor.resetThresholdsForTest() // floor = 3.0
+    ThermalGovernor.setStatusForTest(PowerManager.THERMAL_STATUS_NONE)
+    ThermalGovernor.resetThroughputForTest()
+    repeat(3) { ThermalGovernor.onDecodeThroughput(1.0) } // EWMA ~1.0 -> sheds
+    assertTrue("sub-floor EWMA sheds", ThermalGovernor.shouldShed())
+    repeat(10) { ThermalGovernor.onDecodeThroughput(30.0) } // recover well above the floor
+    assertFalse("recovered EWMA clears the floor signal", ThermalGovernor.shouldShed())
   }
 }

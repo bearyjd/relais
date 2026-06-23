@@ -115,6 +115,29 @@ class RelaisClientConfigTest {
     assertTrue("every retained char must be the intact original", model.all { it == '模' })
   }
 
+  @Test
+  fun `discovery TXT caps a 4-byte emoji model id without splitting a surrogate pair`() {
+    // Emoji like U+1F600 are SUPPLEMENTARY code points: 2 Java chars (a high+low surrogate pair) and
+    // 4 UTF-8 bytes. This is the branch the CJK test above does NOT exercise (charCount == 2). capTxt
+    // must advance by whole code points (Character.charCount) so the byte boundary never lands
+    // between the surrogates — a lone surrogate is not valid UTF-8 and would corrupt the record.
+    // 20 emoji = 80 bytes, comfortably over the 63-byte cap.
+    val emoji = "😀" // U+1F600 GRINNING FACE: 4 UTF-8 bytes, charCount = 2
+    val txt = RelaisClientConfig.buildDiscoveryTxt(emoji.repeat(20), "1.0.15", 8443, textOnlyCaps)
+    val model = txt.getValue("model")
+    val bytes = model.toByteArray(Charsets.UTF_8)
+    assertTrue(
+      "capped emoji value must be within MAX_TXT_VALUE_BYTES",
+      bytes.size <= RelaisClientConfig.MAX_TXT_VALUE_BYTES,
+    )
+    // 63 / 4 = 15 whole emoji fit (60 bytes); the 16th would cross 63, so it is dropped WHOLE.
+    assertEquals("must retain whole emoji only (15 * 4 = 60 bytes)", 60, bytes.size)
+    assertFalse("no replacement char from a split code point", model.contains('�'))
+    // A clean round-trip proves the retained bytes are valid UTF-8 with no lone surrogate left behind.
+    assertEquals("retained value must round-trip through UTF-8 intact", model, String(bytes, Charsets.UTF_8))
+    assertEquals("every retained code point is the intact emoji", 15, model.codePointCount(0, model.length))
+  }
+
   // ---------------------------------------------------------------------------
   // Capabilities.toCapsString edge cases
   // ---------------------------------------------------------------------------
