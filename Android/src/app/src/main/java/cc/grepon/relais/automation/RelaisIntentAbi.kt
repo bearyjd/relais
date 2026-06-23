@@ -26,10 +26,10 @@ import android.content.Intent
 object RelaisIntentAbi {
 
   /** Input action: an automation app launches the exported activity with this to request inference. */
-  const val ACTION_INFER = "cc.grepon.relais.action.INFER"
+  const val ACTION_INFER = "com.ventouxlabs.relais.action.INFER"
 
   /** Result action: the broadcast (and activity-result) action carrying the inference outcome. */
-  const val ACTION_INFER_RESULT = "cc.grepon.relais.action.INFER_RESULT"
+  const val ACTION_INFER_RESULT = "com.ventouxlabs.relais.action.INFER_RESULT"
 
   // ---- input extras ----
   const val EXTRA_PROMPT = "prompt"

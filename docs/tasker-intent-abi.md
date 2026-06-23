@@ -16,7 +16,7 @@ It is a **consumer** of the already-resident engine — it never cold-starts the
 Launch the activity with the action:
 
 ```
-cc.grepon.relais.action.INFER
+com.ventouxlabs.relais.action.INFER
 ```
 
 ### Input extras
@@ -46,7 +46,7 @@ The outcome is delivered **two ways**:
    `RESULT_OK` on success and `RESULT_CANCELED` on any failure/rejection; the result `Intent` carries
    the result extras below.
 2. **Targeted RESULT broadcast** — sent **only when `result_package` is set**, with action
-   `cc.grepon.relais.action.INFER_RESULT`, **always targeted to that package** via
+   `com.ventouxlabs.relais.action.INFER_RESULT`, **always targeted to that package** via
    `Intent.setPackage(result_package)`. Relais never sends a global/implicit broadcast for the result
    — that would leak the model output to every installed app. If you want the broadcast, set
    `result_package` to your automation app's package.
@@ -78,7 +78,7 @@ The result **never** contains the `token` or any other secret.
 
 **Task → Send Intent**
 
-- **Action:** `cc.grepon.relais.action.INFER`
+- **Action:** `com.ventouxlabs.relais.action.INFER`
 - **Cat:** `Default`
 - **Extras** (one per line, `key:value`):
   - `prompt:Summarize the following: %clip`
@@ -91,7 +91,7 @@ The result **never** contains the `token` or any other secret.
 **Capture the result** — add an Intent Received profile (or a paired receiver task):
 
 - **Profile → Event → System → Intent Received**
-  - **Action:** `cc.grepon.relais.action.INFER_RESULT`
+  - **Action:** `com.ventouxlabs.relais.action.INFER_RESULT`
 - In the task, read the extras Tasker exposes from the broadcast:
   - `%ok` → `true`/`false`
   - `%response` → the answer (on success)
@@ -106,7 +106,7 @@ The result **never** contains the `token` or any other secret.
 
 ```
 adb shell am start -W \
-  -a cc.grepon.relais.action.INFER \
+  -a com.ventouxlabs.relais.action.INFER \
   -n cc.grepon.relais/.automation.RelaisTaskerActivity \
   --es prompt "Say hello in one word." \
   --es token "YOUR_API_KEY" \

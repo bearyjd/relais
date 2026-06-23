@@ -310,7 +310,7 @@ object IntentHandler {
           notificationProtoBuilder.setDeeplink(params.deeplink)
         } else if (params.task_id != null && params.model_name != null) {
           val uri =
-            "cc.grepon.relais://model/${params.task_id}/${params.model_name}"
+            "com.ventouxlabs.relais://model/${params.task_id}/${params.model_name}"
               .toUri()
               .buildUpon()
               .appendQueryParameter("query", params.message)
@@ -320,7 +320,7 @@ object IntentHandler {
           notificationProtoBuilder.setDeeplink(uri)
         } else if (params.task_id != null) {
           val uri =
-            "cc.grepon.relais://${params.task_id}/"
+            "com.ventouxlabs.relais://${params.task_id}/"
               .toUri()
               .buildUpon()
               .appendQueryParameter("query", params.message)
@@ -330,7 +330,7 @@ object IntentHandler {
           notificationProtoBuilder.setDeeplink(uri)
         } else {
           val fallbackUri =
-            "cc.grepon.relais://llm_agent_chat/"
+            "com.ventouxlabs.relais://llm_agent_chat/"
               .toUri()
               .buildUpon()
               .appendQueryParameter("query", params.message)

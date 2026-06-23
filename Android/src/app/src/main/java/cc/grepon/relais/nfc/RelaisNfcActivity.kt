@@ -27,7 +27,7 @@ import cc.grepon.relais.templates.WorkflowRegistry
 
 /**
  * Exported, no-UI trampoline for an NFC workflow tap (#15). A tag encodes
- * `cc.grepon.relais://workflow/<templateId>` (+ optional `?q=`). On tap this resolves the #12 template
+ * `com.ventouxlabs.relais://workflow/<templateId>` (+ optional `?q=`). On tap this resolves the #12 template
  * and runs it on the resident model, posting a VISIBILITY_PRIVATE result notification.
  *
  * Trust model (operator decision): **opt-in** — inert unless `RelaisConfig.nfcEnabled`. When enabled,

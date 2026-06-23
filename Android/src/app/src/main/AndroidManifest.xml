@@ -101,7 +101,7 @@
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE" />
 
-                <data android:scheme="cc.grepon.relais" />
+                <data android:scheme="com.ventouxlabs.relais" />
             </intent-filter>
         </activity>
 
@@ -229,7 +229,7 @@
             android:exported="false" />
 
         <!-- NFC workflow tap (#15). Exported no-UI trampoline: a tag encoding
-             cc.grepon.relais://workflow/<templateId> launches this, which resolves the #12 template
+             com.ventouxlabs.relais://workflow/<templateId> launches this, which resolves the #12 template
              and runs it via RelaisShareService → result notification. Opt-in (RelaisConfig.nfcEnabled,
              default false) — inert until enabled; the tag's inline prompt is treated as untrusted and
              runs through plain inference only (no node-tools, no LAN). Consumer of the resident engine
@@ -244,7 +244,7 @@
             <intent-filter>
                 <action android:name="android.nfc.action.NDEF_DISCOVERED" />
                 <category android:name="android.intent.category.DEFAULT" />
-                <data android:scheme="cc.grepon.relais" android:host="workflow" />
+                <data android:scheme="com.ventouxlabs.relais" android:host="workflow" />
             </intent-filter>
         </activity>
 
@@ -261,7 +261,7 @@
         </activity>
 
         <!-- Tasker/Automate intent ABI (#8). Exported transparent trampoline: an automation app (or
-             adb) sends cc.grepon.relais.action.INFER with a prompt + the node's API key and captures
+             adb) sends com.ventouxlabs.relais.action.INFER with a prompt + the node's API key and captures
              the answer via a package-targeted RESULT broadcast (result_package). The token extra is
              API-key gated (constant-time compare); a missing/bad token runs NO inference. Consumer of
              the resident engine — never cold-starts.
@@ -279,7 +279,7 @@
             android:theme="@android:style/Theme.Translucent.NoTitleBar"
             android:label="Relais Inference">
             <intent-filter>
-                <action android:name="cc.grepon.relais.action.INFER" />
+                <action android:name="com.ventouxlabs.relais.action.INFER" />
                 <category android:name="android.intent.category.DEFAULT" />
             </intent-filter>
         </activity>

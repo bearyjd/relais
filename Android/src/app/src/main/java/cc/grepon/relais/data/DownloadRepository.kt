@@ -296,7 +296,7 @@ class DefaultDownloadRepository(
     // Download from global model manager. Open the global model manager screen.
     else if (taskId == DOWNLOAD_FROM_GLOBAL_MODEL_MANAGER_TASK_ID) {
       intent =
-        Intent(Intent.ACTION_VIEW, "cc.grepon.relais://global_model_manager".toUri())
+        Intent(Intent.ACTION_VIEW, "com.ventouxlabs.relais://global_model_manager".toUri())
           .apply { flags = Intent.FLAG_ACTIVITY_NEW_TASK }
     } else {
 
@@ -304,7 +304,7 @@ class DefaultDownloadRepository(
       intent =
         Intent(
             Intent.ACTION_VIEW,
-            "cc.grepon.relais://model/$taskId/${modelName}".toUri(),
+            "com.ventouxlabs.relais://model/$taskId/${modelName}".toUri(),
           )
           .apply { flags = Intent.FLAG_ACTIVITY_NEW_TASK }
     }

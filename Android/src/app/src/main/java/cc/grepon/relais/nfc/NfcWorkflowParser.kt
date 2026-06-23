@@ -20,14 +20,14 @@ import java.net.URLEncoder
 data class WorkflowTap(val templateId: String, val prompt: String?)
 
 /**
- * Pure parsing + building for the Relais NFC workflow URI scheme: `cc.grepon.relais://workflow/<id>`
+ * Pure parsing + building for the Relais NFC workflow URI scheme: `com.ventouxlabs.relais://workflow/<id>`
  * with an optional `?q=<prompt>` inline prompt. The `<id>` resolves to a #12 prompt template; `q` is
  * an OPTIONAL, attacker-influenced inline prompt (anyone can write a tag) and is therefore treated as
  * untrusted DATA — length-capped here and run through plain inference (no tools, no egress) by the
  * caller. No Android types, so this is unit-testable on the JVM.
  */
 object NfcWorkflowParser {
-  const val SCHEME = "cc.grepon.relais"
+  const val SCHEME = "com.ventouxlabs.relais"
   const val HOST = "workflow"
   const val QUERY_PROMPT = "q"
 
