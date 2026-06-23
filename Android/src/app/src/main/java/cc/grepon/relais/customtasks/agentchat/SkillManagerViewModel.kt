@@ -300,11 +300,43 @@ constructor(
         val skillMdUrl = "$normalizedUrl/SKILL.md"
         Log.d(TAG, "Fetching SKILL.md from: $skillMdUrl")
 
+        // 1b. SSRF guard: the NODE fetches this user-supplied URL (and later runs the skill's scripts
+        // as JS in a WebView), so block non-https / loopback / private / link-local / cloud-metadata
+        // hosts BEFORE connecting. See SkillUrlPolicy (reuses the batch WebhookGuard).
+        SkillUrlPolicy.validate(skillMdUrl)?.let { guardError ->
+          Log.w(TAG, "Blocked unsafe skill URL '$skillMdUrl': $guardError")
+          setValidationError(guardError)
+          onValidationError(guardError)
+          return@launch
+        }
+
         // 2. Read url/SKILL.md.
         val mdContent =
           try {
-            val connection = URL(skillMdUrl).openConnection()
-            InputStreamReader(connection.getInputStream()).use { reader -> reader.readText() }
+            val connection = (URL(skillMdUrl).openConnection() as java.net.HttpURLConnection).apply {
+              // SSRF: SkillUrlPolicy validated skillMdUrl, but HttpURLConnection follows 3xx by default
+              // — a redirect could retarget the fetch at an unvalidated private/internal host. Refuse
+              // redirects so the only host hit is the validated one. Bounded timeouts so a hostile/slow
+              // host can't wedge the IO coroutine (mirrors WebhookDelivery / getJsonResponse).
+              instanceFollowRedirects = false
+              connectTimeout = 15_000
+              readTimeout = 30_000
+            }
+            val code = connection.responseCode
+            if (code in 300..399) {
+              val error = "Skill URL redirected (HTTP $code); redirects aren't allowed for skill sources."
+              Log.w(TAG, "Blocked redirecting skill URL '$skillMdUrl' → ${connection.getHeaderField("Location")}")
+              setValidationError(error)
+              onValidationError(error)
+              return@launch
+            }
+            if (code !in 200..299) {
+              val error = "Failed to fetch SKILL.md: HTTP $code"
+              setValidationError(error)
+              onValidationError(error)
+              return@launch
+            }
+            InputStreamReader(connection.inputStream).use { reader -> reader.readText() }
           } catch (e: Exception) {
             Log.e(TAG, "Error fetching SKILL.md from $skillMdUrl", e)
             val error = "Failed to fetch SKILL.md: ${e.message}"
