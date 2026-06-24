@@ -228,12 +228,18 @@ dependencies {
   // our own embedder); llmedge's `io.ktor` is only its HF-download path (we provision via
   // ModelSpec.localFile, and Relais's own ktor 3.4.3 is a separate direct dep, untouched by this).
   // NOTE: llmedge also transitively pulls features image-gen doesn't use — com.tom-roush:pdfbox-android,
-  // com.google.mlkit:image-labeling, kotlinx-coroutines-play-services — left in for now (full APK bloat
-  // only; all isolated to `full`, so degoogled stays GMS=0). Trimming them needs an on-device
-  // generate-still-works check (a wrong exclude → NoClassDefFoundError in :imagegen) — a PR-D footnote.
+  // kotlinx-coroutines-play-services — left in for now (full APK bloat only; all isolated to `full`, so
+  // degoogled stays GMS=0).
+  // image-labeling IS excluded below: it drags in com.google.mlkit:vision-internal-vkp:18.2.2, whose
+  // libmlkitcommonpipeline.so has 4 KB-aligned LOAD segments (0x1000) — the lone non-16 KB-aligned lib
+  // in the full APK. On Pixel 10 / Android 16 (16 KB memory pages) that triggers a PageSizeMismatch
+  // load error. image-labeling has zero Relais code references and is not used by the image-gen path,
+  // so excluding it removes the 4 KB lib with no functional loss (verified: :imagegen class-loads with
+  // no NoClassDefFoundError). The CI "16 KB native-lib alignment" gate guards against regressions.
   "fullImplementation"(libs.llmedge) {
     exclude(group = "io.gitlab.shubham0204", module = "sentence-embeddings")
     exclude(group = "io.ktor")
+    exclude(group = "com.google.mlkit", module = "image-labeling")
   }
   implementation(libs.mcp.kotlin.sdk)
   implementation(libs.ktor.client.android)

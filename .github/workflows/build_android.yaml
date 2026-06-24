@@ -68,6 +68,46 @@ jobs:
             exit 1
           fi
           echo "OK — playsafe declares none of the restricted permissions and ships none of the stripped components."
+      - name: Verify all shipped native libs are 16 KB-page-aligned (Pixel 10 / Android 16)
+        # Pixel 10 / Android 16 use 16 KB memory pages; a bundled .so whose LOAD segments are only
+        # 4 KB-aligned (p_align 0x1000) triggers a PageSizeMismatch load error. Google Play also
+        # requires 16 KB support for new apps targeting Android 15+. Assert every arm64 .so in EVERY
+        # shipping release variant has LOAD alignment >= 16 KB (0x4000). Catches any future transitive
+        # that ships a 4 KB lib (original offender: com.google.mlkit:vision-internal-vkp's
+        # libmlkitcommonpipeline.so via llmedge → image-labeling, now excluded).
+        run: |
+          shopt -s nullglob   # empty glob → zero iterations, NOT the literal pattern (no false green)
+          BAD=0
+          for variant in fullOpen/release fullPlaysafe/release degoogledOpen/release; do
+            APK=$(find "app/build/outputs/apk/$variant" -name "*.apk" 2>/dev/null | head -1)
+            if [ -z "$APK" ]; then
+              echo "::error::$variant: no release APK found — alignment gate cannot verify"
+              BAD=1; continue
+            fi
+            TMP=$(mktemp -d)
+            unzip -q -o "$APK" 'lib/arm64-v8a/*.so' -d "$TMP" 2>/dev/null || true
+            libs=("$TMP"/lib/arm64-v8a/*.so)
+            # A gate that checks nothing must FAIL, not silently pass: every variant ships arm64
+            # ELF libs (litert-lm at minimum), so zero extracted means the path/ABI assumption drifted.
+            if [ "${#libs[@]}" -eq 0 ]; then
+              echo "::error::$variant: no arm64-v8a .so extracted from $APK — gate cannot verify alignment"
+              BAD=1; continue
+            fi
+            echo "Checking ${#libs[@]} arm64 .so in $variant…"
+            for so in "${libs[@]}"; do
+              # Sub-16KB alignment = 0x1000 (4K) or 0x2000 (8K) on any LOAD segment (0x4000+ is fine).
+              SMALL=$(readelf -lW "$so" | awk '/LOAD/{print $NF}' | grep -E '0x(1000|2000)$' | sort -u | tr '\n' ' ' || true)
+              if [ -n "$SMALL" ]; then
+                echo "::error::$variant/$(basename "$so") has sub-16KB LOAD alignment: $SMALL"
+                BAD=1
+              fi
+            done
+          done
+          if [ "$BAD" -ne 0 ]; then
+            echo "::error::Native-lib 16 KB alignment gate failed — will fault on Pixel 10 / Android 16"
+            exit 1
+          fi
+          echo "OK — every arm64 .so in every release variant is 16 KB-aligned."
 
   unit_tests:
     name: JVM unit tests
