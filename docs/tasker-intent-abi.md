@@ -107,11 +107,16 @@ The result **never** contains the `token` or any other secret.
 ```
 adb shell am start -W \
   -a com.ventouxlabs.relais.action.INFER \
-  -n cc.grepon.relais/.automation.RelaisTaskerActivity \
+  -n com.ventouxlabs.relais/cc.grepon.relais.automation.RelaisTaskerActivity \
   --es prompt "Say hello in one word." \
   --es token "YOUR_API_KEY" \
   --es timeout_ms "30000"
 ```
+
+> The `-n` component is `<applicationId>/<fully-qualified-activity-class>`. The applicationId follows
+> the distribution channel (the source namespace stays `cc.grepon.relais`): `com.ventouxlabs.relais`
+> (Play), `com.ventouxlabs.relais.izzy` (IzzyOnDroid), `com.ventouxlabs.relais.degoogled` (GrapheneOS /
+> GitHub release). Swap the package half for the channel you installed; the class half never changes.
 
 The activity is transparent and finishes immediately; the answer is delivered asynchronously via the
 result broadcast (the decode runs in the foreground service, not the activity).
