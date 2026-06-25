@@ -224,14 +224,16 @@ data class Model(
    * manually manage model files instead of downloading them. This dir is relative to the app's
    * "External Files Directory", which is: /storage/emulated/0/Android/data/<app_id>/files/.
    *
-   * The <app_id> depends on how the app was built:
-   * - `cc.grepon.relais` for builds from the GitHub source.
-   * - `cc.grepon.relais` for other builds (Play store, internal, etc).
+   * The <app_id> is the per-channel applicationId. The source namespace stays `cc.grepon.relais`,
+   * but the applicationId follows the distribution channel (see Android/src/app/build.gradle.kts):
+   * - `com.ventouxlabs.relais` for the Play Store build (full + playsafe).
+   * - `com.ventouxlabs.relais.izzy` for the IzzyOnDroid build (full + open).
+   * - `com.ventouxlabs.relais.degoogled` for the GrapheneOS / GitHub-release build (degoogled + open).
    *
-   * For example, if this field is set to "my_model/local_dir/", then the location you should push
-   * files to is (assuming non-github builds):
+   * For example, if this field is set to "my_model/local_dir/" on a GrapheneOS / GitHub-release
+   * build, the location you should push files to is:
    *
-   * /storage/emulated/0/Android/data/cc.grepon.relais/files/my_model/local_dir/
+   * /storage/emulated/0/Android/data/com.ventouxlabs.relais.degoogled/files/my_model/local_dir/
    *
    * You can get the full path to a specific file within your code using `Model.getPath(Context,
    * fileNameToGet)`.
