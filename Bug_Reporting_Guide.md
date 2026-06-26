@@ -1,78 +1,61 @@
-# **The Complete Guide to Capturing AI Edge Gallery Bug Reports for ANDROID devices**
+# Reporting a Relais Bug
 
-Thank you for helping us improve the AI Edge Gallery app\! To find and fix bugs effectively, our engineers need detailed diagnostic information from your device. A **Full Bug Report** is the best way to provide this.
+Relais is a headless on-device LLM node, so the most useful diagnostics are **node-specific** (which
+SoC, which model, the node's own logs) on top of a standard Android bug report. Please include the
+"Essentials" below in every issue.
 
-Please note that this guide is specifically for capturing bug reports on **Android devices**.
+> **Security issues:** do **not** file publicly. Follow [`SECURITY.md`](SECURITY.md).
+> **Always redact your API key** before sharing logs or screenshots — it appears on the control panel
+> and in `/v1/clientconfig` output.
 
-This guide covers the simple on-device method for all users and the more advanced `adb` method for developers.
+## Essentials (put these in the issue)
 
-### **Part 1: The Recommended Method (On Your Device)**
+- **Device + SoC** — model and Tensor generation matters a lot (e.g. Pixel 10 / **Tensor G5** has a
+  known E4B first-inference crash). Find it under Settings → About phone.
+- **OS** — Android version / build (GrapheneOS vs stock).
+- **Build channel / variant** — which APK: `com.ventouxlabs.relais` (Play), `.izzy` (IzzyOnDroid), or
+  `.degoogled` (GrapheneOS/GitHub). `adb shell pm list packages | grep ventouxlabs` if unsure.
+- **Model in use** — e.g. `gemma-4-E4B-it` / `E2B`, and whether it was downloaded or staged.
+- **What happened** — exact request (curl/SDK), expected vs actual, repro steps.
 
-This is the fastest and easiest way to generate a complete bug report.
+## Node diagnostics
 
-#### **1\. Enable Developer Options**
+```bash
+# Health + readiness + thermal (no auth)
+adb -s <serial> forward tcp:8443 tcp:8443
+curl -k https://localhost:8443/health
 
-First, you need to enable the hidden "Developer options" menu on your phone.
-
-* Open your phone's **Settings** app.  
-* Scroll down and tap **"About phone"**.  
-* Find the **"Build number"** and tap on it **7 times** in a row. You will see a "You are now a developer\!" message.
-
-#### **2\. Capture the Bug Report**
-
-It's best to capture the report **immediately after** you've experienced the bug.
-
-* Go back to the main **Settings** page and find the new **"Developer options"** menu (it may be under "System").  
-* Inside Developer options, tap **"Take bug report"**.  
-* Select the **"Full report"** option and tap **"Report"**. This provides the most detailed information and is strongly preferred.
-
-#### **3\. Wait and Share**
-
-* Your phone will take a moment to collect all the data. When it's ready, a notification will appear saying **"Bug report captured"**.  
-* Tap this notification.  
-* The Android share menu will open. You can now share the `.zip` file with us. The easiest way is to **save it to your Google Drive** and share the link, or attach it directly to the GitHub issue.
-
-### **Part 2: For Developers & Advanced Users (Using ADB)**
-
-This section is for users comfortable with the Android Debug Bridge (`adb`) command-line tool.
-
-#### **Capture a Bug Report Directly**
-
-If you have a device connected to your computer with USB debugging enabled, you can use the following commands.
-
-* **For a single connected device:**
-
-```shell
-# This saves the report to the specified path on your computer.
-adb bugreport C:\Reports\MyBugReports
+# Metrics snapshot (Prometheus text, bearer-gated)
+curl -k -H "Authorization: Bearer <key>" https://localhost:8443/metrics
 ```
 
-* **For multiple connected devices:**
+### Logs (the most useful artifact)
 
-```shell
-# First, list devices to get the serial number.
-adb devices
+Capture logcat while reproducing. All node tags start with `Relais`:
 
-# Then, use the serial number to target the correct device.
-adb -s <your_device_serial_number> bugreport
+```bash
+adb -s <serial> logcat -c          # clear, then reproduce the bug
+adb -s <serial> logcat -d | grep -iE "relais|litert" > relais-log.txt
 ```
 
-#### **Access Older Bug Reports from Your Device**
+Key tags: `RelaisNodeService`, `RelaisModelProvisioner`, `RelaisEngine`, `RelaisWatchdog`,
+`BatchWorker`. Native inference crashes show as a `SIGSEGV` in `liblitert*`/`libsdcpp` frames — include
+the full native stack.
 
-Android automatically saves recent bug reports on the device.
+## Full Android bug report (optional, for hard cases)
 
-1. **List Saved Reports:**
+On-device: Settings → Developer options → **Take bug report** → **Full report**, then share the `.zip`.
 
-```shell
-adb shell ls /bugreports/
+Via adb:
+```bash
+adb devices                                  # get the serial
+adb -s <serial> bugreport ./relais-bugreport # writes a .zip
 ```
+The `bugreport-*.txt` inside holds the full logcat + `dumpsys`. **Scrub the API key** before attaching.
 
-2. **Pull a Specific Report:**
+## Where to file
 
-```shell
-adb pull /bugreports/<bug_report_filename.zip>
-```
-
-#### **Understanding the Bug Report File**
-
-Your bug report is a `.zip` file. Inside, the most important file is **`bugreport-[...].txt`**. This text file contains the full system log (logcat), error logs (`dumpstate`), and detailed diagnostic output for all system services (`dumpsys`), giving engineers a complete picture of the device's state at the time of the bug.
+- **Relais issues** → this repository's GitHub issues, with the Essentials above.
+- **Native inference crashes/hangs** (litertlm `SIGSEGV`, GPU deadlock) are often **upstream** — check
+  the [`google-ai-edge/LiteRT-LM`](https://github.com/google-ai-edge/LiteRT-LM) issues first (the G5
+  E4B crash is tracked as LiteRT-LM #2566).

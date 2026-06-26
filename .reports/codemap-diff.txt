@@ -1,0 +1,50 @@
+RELAIS CODEMAP — GENERATION REPORT
+Generated: 2026-06-26 | Branch: main @ 44879e6
+
+STATUS: INITIAL GENERATION (no prior codemaps in docs/CODEMAPS/ — diff baseline established)
+
+FILES SCANNED
+  Relais-authored main (cc/grepon/relais): 289 .kt
+  Unit tests (src/test, relais):            69 .kt
+  Instrumented tests (src/androidTest):     18 .kt
+  Build/config:  build.gradle.kts, src/gradle/libs.versions.toml,
+                 AndroidManifest.xml + src/{full,degoogled,playsafe} overrides
+
+CODEMAPS WRITTEN (docs/CODEMAPS/)
+  architecture.md  — node subsystem boundaries, data flow, backends, resilience
+  backend.md       — HTTP routes -> core/ seams; node lifecycle; admission/security
+  frontend.md      — UI nav tree, Relais-control vs inherited-Gallery split, theme, customtasks
+  data.md          — Room v4 schema + migrations, proto DataStore, Hilt DI graph
+  dependencies.md  — external deps, flavor/appId matrix, manifest exported surface + perms
+
+SUBSYSTEM INVENTORY (Relais-authored, cc/grepon/relais/)
+  core/        pure JVM seams (Admission, ToolParsing, StructuredOutput, SessionPolicy,
+               Reasoning, FinishReason, ClientConfig, RelaisInference, NodeState, NodeController)
+  runtime/ worker/ batch/   model I/O, session-prune, download, batch drain + signed webhook
+  embed/ rag/ nodetools/    EmbeddingGemma + SentencePiece; brute-force vector RAG; builtin tools
+  triage/ notifications/    notification listener + AI digest/urgent workers (#7)
+  share/ nfc/ tile/ widget/ automation/ templates/   trampoline -> pure-decision -> worker pattern
+  imagegen/    process-isolated :imagegen facade; endpoint honest-501 (#16)
+  ui/ customtasks/   inherited google-ai-edge/gallery (re-namespaced, off DESIGN.md)
+
+KEY FACTS VERIFIED AGAINST CODE (not the handoff)
+  litertlm = 0.11.0 (shipped); litert = 1.4.2; llmedge = 0.3.9
+    (NOTE: 0.13.1 in HANDOFF was a G5-bug test build, NOT the shipped version)
+  compileSdk/targetSdk = 35, minSdk = 31, ABIs = arm64-v8a + x86_64
+  Room relais.db v4, additive migrations 1->2->3->4, no destructive fallback
+  Flavors: dist(full|degoogled) x policy(open|playsafe) -> 3 shipped appIds; degoogled+playsafe filtered
+  playsafe Play-compliance stripping is LIVE (#76): src/playsafe/AndroidManifest.xml,
+    6x tools:node="remove" + CI aapt-permission gate  [corrects an Explore agent's stale "future PR" read]
+
+ARCHITECTURE NOTES
+  Two consumer surfaces: HTTP (RelaisHttpServer :8443 TLS / :8080 loopback) and
+    in-process core/RelaisInference (tiles/widgets/share/nfc/triage/automation; cold-start-guarded)
+  Node core is NOT in Hilt (plain singletons reachable from cold-start paths); only DataStore/repos are
+  Default model gemma-4-E4B-it; Tensor G5 pins E2B (LiteRT-LM #2566 first-inference SIGSEGV)
+
+DEPENDENCY CHANGES SINCE LAST SCAN: n/a (initial)
+STALENESS WARNINGS: n/a (initial) — re-run after major feature/refactor work; flag codemaps >90 days old
+
+OPEN SECURITY SURFACE FLAGGED IN MAPS
+  customtasks/agentchat add-skill-from-URL: host-allowlist only, descriptor content unvalidated,
+    skills run JS in WebView (SSRF guard added #72; residual prompt-injection risk if app ships UI)

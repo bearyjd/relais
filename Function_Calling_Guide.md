@@ -1,82 +1,84 @@
-# Implementing Your Custom Logic
-To build specialized agents that go beyond our provided demos, you can fine-tune your own version of the model and customize the app with your functions to call.
+# Function Calling with Relais
 
-## Clone the Repository
-```shell
-git clone git@github.com:google-ai-edge/gallery.git
+Relais serves an **OpenAI-compatible** API, so function/tool calling works the way it does against any
+OpenAI `/v1/chat/completions` endpoint — point your existing client at the node. There are two modes:
+
+1. **Client-side tools** (standard OpenAI) — you supply `tools[]`; the model emits `tool_calls`; **you**
+   execute them and send the results back.
+2. **Node-side built-in tools** (`node_tools: true`) — the node executes a small curated set of safe,
+   deterministic built-ins **itself** (single hop), and returns the grounded answer directly.
+
+The driving model is an on-device Gemma-4-class model (~2–4B effective). It is reliable at a **single**
+tool call, not at long autonomous agent loops — design for one round of grounding.
+
+## 1. Client-side tools (you execute)
+
+Standard OpenAI shape. The model decides when to call; the node returns `tool_calls`; you run them and
+append a `role: "tool"` message, then call again for the final answer.
+
+```bash
+curl -k https://<node-ip>:8443/v1/chat/completions \
+  -H "Authorization: Bearer $RELAIS_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gemma-4-E4B-it",
+    "messages": [{"role": "user", "content": "What is the weather in Paris?"}],
+    "tools": [{
+      "type": "function",
+      "function": {
+        "name": "get_weather",
+        "description": "Get current weather for a city",
+        "parameters": {
+          "type": "object",
+          "properties": {"city": {"type": "string"}},
+          "required": ["city"]
+        }
+      }
+    }]
+  }'
 ```
 
-This will create a local copy of the repository.
+Notes:
+- Tool-calling uses the **native** litertlm tool API (not prompt scraping).
+- The model's typed-argument quirk (`{"type":"STRING","value":"…"}`) is unwrapped for you.
 
-## Define Your Action Type 
+## 2. Node-side built-in tools (`node_tools`)
 
-In [Actions.kt](Android/src/app/src/main/java/com/google/ai/edge/gallery/customtasks/mobileactions/Actions.kt), add a new entry to the `ActionType` enum and create a class that extends `Action` to define your specific function name, icon, and parameters.
+Opt in with `node_tools: true` (alias `x_relais_node_tools`). The node advertises its built-ins, runs
+the one the model calls, and re-generates **once** with the result folded in (tools suppressed on the
+second pass) → a final text answer, no `tool_calls` for you to handle.
 
-```kotlin
-enum class ActionType {
-  // ... existing types
-  ACTION_NEW_CUSTOM_FUNCTION,
-}
+| tool | arguments | does |
+|---|---|---|
+| `rag_search` | `query`, `top_k?` | search the ingested RAG corpus |
+| `calculator` | `expression` | arithmetic via a hand-rolled parser (no `eval`/exec) |
+| `current_datetime` | — | device local date-time (ISO-8601) |
+| `unit_convert` | `value`, `from`, `to` | length / mass / temperature |
 
-class NewCustomAction(val param: String) : Action(
-  type = ActionType.ACTION_NEW_CUSTOM_FUNCTION,
-  icon = Icons.Outlined.Favorite, // Choose an appropriate icon
-  functionCallDetails = FunctionCallDetails(
-    functionName = "newCustomFunction",
-    parameters = listOf(Pair("param", param))
-  )
-)
+```bash
+curl -k https://<node-ip>:8443/v1/chat/completions \
+  -H "Authorization: Bearer $RELAIS_API_KEY" -H "Content-Type: application/json" \
+  -d '{"model":"gemma-4-E4B-it",
+       "messages":[{"role":"user","content":"What is 17.5% of 240?"}],
+       "node_tools":true}'
 ```
 
-## Add Your Tool Definition
+- Built-ins and your `tools[]` **coexist**; a built-in is a single hop the node runs, a client tool flows
+  back to you as `tool_calls`. **Your tool name wins on a collision** (supply your own `calculator` and
+  the node won't shadow it).
+- Tool/RAG output is fenced as untrusted **DATA** after your system prompt — a poisoned passage can't
+  override your guardrails.
+- **Cost:** a triggered built-in runs **two** generations (~2× latency) and holds one admission slot.
 
-In [MobileActionsTools.kt](Android/src/app/src/main/java/com/google/ai/edge/gallery/customtasks/mobileactions/MobileActionsTools.kt), create a new function annotated with `@Tool` and `@ToolParam`. This function should call the `onFunctionCalled` callback to pass the specific action to your app logic.
+See [`docs/node-tools-api.md`](docs/node-tools-api.md) for the full contract.
 
-```kotlin
-class MobileActionsTools(val onFunctionCalled: (Action) -> Unit): Toolset {
-  // ... existing tools
+## Related: structured output
 
-  /** Description for the model. */
-  @Tool(description = "Description of what this function does")
-  fun newCustomFunction(
-    @ToolParam(description = "Description of the parameter") param: String
-  ): Map<String, String> {
-    onFunctionCalled(NewCustomAction(param = param))
-    return mapOf("result" to "success")
-  }
-}
-```
+For a guaranteed-shape JSON answer (instead of a function call), use `response_format` with a
+`json_schema` or `json_object` — the node validates and repairs the output. Note `node_tools`/`tools`
+takes precedence: a `response_format` on the **same** request is ignored.
 
-## Implement Your Action Logic 
+## Extending the on-device app's own actions
 
-Update the `performAction` method in [MobileActionsViewModel.kt](Android/src/app/src/main/java/com/google/ai/edge/gallery/customtasks/mobileactions/MobileActionsViewModel.kt) to handle your new action type. This is where you implement the actual Android logic, such as using the `CameraManager` or starting a new `Intent`.
-
-```kotlin
-fun performAction(action: Action, context: Context): String {
-  return when (action) {
-    // ... existing actions
-    is NewCustomAction -> handleNewCustomAction(context, action.param)
-    else -> ""
-  }
-}
-
-private fun handleNewCustomAction(context: Context, param: String): String {
-  // Implement your Android logic here (e.g., Toast, Intent, etc.)
-  return ""
-}
-```
-
-## Update the System Prompt (Optional) 
-
-If your function requires specific context like the current time or device state, update the `getSystemPrompt()` function in [MobileActionsTask.kt](Android/src/app/src/main/java/com/google/ai/edge/gallery/customtasks/mobileactions/MobileActionsTask.kt) to ensure the model has the information it needs.
-
-## Build and Install 
-
-Navigate to the `Android/src/` directory in your terminal and use the Gradle wrapper to build the debug version of the app and install it directly onto your connected device:
-
-```shell
-cd gallery/Android/src/
-./gradlew installDebug
-```
-
-Gradle will take care of downloading dependencies, compiling the code, and deploying the APK. Once finished, you should see "Edge Gallery" appearing in your app drawer!
+The bundled Gallery UI also has an in-app "mobile actions" custom task (camera/intent/etc.) — that is
+separate from the node's HTTP tool-calling above and is not part of the node's API surface.
