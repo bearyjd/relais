@@ -46,8 +46,6 @@ import cc.grepon.relais.proto.Skill
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.io.File
-import java.io.InputStreamReader
-import java.net.URL
 import javax.inject.Inject
 import kotlin.collections.joinToString
 import kotlin.io.encoding.Base64
@@ -308,49 +306,19 @@ constructor(
         val skillMdUrl = "$normalizedUrl/SKILL.md"
         Log.d(TAG, "Fetching SKILL.md from: $skillMdUrl")
 
-        // 1b. SSRF guard: the NODE fetches this user-supplied URL (and later runs the skill's scripts
-        // as JS in a WebView), so block non-https / loopback / private / link-local / cloud-metadata
-        // hosts BEFORE connecting. See SkillUrlPolicy (reuses the batch WebhookGuard).
-        SkillUrlPolicy.validate(skillMdUrl)?.let { guardError ->
-          Log.w(TAG, "Blocked unsafe skill URL '$skillMdUrl': $guardError")
-          setValidationError(guardError)
-          onValidationError(guardError)
-          return@launch
-        }
-
-        // 2. Read url/SKILL.md.
+        // 1b. SSRF guard + pinned fetch: the NODE fetches this user-supplied URL (and later runs the
+        // skill's scripts as JS in a WebView), so SkillSourceFetcher vets the host (https only; no
+        // loopback / private / link-local / cloud-metadata) and connects to the EXACT vetted IP — no
+        // second DNS lookup (closes the rebinding TOCTOU), no redirects, bounded body + timeouts.
         val mdContent =
-          try {
-            val connection = (URL(skillMdUrl).openConnection() as java.net.HttpURLConnection).apply {
-              // SSRF: SkillUrlPolicy validated skillMdUrl, but HttpURLConnection follows 3xx by default
-              // — a redirect could retarget the fetch at an unvalidated private/internal host. Refuse
-              // redirects so the only host hit is the validated one. Bounded timeouts so a hostile/slow
-              // host can't wedge the IO coroutine (mirrors WebhookDelivery / getJsonResponse).
-              instanceFollowRedirects = false
-              connectTimeout = 15_000
-              readTimeout = 30_000
-            }
-            val code = connection.responseCode
-            if (code in 300..399) {
-              val error = "Skill URL redirected (HTTP $code); redirects aren't allowed for skill sources."
-              Log.w(TAG, "Blocked redirecting skill URL '$skillMdUrl' → ${connection.getHeaderField("Location")}")
-              setValidationError(error)
-              onValidationError(error)
+          when (val r = SkillSourceFetcher.fetch(skillMdUrl)) {
+            is SkillSourceFetcher.FetchResult.Failure -> {
+              Log.w(TAG, "Skill fetch failed for '$skillMdUrl': ${r.message}")
+              setValidationError(r.message)
+              onValidationError(r.message)
               return@launch
             }
-            if (code !in 200..299) {
-              val error = "Failed to fetch SKILL.md: HTTP $code"
-              setValidationError(error)
-              onValidationError(error)
-              return@launch
-            }
-            InputStreamReader(connection.inputStream).use { reader -> reader.readText() }
-          } catch (e: Exception) {
-            Log.e(TAG, "Error fetching SKILL.md from $skillMdUrl", e)
-            val error = "Failed to fetch SKILL.md: ${e.message}"
-            setValidationError(error)
-            onValidationError(error)
-            return@launch
+            is SkillSourceFetcher.FetchResult.Success -> r.body
           }
 
         if (mdContent.isEmpty()) {

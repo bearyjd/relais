@@ -20,6 +20,7 @@ package cc.grepon.relais.customtasks.agentchat
 
 import cc.grepon.relais.batch.WebhookGuard
 import java.net.InetAddress
+import java.net.URI
 
 /**
  * SSRF guard for the "add skill from URL" feature. The node itself fetches the user-supplied URL
@@ -36,22 +37,69 @@ import java.net.InetAddress
  *
  * Pure + offline-testable via the injected [resolve] (see `SkillUrlPolicyTest`).
  *
- * NOTE (residual TOCTOU): this validates the URL but does not yet *pin* the resolved IP for the actual
- * fetch the way [cc.grepon.relais.batch.WebhookDelivery] does, so a name that flips public→private
- * between this check and the `openConnection()` re-resolution is a narrow remaining window. Closing it
- * (pinning the fetch) is a follow-up; this guard already blocks the common cases (literal private IPs,
- * localhost, http, file://).
+ * The TOCTOU window that used to remain (validate here, then let `openConnection()` re-resolve the
+ * name) is now closed by [resolvePinned]: it hands back the exact [InetAddress] the guard vetted so
+ * the fetch ([SkillSourceFetcher]) connects to that pinned IP instead of doing a second lookup —
+ * mirroring [cc.grepon.relais.batch.WebhookDelivery]. A name that flips public→private between the
+ * check and the connect therefore never gets a second resolution.
  */
 object SkillUrlPolicy {
+
+  /** Fixed user-facing rejection message — same wording whatever the specific block reason. */
+  const val BLOCK_MESSAGE: String =
+    "Skill source must be a public https:// URL. Local, private, loopback, link-local, or " +
+      "non-https addresses are blocked (they would let the skill reach internal services)."
+
+  /** Outcome of vetting a skill source: either a connection target pinned to a vetted IP, or a block. */
+  sealed interface PinResult {
+    /**
+     * The skill source passed the SSRF check. Connect to [address]:[port] directly (the pinned IP),
+     * sending [host] as the HTTP `Host` header + (for [https]) the TLS SNI, requesting [target].
+     */
+    data class Pinned(
+      val address: InetAddress,
+      val host: String,
+      val port: Int,
+      val https: Boolean,
+      val target: String,
+    ) : PinResult
+
+    /** The URL is unsafe (or malformed/unresolvable); [message] is user-facing. */
+    data class Rejected(val message: String) : PinResult
+  }
+
+  /**
+   * Vets [url] via [WebhookGuard] and, if allowed, returns the first vetted address as the pin plus the
+   * host/port/path needed to issue the request against it. The guard already rejects the host if ANY
+   * resolved address is private, so every returned address is safe to connect to. [resolve] is injected
+   * for offline tests.
+   */
+  fun resolvePinned(
+    url: String,
+    resolve: (String) -> Array<InetAddress> = { InetAddress.getAllByName(it) },
+  ): PinResult {
+    val uri = runCatching { URI(url) }.getOrNull() ?: return PinResult.Rejected(BLOCK_MESSAGE)
+    val host = uri.host ?: return PinResult.Rejected(BLOCK_MESSAGE)
+    val https = uri.scheme?.equals("https", ignoreCase = true) == true
+    return when (val verdict = WebhookGuard.check(url, resolve = resolve)) {
+      is WebhookGuard.Verdict.Blocked -> PinResult.Rejected(BLOCK_MESSAGE)
+      is WebhookGuard.Verdict.Allowed -> {
+        val address = verdict.addresses.firstOrNull() ?: return PinResult.Rejected(BLOCK_MESSAGE)
+        val port = if (uri.port != -1) uri.port else if (https) 443 else 80
+        val rawPath = uri.rawPath.orEmpty().ifEmpty { "/" }
+        val target = if (uri.rawQuery != null) "$rawPath?${uri.rawQuery}" else rawPath
+        PinResult.Pinned(address = address, host = host, port = port, https = https, target = target)
+      }
+    }
+  }
+
   /** Returns a user-facing error string if [url] is an unsafe skill source, or null if it's allowed. */
   fun validate(
     url: String,
     resolve: (String) -> Array<InetAddress> = { InetAddress.getAllByName(it) },
   ): String? =
-    when (WebhookGuard.check(url, resolve = resolve)) {
-      is WebhookGuard.Verdict.Allowed -> null
-      is WebhookGuard.Verdict.Blocked ->
-        "Skill source must be a public https:// URL. Local, private, loopback, link-local, or " +
-          "non-https addresses are blocked (they would let the skill reach internal services)."
+    when (val r = resolvePinned(url, resolve)) {
+      is PinResult.Pinned -> null
+      is PinResult.Rejected -> r.message
     }
 }
