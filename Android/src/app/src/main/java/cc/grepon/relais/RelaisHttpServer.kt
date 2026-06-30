@@ -53,7 +53,6 @@ import java.security.cert.X509Certificate
 import java.util.Calendar
 import java.util.Date
 import java.util.concurrent.Executors
-import java.util.concurrent.Semaphore
 import javax.net.ssl.KeyManagerFactory
 import javax.net.ssl.SSLContext
 import kotlinx.coroutines.runBlocking
@@ -106,6 +105,11 @@ private val IMAGE_GEN_LIMITS = ImageGenLimits(
   supportedSizes = setOf("512x512"),
   defaultSize = "512x512",
 )
+// How long an image-gen request waits for the admission gate to DRAIN (all in-flight decode finishes)
+// before giving up with a 503. Image gen is exclusive (feature #16): it must hold the whole gate so no
+// LLM decode shares GPU memory with it. On an idle node the gate drains instantly; under decode load the
+// request 503s rather than blocking for the multi-minute generate. Tunable without touching policy.
+private const val IMAGE_GEN_EXCLUSIVE_WAIT_MS = 20_000L
 
 /** Fixed-window per-IP rate limiter with stale-entry eviction (bounds the tracking map). */
 private class RateLimiter(private val limit: Int, private val windowMs: Long) {
@@ -162,8 +166,9 @@ class RelaisHttpServer(
   @Volatile private var running = false
   private val apiKey by lazy { RelaisConfig.apiKey(context) }
   private val rateLimiter = RateLimiter(RATE_LIMIT, RATE_WINDOW_MS)
-  // Fair semaphore: FIFO among admitted threads; tryAcquire() is the runtime embodiment of admit().
-  private val admissionGate = Semaphore(QUEUE_CAPACITY, /* fair = */ true)
+  // Heavy-endpoint admission gate. SHARED (1 permit) for normal inference; EXCLUSIVE (all permits) for
+  // image gen, which must run with no concurrent decode. tryAcquireShared() is the embodiment of admit().
+  private val admissionGate = RelaisAdmissionGate(QUEUE_CAPACITY)
 
   fun start() {
     if (running) return
@@ -395,7 +400,7 @@ class RelaisHttpServer(
               )
             } finally {
               RelaisMetrics.recordEndpointLatency("/generate", (System.nanoTime() - inferStartNs) / 1e9)
-              admissionGate.release()
+              admissionGate.releaseShared()
             }
           }
 
@@ -498,12 +503,13 @@ class RelaisHttpServer(
 
                   ImageGenAvailability.READY -> {
                     val gen = requireNotNull(generator) // READY implies a non-null, available generator
-                    // Bound in-flight work via the admission gate (one permit; released in finally so a
-                    // crash never leaks a slot). NOTE: this is a concurrency limiter, NOT exclusion — a
-                    // concurrent LLM decode can still co-occupy memory with image gen. True exclusivity
-                    // (drain the gate) is a #16 follow-up; the on-device eval showed the resident LLM +
-                    // sd.cpp coexist with headroom, but image-gen CONCURRENT with active decode is untested.
-                    if (rejectIfQueueFull(::reply)) return
+                    // Image gen is the heaviest GPU op, so run it EXCLUSIVELY: drain the whole admission
+                    // gate (all permits) so no LLM decode or a 2nd image-gen co-occupies GPU memory with
+                    // it (single-flight + decode-exclusive by construction). If the gate can't drain
+                    // within the wait window (device busy with in-flight decode) this 503s; decode
+                    // requests fast-fail 429 while the lock is held — they never block on the long generate.
+                    // Released in finally so a crash never leaks the lock.
+                    if (acquireImageGenExclusiveOrReject(::reply)) return
                     val inferStartNs = System.nanoTime()
                     try {
                       val req = parsed.request
@@ -521,7 +527,7 @@ class RelaisHttpServer(
                       reply(200, buildImagesResponse(pngs, System.currentTimeMillis() / 1000))
                     } finally {
                       RelaisMetrics.recordEndpointLatency("/v1/images/generations", (System.nanoTime() - inferStartNs) / 1e9)
-                      admissionGate.release()
+                      admissionGate.releaseExclusive()
                     }
                   }
                 }
@@ -700,7 +706,7 @@ class RelaisHttpServer(
               handleOpenAi(sock, JSONObject(readBody(reader, contentLength)), sessionKey)
             } finally {
               RelaisMetrics.recordEndpointLatency("/v1/chat/completions", (System.nanoTime() - inferStartNs) / 1e9)
-              admissionGate.release()
+              admissionGate.releaseShared()
             }
           }
 
@@ -758,15 +764,21 @@ class RelaisHttpServer(
    * Must be called AFTER [shedIfHot] — thermal 503 takes precedence over queue 429.
    */
   private fun rejectIfQueueFull(reply: (Int, JSONObject, List<String>) -> Unit): Boolean {
-    if (admissionGate.tryAcquire()) return false // admitted — caller must release in a finally
-    // Derive depth from the gate's own state: availablePermits()==0 at saturation, so
-    // QUEUE_CAPACITY - 0 == QUEUE_CAPACITY, giving admit(QUEUE_CAPACITY, QUEUE_CAPACITY) -> the
-    // load-scaled Retry-After. Using RelaisMetrics.queueDepth() instead would be decoupled from
-    // the gate and could read below capacity, collapsing to the MIN_RETRY_AFTER floor (bug fix).
-    val depth = QUEUE_CAPACITY - admissionGate.availablePermits()
-    val decision = admit(depth, QUEUE_CAPACITY)
-    val retryAfter = if (decision is AdmissionDecision.Reject) decision.retryAfterSeconds
-                     else MIN_RETRY_AFTER
+    if (admissionGate.tryAcquireShared()) return false // admitted — caller must releaseShared in a finally
+    // Derive depth from the gate's own state: inFlightDepth()==QUEUE_CAPACITY at saturation, giving
+    // admit(QUEUE_CAPACITY, QUEUE_CAPACITY) -> the load-scaled Retry-After. Using
+    // RelaisMetrics.queueDepth() instead would be decoupled from the gate and could read below
+    // capacity, collapsing to the MIN_RETRY_AFTER floor (bug fix).
+    val depth = admissionGate.inFlightDepth()
+    // If image gen holds the gate exclusively, the wait is the multi-minute generate — not ordinary
+    // load — so emit the long Retry-After (else the load-scaled hint reads ~8s and clients hot-loop
+    // ~20 retries across one image). inFlightDepth alone can't tell the two apart (both saturate to 8).
+    val retryAfter = if (admissionGate.isHeldExclusively()) {
+      MAX_RETRY_AFTER
+    } else {
+      val decision = admit(depth, QUEUE_CAPACITY)
+      if (decision is AdmissionDecision.Reject) decision.retryAfterSeconds else MIN_RETRY_AFTER
+    }
     RelaisMetrics.recordQueueReject()
     reply(
       429,
@@ -774,6 +786,29 @@ class RelaisHttpServer(
         .put("error", "admission queue full; retry later")
         .put("code", "queue_full")
         .put("retry_after_seconds", retryAfter),
+      listOf("Retry-After: $retryAfter"),
+    )
+    return true
+  }
+
+  /**
+   * Acquire the admission gate EXCLUSIVELY for image generation (#16): drain ALL permits so the heaviest
+   * GPU op runs with no concurrent LLM decode or 2nd image-gen sharing GPU memory (single-flight +
+   * decode-exclusive by construction). Waits up to [IMAGE_GEN_EXCLUSIVE_WAIT_MS] for in-flight decode to
+   * drain; on success returns false and the caller MUST [RelaisAdmissionGate.releaseExclusive] in a
+   * finally. If the gate can't be drained in time (device busy) it acquires NOTHING, answers 503 +
+   * Retry-After, and returns true. Decode requests are unaffected — they fast-fail 429 (never block) while
+   * the lock is held. Like [rejectIfQueueFull], must be called AFTER [shedIfHot] (thermal 503 wins first).
+   */
+  private fun acquireImageGenExclusiveOrReject(reply: (Int, JSONObject, List<String>) -> Unit): Boolean {
+    if (admissionGate.tryAcquireExclusive(IMAGE_GEN_EXCLUSIVE_WAIT_MS)) return false // caller releaseExclusive in finally
+    // Deliberate reuse of the admission reject counter; the per-status request metric (this 503 on
+    // /v1/images/generations) already separates image-gen contention from queue-full 429s on dashboards.
+    RelaisMetrics.recordQueueReject()
+    val retryAfter = MAX_RETRY_AFTER + (0..4).random() // a multi-minute op; ask the client to wait a while
+    reply(
+      503,
+      buildImagesError("node busy; image generation needs exclusive device access — retry shortly", "service_unavailable"),
       listOf("Retry-After: $retryAfter"),
     )
     return true
