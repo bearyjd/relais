@@ -23,7 +23,9 @@ import cc.grepon.relais.data.RelaisModelRef
 import cc.grepon.relais.embed.EmbeddingGemmaEmbedder
 import cc.grepon.relais.embed.EmbeddingTask
 import cc.grepon.relais.embed.RelaisEmbedderProvider
+import cc.grepon.relais.imagegen.ImageGenAvailability
 import cc.grepon.relais.imagegen.RelaisImageGeneratorProvider
+import cc.grepon.relais.imagegen.imageGenAvailability
 import cc.grepon.relais.batch.WebhookGuard
 import cc.grepon.relais.data.BatchJob
 import cc.grepon.relais.data.BatchStatus
@@ -476,35 +478,53 @@ class RelaisHttpServer(
                 reply(400, buildImagesError(parsed.message, "invalid_request_error"))
               is ImageRequestResult.Valid -> {
                 val generator = RelaisImageGeneratorProvider.get()
-                if (generator == null || !generator.isAvailable(context)) {
-                  // Honest 501: no backend yet. When an image-gen provisioner lands (#16 follow-up),
-                  // this gains a 503 + Retry-After background-provisioning branch, mirroring how the
-                  // embeddings route 503s while EmbeddingGemma downloads.
-                  reply(501, buildImagesError("image generation model not provisioned", "not_implemented"))
-                } else {
-                  // Single-flight via the admission gate (image gen would otherwise OOM/overheat if it
-                  // ran concurrently with LLM decode). Release in finally so a crash never leaks a slot.
-                  if (rejectIfQueueFull(::reply)) return
-                  val inferStartNs = System.nanoTime()
-                  try {
-                    val req = parsed.request
-                    val pngs = ArrayList<ByteArray>(req.n)
-                    // Thermal-cancellation seam, like /generate (RelaisEngine.generate shouldCancel).
-                    // TODO(#16 backend): the 200 response materializes up to maxImages base64 PNGs in
-                    // memory with no explicit output-size cap — add one (or stream) when a real
-                    // generator registers; harmless today (this path is unreachable while 501).
-                    repeat(req.n) {
-                      pngs.add(
-                        generator.generate(
-                          context, req.prompt, req.steps, req.seed,
-                          shouldCancel = { ThermalGovernor.shouldTruncate() },
+                when (
+                  imageGenAvailability(
+                    hasGenerator = generator != null,
+                    isAvailable = generator?.isAvailable(context) == true,
+                    canProvision = generator?.canProvision(context) == true,
+                  )
+                ) {
+                  ImageGenAvailability.UNAVAILABLE ->
+                    // No backend registered (degoogled / not yet) or a GPU-less / nothing-to-provision
+                    // backend → honest 501, exactly how /v1/embeddings shipped before #6's impl.
+                    reply(501, buildImagesError("image generation model not provisioned", "not_implemented"))
+
+                  ImageGenAvailability.PROVISIONING -> {
+                    // Mirror /v1/embeddings: kick a one-time background download + tell the client to
+                    // retry, so the request thread never blocks on the multi-GB model fetch.
+                    generator?.ensureProvisioningStarted(context)
+                    reply(
+                      503,
+                      buildImagesError("image generation model is provisioning; retry shortly", "service_unavailable"),
+                      listOf("Retry-After: 30"),
+                    )
+                  }
+
+                  ImageGenAvailability.READY -> {
+                    val gen = requireNotNull(generator) // READY implies a non-null, available generator
+                    // Single-flight via the admission gate (image gen would otherwise OOM/overheat if it
+                    // ran concurrently with LLM decode). Release in finally so a crash never leaks a slot.
+                    if (rejectIfQueueFull(::reply)) return
+                    val inferStartNs = System.nanoTime()
+                    try {
+                      val req = parsed.request
+                      // n is capped at IMAGE_GEN_LIMITS (≤2), so the base64 PNGs held here are bounded.
+                      val pngs = ArrayList<ByteArray>(req.n)
+                      // Thermal-cancellation seam, like /generate (RelaisEngine.generate shouldCancel).
+                      repeat(req.n) {
+                        pngs.add(
+                          gen.generate(
+                            context, req.prompt, req.steps, req.seed,
+                            shouldCancel = { ThermalGovernor.shouldTruncate() },
+                          )
                         )
-                      )
+                      }
+                      reply(200, buildImagesResponse(pngs, System.currentTimeMillis() / 1000))
+                    } finally {
+                      RelaisMetrics.recordEndpointLatency("/v1/images/generations", (System.nanoTime() - inferStartNs) / 1e9)
+                      admissionGate.release()
                     }
-                    reply(200, buildImagesResponse(pngs, System.currentTimeMillis() / 1000))
-                  } finally {
-                    RelaisMetrics.recordEndpointLatency("/v1/images/generations", (System.nanoTime() - inferStartNs) / 1e9)
-                    admissionGate.release()
                   }
                 }
               }

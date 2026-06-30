@@ -31,6 +31,20 @@ interface RelaisImageGenerator {
   fun isAvailable(context: Context): Boolean
 
   /**
+   * True iff the backend is otherwise ready (GPU present) but the model just isn't on disk yet, so a
+   * background provision would make it available — mirrors the embedder's `canProvision`. Drives the
+   * endpoint's 503-while-provisioning branch vs a permanent 501. Default false (no provisioner).
+   */
+  fun canProvision(context: Context): Boolean = false
+
+  /**
+   * Kick a one-time background download/verify of the selected model (idempotent; non-blocking). Called
+   * by the route when [canProvision] is true so the request thread never blocks on the multi-GB fetch —
+   * mirrors `EmbeddingGemmaEmbedder.ensureProvisioningStarted`. Default no-op.
+   */
+  fun ensureProvisioningStarted(context: Context) {}
+
+  /**
    * Generates ONE image for [prompt] and returns it as PNG bytes. [steps] is the diffusion iteration
    * count (quality/time knob); [seed] is optional (null → impl picks one). Blocking and heavy (the
    * heaviest decode on the device — ~60–90 s/image for sd.cpp on a Tensor GPU) — call off-main,
@@ -67,3 +81,26 @@ object RelaisImageGeneratorProvider {
   /** The registered generator, or null if none. Callers still check [RelaisImageGenerator.isAvailable]. */
   fun get(): RelaisImageGenerator? = impl
 }
+
+/** What `POST /v1/images/generations` should do, given the registered generator's state. */
+enum class ImageGenAvailability {
+  /** A backend is registered + ready → generate (200). */
+  READY,
+  /** Ready-but-unprovisioned → kick a background download + reply 503 Retry-After. */
+  PROVISIONING,
+  /** No backend, or a backend with no GPU / nothing to provision → honest 501. */
+  UNAVAILABLE,
+}
+
+/**
+ * Pure routing decision for the images endpoint (mirrors the embeddings 501/503/200 gate). Kept here,
+ * Context-free, so it is unit-testable without a device: the route reads the three booleans off the
+ * registered [RelaisImageGenerator] and acts on the result.
+ */
+fun imageGenAvailability(hasGenerator: Boolean, isAvailable: Boolean, canProvision: Boolean): ImageGenAvailability =
+  when {
+    !hasGenerator -> ImageGenAvailability.UNAVAILABLE
+    isAvailable -> ImageGenAvailability.READY
+    canProvision -> ImageGenAvailability.PROVISIONING
+    else -> ImageGenAvailability.UNAVAILABLE
+  }

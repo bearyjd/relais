@@ -90,6 +90,10 @@ class RelaisNodeService : Service() {
         // 503; on a fresh node it no-ops, and the endpoint provisions on the first embeddings request.
         cc.grepon.relais.embed.EmbeddingGemmaEmbedder.register()
         cc.grepon.relais.embed.EmbeddingGemmaEmbedder.INSTANCE.warmIfProvisioned(applicationContext)
+        // Image-gen (#16): register the flavor's RelaisImageGenerator — full = sd.cpp/Vulkan via the
+        // process-isolated :imagegen service; degoogled = no-op (endpoint stays 501). Cheap (no load);
+        // the route gates on isAvailable (Vulkan + provisioned) and provisions on demand via 503.
+        cc.grepon.relais.imagegen.ImageGenRegistration.register(applicationContext)
         // Security C1: plaintext HTTP is loopback-only (in-device app/dev); the LAN is served only
         // over HTTPS, so the bearer key never crosses the network in cleartext.
         httpServer = RelaisHttpServer(applicationContext, port = 8080, bindAddr = "127.0.0.1").also { it.start() }
