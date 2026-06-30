@@ -22,6 +22,7 @@ import android.util.Log
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
 import cc.grepon.relais.data.RelaisModelRef
+import cc.grepon.relais.imagegen.DEFAULT_IMAGE_MODEL_ID
 import java.util.UUID
 
 /** Node config: API key for the LAN endpoint and the opt-in boot auto-start flag. */
@@ -36,6 +37,9 @@ object RelaisConfig {
   private const val KEY_MODEL_REF = "model_ref"
   private const val KEY_HF_TOKEN = "hf_token"
   private const val KEY_MODEL_PATH = "model_path"
+  private const val KEY_IMAGE_MODEL_ID = "image_model_id"
+  private const val KEY_IMAGE_MODEL_URL = "image_model_url"
+  private const val KEY_IMAGE_MODEL_SHA = "image_model_sha"
   private const val KEY_TLS_PASS = "tls_keystore_pass"
   private const val KEY_RESTARTS = "restarts_total"
   private const val KEY_SHED_HEADROOM = "shed_headroom"
@@ -193,6 +197,34 @@ object RelaisConfig {
       if (refId != null && refId != value) edit.remove(KEY_MODEL_REF)
     }
     edit.apply()
+  }
+
+  /** Selected image-gen model id (image-gen #16); defaults to the SD-Turbo [DEFAULT_IMAGE_MODEL_ID]. */
+  fun imageModelId(context: Context): String =
+    prefs(context).getString(KEY_IMAGE_MODEL_ID, null) ?: DEFAULT_IMAGE_MODEL_ID
+
+  fun setImageModelId(context: Context, value: String) {
+    prefs(context).edit().putString(KEY_IMAGE_MODEL_ID, value).apply()
+  }
+
+  /** Operator override URL for the `custom` image model (a self-hosted sd.cpp gguf), or null. */
+  fun imageModelUrl(context: Context): String? =
+    prefs(context).getString(KEY_IMAGE_MODEL_URL, null)?.takeIf { it.isNotBlank() }
+
+  fun setImageModelUrl(context: Context, value: String?) {
+    prefs(context).edit()
+      .apply { if (value.isNullOrBlank()) remove(KEY_IMAGE_MODEL_URL) else putString(KEY_IMAGE_MODEL_URL, value) }
+      .apply()
+  }
+
+  /** Optional SHA-256 to pin the `custom` image model, or null (no integrity check on a custom URL). */
+  fun imageModelSha(context: Context): String? =
+    prefs(context).getString(KEY_IMAGE_MODEL_SHA, null)?.takeIf { it.isNotBlank() }
+
+  fun setImageModelSha(context: Context, value: String?) {
+    prefs(context).edit()
+      .apply { if (value.isNullOrBlank()) remove(KEY_IMAGE_MODEL_SHA) else putString(KEY_IMAGE_MODEL_SHA, value) }
+      .apply()
   }
 
   /**
