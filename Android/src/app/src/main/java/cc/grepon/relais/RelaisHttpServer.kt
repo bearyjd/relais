@@ -25,7 +25,6 @@ import cc.grepon.relais.embed.EmbeddingTask
 import cc.grepon.relais.embed.RelaisEmbedderProvider
 import cc.grepon.relais.imagegen.ImageGenAvailability
 import cc.grepon.relais.imagegen.RelaisImageGeneratorProvider
-import cc.grepon.relais.imagegen.imageGenAvailability
 import cc.grepon.relais.batch.WebhookGuard
 import cc.grepon.relais.data.BatchJob
 import cc.grepon.relais.data.BatchStatus
@@ -100,7 +99,7 @@ private const val BATCH_MAX_QUEUED = 256
 // sd.cpp, is ~60-90 s/image — see docs/images-generations-api.md), so cap the batch tightly and the
 // step count to bound wall-clock + heat. v1 supports a single narrow 512x512 size (no upscale).
 private val IMAGE_GEN_LIMITS = ImageGenLimits(
-  maxImages = 4,
+  maxImages = 2, // D3: n<=2 — each image is a fresh ~60-90 s process; bound wall-clock + heat per request
   defaultSteps = 20,
   minSteps = 1,
   maxSteps = 50,
@@ -478,13 +477,9 @@ class RelaisHttpServer(
                 reply(400, buildImagesError(parsed.message, "invalid_request_error"))
               is ImageRequestResult.Valid -> {
                 val generator = RelaisImageGeneratorProvider.get()
-                when (
-                  imageGenAvailability(
-                    hasGenerator = generator != null,
-                    isAvailable = generator?.isAvailable(context) == true,
-                    canProvision = generator?.canProvision(context) == true,
-                  )
-                ) {
+                // Single snapshot (the full impl computes it atomically) so a provision completing
+                // mid-request can't yield a spurious 501; a null provider (degoogled/unregistered) → 501.
+                when (generator?.availability(context) ?: ImageGenAvailability.UNAVAILABLE) {
                   ImageGenAvailability.UNAVAILABLE ->
                     // No backend registered (degoogled / not yet) or a GPU-less / nothing-to-provision
                     // backend → honest 501, exactly how /v1/embeddings shipped before #6's impl.

@@ -45,6 +45,15 @@ interface RelaisImageGenerator {
   fun ensureProvisioningStarted(context: Context) {}
 
   /**
+   * The route's 501/503/200 decision for THIS generator, computed in a single call so a provision
+   * completing between separate [isAvailable]/[canProvision] reads can't produce a spurious 501 (TOCTOU).
+   * The default composes the two booleans via [imageGenAvailability]; a concrete impl should override it
+   * to read ONE consistent snapshot (one Vulkan + one provisioned check).
+   */
+  fun availability(context: Context): ImageGenAvailability =
+    imageGenAvailability(hasGenerator = true, isAvailable = isAvailable(context), canProvision = canProvision(context))
+
+  /**
    * Generates ONE image for [prompt] and returns it as PNG bytes. [steps] is the diffusion iteration
    * count (quality/time knob); [seed] is optional (null → impl picks one). Blocking and heavy (the
    * heaviest decode on the device — ~60–90 s/image for sd.cpp on a Tensor GPU) — call off-main,
