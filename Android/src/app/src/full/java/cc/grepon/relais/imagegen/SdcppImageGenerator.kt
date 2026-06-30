@@ -142,7 +142,7 @@ object SdcppImageGenerator : RelaisImageGenerator {
    * Binds [ImageGenService], dispatches ONE generate, waits (watchdog + thermal cancel), reads + deletes
    * the PNG, and ALWAYS hard-kills the `:imagegen` pid + unbinds in `finally`. The service acks its pid up
    * front ([ImageGenIpc.MSG_STARTED]) so the kill works on EVERY exit — reply, timeout, thermal-cancel, or
-   * native hang — making the node (not just the service's 300 s self-kill) the primary reclaimer, so the
+   * native hang — making the node (not just the service's own hang-guard self-kill) the primary reclaimer, so the
    * next image always gets a fresh process. Connection callbacks + replies land on a private
    * [HandlerThread], so the off-main wait never depends on the main looper being idle.
    */
