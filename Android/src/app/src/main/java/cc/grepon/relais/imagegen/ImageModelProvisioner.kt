@@ -91,6 +91,10 @@ object ImageModelProvisioner {
         tmp.delete()
         throw IllegalStateException("SHA-256 mismatch for ${model.fileName}: got $actual, expected ${model.sha256}")
       }
+    } else if (model.sizeBytes <= 0) {
+      // A custom URL with neither a pinned size nor SHA: the server Content-Length check above is the
+      // only guard. Flag it so an operator knows the artifact is unverified (and can pin a SHA).
+      Log.w(TAG, "provisioned ${model.fileName} with no pinned size or SHA — integrity unverified (custom URL)")
     }
     if (!tmp.renameTo(target)) {
       tmp.delete()
@@ -125,6 +129,7 @@ object ImageModelProvisioner {
    * never forwarded to the CDN. Identical posture to the embedder's provisioner.
    */
   private fun streamTo(url: String, target: File, token: String?, expectedBytes: Long, onProgress: (Int) -> Unit) {
+    val originalHost = URL(url).host
     var current = url
     var sendAuth = token != null
     var hops = 0
@@ -143,7 +148,9 @@ object ImageModelProvisioner {
             ?: throw IllegalStateException("redirect ($code) with no Location for $target")
           if (++hops > MAX_REDIRECTS) throw IllegalStateException("too many redirects fetching $target")
           val nextHost = URL(URL(current), location).host
-          sendAuth = token != null && nextHost.equals(URL(current).host, ignoreCase = true)
+          // One-way drop: once auth is dropped on a cross-host hop it never comes back, even on a
+          // later same-host CDN→CDN redirect. Compare to the ORIGINAL host, not the previous hop.
+          sendAuth = sendAuth && token != null && nextHost.equals(originalHost, ignoreCase = true)
           current = URL(URL(current), location).toString()
           continue
         }
@@ -151,11 +158,11 @@ object ImageModelProvisioner {
           throw IllegalStateException("HTTP $code fetching $target")
         }
         val contentLen = if (expectedBytes > 0) expectedBytes else conn.contentLengthLong
+        var written = 0L
         conn.inputStream.buffered().use { input ->
           target.outputStream().buffered().use { output ->
             val buf = ByteArray(64 * 1024)
             var read: Int
-            var written = 0L
             var lastPct = -1
             while (input.read(buf).also { read = it } != -1) {
               output.write(buf, 0, read)
@@ -169,6 +176,11 @@ object ImageModelProvisioner {
               }
             }
           }
+        }
+        // Enforce the server-declared length on EVERY path (incl. a custom URL with no pinned size):
+        // a clean early-EOF mid-body otherwise looks like a successful download.
+        if (contentLen > 0 && written != contentLen) {
+          throw IllegalStateException("download of $target truncated: $written != $contentLen")
         }
         onProgress(100)
         return

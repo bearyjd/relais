@@ -57,9 +57,24 @@ class ImageModelTest {
     assertEquals("b.gguf", m.fileName)
   }
 
-  @Test fun `turbo url targets the self-host resolve path`() {
+  @Test fun `custom filename strips a fragment`() {
+    val m = requireNotNull(imageModelById("custom", customUrl = "https://h.example/x.gguf#frag"))
+    assertEquals("x.gguf", m.fileName)
+  }
+
+  @Test fun `custom url ending in slash falls back to a safe filename`() {
+    val m = requireNotNull(imageModelById("custom", customUrl = "https://h.example/models/"))
+    assertEquals("custom.gguf", m.fileName)
+  }
+
+  @Test fun `custom rejects a non-http scheme`() {
+    assertNull(imageModelById("custom", customUrl = "file:///etc/passwd"))
+    assertNull(imageModelById("custom", customUrl = "ftp://h.example/x.gguf"))
+  }
+
+  @Test fun `turbo url targets the public sd_cpp gguf repo`() {
     assertEquals(
-      "https://huggingface.co/dispense1301/relais-imagegen/resolve/main/sdturbo.gguf",
+      "https://huggingface.co/Green-Sky/SD-Turbo-GGUF/resolve/main/sd_turbo-f16-q8_0.gguf",
       IMAGE_MODEL_TURBO.url,
     )
   }
@@ -71,9 +86,10 @@ class ImageModelTest {
     assertEquals(7f, IMAGE_MODEL_SD15.cfg, 0f)
   }
 
-  @Test fun `every built-in model is SHA-pinned with a positive size`() {
+  @Test fun `every built-in model is SHA-pinned (64 lowercase hex) with a positive size`() {
+    val hex = Regex("[0-9a-f]{64}")
     for (m in IMAGE_MODELS) {
-      assertEquals("64-hex SHA-256 for ${m.id}", 64, m.sha256.length)
+      assertTrue("64-hex SHA-256 for ${m.id}: ${m.sha256}", m.sha256.matches(hex))
       assertTrue("positive size for ${m.id}", m.sizeBytes > 0)
     }
   }
