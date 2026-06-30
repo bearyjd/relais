@@ -498,8 +498,11 @@ class RelaisHttpServer(
 
                   ImageGenAvailability.READY -> {
                     val gen = requireNotNull(generator) // READY implies a non-null, available generator
-                    // Single-flight via the admission gate (image gen would otherwise OOM/overheat if it
-                    // ran concurrently with LLM decode). Release in finally so a crash never leaks a slot.
+                    // Bound in-flight work via the admission gate (one permit; released in finally so a
+                    // crash never leaks a slot). NOTE: this is a concurrency limiter, NOT exclusion — a
+                    // concurrent LLM decode can still co-occupy memory with image gen. True exclusivity
+                    // (drain the gate) is a #16 follow-up; the on-device eval showed the resident LLM +
+                    // sd.cpp coexist with headroom, but image-gen CONCURRENT with active decode is untested.
                     if (rejectIfQueueFull(::reply)) return
                     val inferStartNs = System.nanoTime()
                     try {
