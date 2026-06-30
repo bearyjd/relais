@@ -41,6 +41,12 @@ object ImageGenIpc {
   const val MSG_RESULT = 2
   /** service → node: generation failed; reply carries [KEY_ERROR] + [KEY_PID]. */
   const val MSG_ERROR = 3
+  /**
+   * service → node: job ACCEPTED — reply carries [KEY_PID] only, sent BEFORE the (long, uncancellable)
+   * generate begins. This hands the node the pid up front so it can hard-kill the `:imagegen` process on
+   * a no-reply path (watchdog timeout / thermal cancel / native hang), not just on a normal reply.
+   */
+  const val MSG_STARTED = 4
 
   // ---- request bundle keys (node → service) ----
   /** Absolute path to the local GGUF model file; opened via `ModelSpec.localFile`. Required. */

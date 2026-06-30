@@ -100,6 +100,11 @@ class ImageGenService : Service() {
       return true
     }
 
+    // Hand the node our pid BEFORE the (long, uncancellable) generate, so it can hard-kill this process
+    // on any no-reply path (watchdog timeout / thermal cancel / native hang), fulfilling its role as the
+    // primary reclaimer. [reply] always stamps KEY_PID.
+    reply(replyTo, ImageGenIpc.MSG_STARTED)
+
     // Hang-guard: arm a wall-clock self-kill the moment the job is accepted. A native load that wedges
     // can't be cancelled cooperatively from Kotlin (the coroutine never reaches a suspension point), so
     // only an unconditional timer guarantees reclamation. Normal completion replaces this with the
@@ -218,9 +223,9 @@ class ImageGenService : Service() {
   private companion object {
     const val TAG = "ImageGenService"
     const val SELF_KILL_DELAY_MS = 2_000L
-    // Wall-clock backstop for a wedged native load. Generous (well above the ~90 s SD-Turbo / ~180 s
-    // SD-1.5 realistic single-generate ceiling) — this catches a true hang, not a slow-but-progressing
-    // decode. The node's tighter watchdog (PR-C) is the normal-operation timeout.
-    const val HANG_GUARD_MS = 300_000L
+    // Wall-clock backstop for a wedged native load. Above the node's 720 s watchdog (PR-C) so the node
+    // reclaims first; generous because a COLD Tensor-GPU generate is ~5–6 min (UNet + tiled VAE) — this
+    // catches a true hang, not a slow-but-progressing decode.
+    const val HANG_GUARD_MS = 780_000L
   }
 }
