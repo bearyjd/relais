@@ -62,9 +62,9 @@ class SkillHttpTest {
     assertEquals(SkillHttp.Outcome.Ok(body), outcome)
   }
 
-  @Test fun `3xx is refused as Redirected with the Location`() {
+  @Test fun `3xx is refused as Redirected with the code and Location`() {
     val (outcome, _) = run("HTTP/1.1 302 Found\r\nLocation: https://evil.example/x\r\nContent-Length: 0\r\n\r\n")
-    assertEquals(SkillHttp.Outcome.Redirected("https://evil.example/x"), outcome)
+    assertEquals(SkillHttp.Outcome.Redirected(302, "https://evil.example/x"), outcome)
   }
 
   @Test fun `non-2xx is an HttpError with the code`() {
@@ -91,5 +91,65 @@ class SkillHttpTest {
     val body = "ok"
     val (outcome, _) = run("HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\n$body")
     assertEquals(SkillHttp.Outcome.Ok(body), outcome)
+  }
+
+  @Test fun `content-length zero yields an empty body (drives the empty-skill path)`() {
+    val (outcome, _) = run("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+    assertEquals(SkillHttp.Outcome.Ok(""), outcome)
+  }
+
+  @Test fun `negative content-length is Malformed not a thrown exception`() {
+    val (outcome, _) = run("HTTP/1.1 200 OK\r\nContent-Length: -5\r\n\r\nxxxxx")
+    assertTrue("$outcome", outcome is SkillHttp.Outcome.Malformed)
+  }
+
+  @Test fun `chunked size near Int_MAX cannot overflow the cap - returns TooLarge`() {
+    // out.size()=1 after the first chunk, then a ~2GB chunk size. An Int add would overflow negative
+    // and skip the cap; the Long comparison must catch it as TooLarge BEFORE any allocation.
+    val response = "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n" +
+      "1\r\nX\r\n" +
+      "7fffffff\r\n" // never sends the 2GB body; the cap check fires first
+    val (outcome, _) = run(response, maxBytes = 1024)
+    assertEquals(SkillHttp.Outcome.TooLarge, outcome)
+  }
+
+  @Test fun `over-long chunk-size line is Malformed not an OOM`() {
+    val response = "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n" + "a".repeat(500) // no newline ever
+    val (outcome, _) = run(response)
+    assertTrue("$outcome", outcome is SkillHttp.Outcome.Malformed)
+  }
+
+  @Test fun `non-hex chunk size is Malformed (not mislabeled TooLarge)`() {
+    val response = "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n" + "zz\r\nXX\r\n0\r\n\r\n"
+    val (outcome, _) = run(response)
+    assertTrue("$outcome", outcome is SkillHttp.Outcome.Malformed)
+  }
+
+  @Test fun `oversized header block with no terminator is Malformed not an OOM`() {
+    val response = "HTTP/1.1 200 OK\r\nX-Pad: " + "a".repeat(70_000) // exceeds the 64KB header bound, no CRLFCRLF
+    val (outcome, _) = run(response)
+    assertTrue("$outcome", outcome is SkillHttp.Outcome.Malformed)
+  }
+
+  @Test fun `body delivered one byte at a time is fully assembled`() {
+    val body = "drip-fed body"
+    val response = "HTTP/1.1 200 OK\r\nContent-Length: ${body.toByteArray().size}\r\n\r\n$body"
+    val out = ByteArrayOutputStream()
+    val throttled = OneByteAtATime(response.toByteArray(Charsets.ISO_8859_1))
+    val outcome = SkillHttp.fetch("example.com", "/SKILL.md", out, throttled)
+    assertEquals(SkillHttp.Outcome.Ok(body), outcome)
+  }
+
+  /** An InputStream that hands back at most one byte per read() — exercises the partial-read loops. */
+  private class OneByteAtATime(private val data: ByteArray) : java.io.InputStream() {
+    private var pos = 0
+    override fun read(): Int = if (pos < data.size) data[pos++].toInt() and 0xFF else -1
+    override fun read(b: ByteArray, off: Int, len: Int): Int {
+      if (len == 0) return 0
+      val c = read()
+      if (c == -1) return -1
+      b[off] = c.toByte()
+      return 1
+    }
   }
 }

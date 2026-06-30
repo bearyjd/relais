@@ -88,6 +88,11 @@ class SkillUrlPinTest {
     assertEquals("/s/SKILL.md?ref=main", p.target)
   }
 
+  @Test fun `malformed url is rejected (URI parse fails closed)`() {
+    val r = SkillUrlPolicy.resolvePinned("ht!tp://not a url", resolve = resolvesTo("93.184.216.34"))
+    assertEquals(SkillUrlPolicy.PinResult.Rejected(SkillUrlPolicy.BLOCK_MESSAGE), r)
+  }
+
   @Test fun `validate stays consistent with resolvePinned`() {
     assertEquals(null, SkillUrlPolicy.validate("https://example.com/SKILL.md", resolve = resolvesTo("93.184.216.34")))
     assertEquals(

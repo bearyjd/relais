@@ -37,6 +37,10 @@ import javax.net.ssl.SSLSocketFactory
  * [cc.grepon.relais.batch.WebhookDelivery] (which does the same for the signed-webhook POST); the
  * socket/TLS pinning block is intentionally kept in sync with it. The HTTP exchange itself lives in the
  * pure, JVM-tested [SkillHttp].
+ *
+ * Scope: this pins the `SKILL.md` fetch only. A skill's later script/asset loads run in a WebView that
+ * re-resolves DNS at run time, so those are NOT pinned — a separate, pre-existing residual, out of
+ * scope here.
  */
 object SkillSourceFetcher {
 
@@ -79,6 +83,8 @@ object SkillSourceFetcher {
           val ssl = (SSLSocketFactory.getDefault() as SSLSocketFactory)
             .createSocket(raw, pin.host, pin.port, true) as SSLSocket
           ssl.startHandshake()
+          // On Android getDefaultHostnameVerifier() is OkHostnameVerifier (real RFC-2818 SAN/CN
+          // matching); on a plain JVM it is a no-op returning false — this shell only runs on Android.
           if (!HttpsURLConnection.getDefaultHostnameVerifier().verify(pin.host, ssl.session)) {
             Log.w(TAG, "skill source TLS hostname verification failed for ${pin.host}")
             return FetchResult.Failure(SkillUrlPolicy.BLOCK_MESSAGE)
@@ -100,7 +106,7 @@ object SkillSourceFetcher {
     when (outcome) {
       is SkillHttp.Outcome.Ok -> FetchResult.Success(outcome.body)
       is SkillHttp.Outcome.Redirected ->
-        FetchResult.Failure("Skill URL redirected (HTTP 3xx); redirects aren't allowed for skill sources.")
+        FetchResult.Failure("Skill URL redirected (HTTP ${outcome.code}); redirects aren't allowed for skill sources.")
       is SkillHttp.Outcome.HttpError -> FetchResult.Failure("Failed to fetch SKILL.md: HTTP ${outcome.code}")
       SkillHttp.Outcome.TooLarge ->
         FetchResult.Failure("SKILL.md is too large (max ${SkillHttp.MAX_BODY_BYTES / 1024} KB).")

@@ -30,8 +30,9 @@ import java.io.OutputStream
  * Deliberately small: it sends `Connection: close`, refuses 3xx (a redirect could retarget an
  * already-vetted fetch at an internal host — same stance as the old `instanceFollowRedirects=false`),
  * honors `Content-Length` / `Transfer-Encoding: chunked` / close-delimited bodies, and bounds the body
- * to [MAX_BODY_BYTES] so a hostile-but-cert-valid host can't stream unbounded bytes into memory. Skill
- * sources are small Markdown manifests, so this does not need a general HTTP client.
+ * to [maxBytes] (and the header block + each chunk-size line) so a hostile-but-cert-valid host can't
+ * stream unbounded bytes into memory. Skill sources are small Markdown manifests, so this does not need
+ * a general HTTP client.
  */
 object SkillHttp {
 
@@ -41,14 +42,17 @@ object SkillHttp {
   /** Bound on the header block so a host that never terminates headers can't grow the buffer. */
   private const val MAX_HEADER_BYTES: Int = 64 * 1024
 
+  /** Bound on a single CRLF-delimited line (chunk size + extensions): tiny in practice, so cap small. */
+  private const val MAX_LINE_BYTES: Int = 256
+
   sealed interface Outcome {
     /** 2xx with a decoded UTF-8 [body]. */
     data class Ok(val body: String) : Outcome
-    /** A 3xx was returned; refused. [location] is the `Location` header if present. */
-    data class Redirected(val location: String?) : Outcome
+    /** A 3xx [code] was returned; refused. [location] is the `Location` header if present. */
+    data class Redirected(val code: Int, val location: String?) : Outcome
     /** A non-2xx, non-3xx status [code]. */
     data class HttpError(val code: Int) : Outcome
-    /** The body exceeded [MAX_BODY_BYTES] (or headers exceeded their bound). */
+    /** The body exceeded [maxBytes] (or headers exceeded their bound). */
     data object TooLarge : Outcome
     /** The response could not be parsed as HTTP/1.1. */
     data class Malformed(val detail: String) : Outcome
@@ -77,8 +81,7 @@ object SkillHttp {
     output.write(request.toByteArray(Charsets.US_ASCII))
     output.flush()
 
-    val header = readHeaderBlock(input) ?: return Outcome.Malformed("no header terminator")
-    val (headerBytes, leftover) = header
+    val headerBytes = readHeaderBlock(input) ?: return Outcome.Malformed("no header terminator")
     val lines = String(headerBytes, Charsets.ISO_8859_1).split("\r\n")
     val statusLine = lines.firstOrNull() ?: return Outcome.Malformed("empty status line")
     val code = statusLine.split(' ').getOrNull(1)?.toIntOrNull()
@@ -93,26 +96,31 @@ object SkillHttp {
       .toMap()
 
     when (code) {
-      in 300..399 -> return Outcome.Redirected(headers["location"])
+      in 300..399 -> return Outcome.Redirected(code, headers["location"])
       !in 200..299 -> return Outcome.HttpError(code)
     }
 
+    val contentLength = headers["content-length"]?.trim()?.toIntOrNull()
     val bodyBytes =
       when {
         headers["transfer-encoding"]?.lowercase()?.contains("chunked") == true ->
-          readChunked(leftover, input, maxBytes) ?: return Outcome.TooLarge
-        headers["content-length"]?.trim()?.toIntOrNull() != null -> {
-          val len = headers["content-length"]!!.trim().toInt()
-          if (len > maxBytes) return Outcome.TooLarge
-          readFixed(leftover, input, len)
+          when (val chunked = readChunked(input, maxBytes)) {
+            ChunkResult.TooLarge -> return Outcome.TooLarge
+            ChunkResult.Malformed -> return Outcome.Malformed("malformed chunked body")
+            is ChunkResult.Body -> chunked.bytes
+          }
+        contentLength != null -> {
+          if (contentLength < 0) return Outcome.Malformed("negative content-length")
+          if (contentLength > maxBytes) return Outcome.TooLarge
+          readFixed(input, contentLength)
         }
-        else -> readToEnd(leftover, input, maxBytes) ?: return Outcome.TooLarge
+        else -> readToEnd(input, maxBytes) ?: return Outcome.TooLarge
       }
     return Outcome.Ok(String(bodyBytes, Charsets.UTF_8))
   }
 
-  /** Reads up to and including the first CRLFCRLF; returns (headerBytesWithoutTerminator, bytesAfter). */
-  private fun readHeaderBlock(input: InputStream): Pair<ByteArray, ByteArray>? {
+  /** Reads up to and including the first CRLFCRLF; returns the header bytes (without the terminator). */
+  private fun readHeaderBlock(input: InputStream): ByteArray? {
     val buf = ByteArrayOutputStream()
     var matched = 0 // how many of \r\n\r\n we've matched
     while (buf.size() < MAX_HEADER_BYTES) {
@@ -127,18 +135,16 @@ object SkillHttp {
         }
       if (matched == 4) {
         val all = buf.toByteArray()
-        val headerBytes = all.copyOfRange(0, all.size - 4) // drop the CRLFCRLF
-        return headerBytes to ByteArray(0)
+        return all.copyOfRange(0, all.size - 4) // drop the CRLFCRLF
       }
     }
     return null
   }
 
-  /** Reads exactly [len] body bytes, starting from [leftover] (bytes already pulled past the headers). */
-  private fun readFixed(leftover: ByteArray, input: InputStream, len: Int): ByteArray {
+  /** Reads exactly [len] body bytes (the header terminator is consumed, so the body starts fresh). */
+  private fun readFixed(input: InputStream, len: Int): ByteArray {
     val out = ByteArrayOutputStream(len)
-    out.write(leftover, 0, minOf(leftover.size, len))
-    var remaining = len - out.size()
+    var remaining = len
     val tmp = ByteArray(8 * 1024)
     while (remaining > 0) {
       val r = input.read(tmp, 0, minOf(tmp.size, remaining))
@@ -150,10 +156,8 @@ object SkillHttp {
   }
 
   /** Reads a close-delimited body (no length/chunking) to EOF, bounded; null if it exceeds [maxBytes]. */
-  private fun readToEnd(leftover: ByteArray, input: InputStream, maxBytes: Int): ByteArray? {
+  private fun readToEnd(input: InputStream, maxBytes: Int): ByteArray? {
     val out = ByteArrayOutputStream()
-    out.write(leftover, 0, leftover.size)
-    if (out.size() > maxBytes) return null
     val tmp = ByteArray(8 * 1024)
     while (true) {
       val r = input.read(tmp)
@@ -164,46 +168,46 @@ object SkillHttp {
     return out.toByteArray()
   }
 
-  /** De-chunks a `Transfer-Encoding: chunked` body, bounded; null if it exceeds [maxBytes]. */
-  private fun readChunked(leftover: ByteArray, input: InputStream, maxBytes: Int): ByteArray? {
-    val stream = SequencePushback(leftover, input)
+  /** Result of de-chunking: the body, or a typed failure (so the caller doesn't conflate the two). */
+  private sealed interface ChunkResult {
+    data class Body(val bytes: ByteArray) : ChunkResult
+    data object TooLarge : ChunkResult
+    data object Malformed : ChunkResult
+  }
+
+  /** De-chunks a `Transfer-Encoding: chunked` body, bounded to [maxBytes]. Overflow-safe + line-bounded. */
+  private fun readChunked(input: InputStream, maxBytes: Int): ChunkResult {
     val out = ByteArrayOutputStream()
     while (true) {
-      val sizeLine = readLine(stream) ?: return out.toByteArray() // truncated; return what we have
-      val size = sizeLine.substringBefore(';').trim().toIntOrNull(16) ?: return null
+      val sizeLine = readLine(input) ?: return ChunkResult.Malformed // EOF/over-long before the terminator
+      val size = sizeLine.substringBefore(';').trim().toIntOrNull(16) ?: return ChunkResult.Malformed
+      if (size < 0) return ChunkResult.Malformed
       if (size == 0) break
-      if (out.size() + size > maxBytes) return null
+      // Long math so a near-Int.MAX size can't overflow the cap comparison back to negative.
+      if (out.size().toLong() + size.toLong() > maxBytes.toLong()) return ChunkResult.TooLarge
       val chunk = ByteArray(size)
       var off = 0
       while (off < size) {
-        val r = stream.read(chunk, off, size - off)
+        val r = input.read(chunk, off, size - off)
         if (r == -1) break
         off += r
       }
       out.write(chunk, 0, off)
-      readLine(stream) // consume trailing CRLF after the chunk data
+      readLine(input) // consume trailing CRLF after the chunk data
     }
-    return out.toByteArray()
+    return ChunkResult.Body(out.toByteArray())
   }
 
+  /** Reads one line up to '\n', bounded to [MAX_LINE_BYTES]; null at EOF or if the line is over-long. */
   private fun readLine(input: InputStream): String? {
     val sb = StringBuilder()
     var b = input.read()
     if (b == -1) return null
     while (b != -1 && b != '\n'.code) {
+      if (sb.length >= MAX_LINE_BYTES) return null // bound like readHeaderBlock — no unbounded growth
       if (b != '\r'.code) sb.append(b.toChar())
       b = input.read()
     }
     return sb.toString()
-  }
-
-  /** An InputStream that first yields [head], then [tail] — so leftover header-read bytes aren't lost. */
-  private class SequencePushback(head: ByteArray, private val tail: InputStream) : InputStream() {
-    private val headStream = head.inputStream()
-    override fun read(): Int = headStream.read().let { if (it != -1) it else tail.read() }
-    override fun read(b: ByteArray, off: Int, len: Int): Int {
-      val r = headStream.read(b, off, len)
-      return if (r != -1) r else tail.read(b, off, len)
-    }
   }
 }
