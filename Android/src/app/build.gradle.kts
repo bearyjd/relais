@@ -29,6 +29,12 @@ plugins {
   kotlin("kapt")
 }
 
+// Release signing material from CI secrets (the RELEASE_* env vars). Non-null only when the keystore
+// env is set AND the file is present, so local + contributor builds (env absent) fall back to debug
+// signing in buildTypes.release below — no secrets needed to build. The maintainer generates + owns
+// this key and NEVER rotates it (IzzyOnDroid / Obtainium update continuity); see docs/distribution.md.
+val releaseStoreFile: String? = System.getenv("RELEASE_STORE_FILE")?.takeIf { file(it).exists() }
+
 android {
   namespace = "cc.grepon.relais"
   compileSdk = 35
@@ -55,11 +61,29 @@ android {
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
   }
 
+  signingConfigs {
+    // Populated only when the RELEASE_* env is present (the CI release job decodes the keystore from
+    // the RELEASE_KEYSTORE_BASE64 secret). Left empty otherwise — buildTypes.release then signs with
+    // debug (below), so no secrets are required to build.
+    create("release") {
+      releaseStoreFile?.let { path ->
+        storeFile = file(path)
+        storePassword = System.getenv("RELEASE_STORE_PASSWORD")
+        keyAlias = System.getenv("RELEASE_KEY_ALIAS")
+        keyPassword = System.getenv("RELEASE_KEY_PASSWORD")
+      }
+    }
+  }
+
   buildTypes {
     release {
       isMinifyEnabled = false
       proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
-      signingConfig = signingConfigs.getByName("debug")
+      // Real release signing when the CI secrets are present; debug-signed otherwise so assemble*Release
+      // still builds locally and in build_android.yaml without any secrets configured.
+      signingConfig =
+        if (releaseStoreFile != null) signingConfigs.getByName("release")
+        else signingConfigs.getByName("debug")
     }
   }
   // Distribution flavor split. `full` is the Play-Store build (includes the Google-Mobile-Services-

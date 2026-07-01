@@ -1,0 +1,167 @@
+name: Release
+
+# Tag-triggered release pipeline. Builds the three shipping release artifacts, re-runs the same hard
+# gates as build_android.yaml (GMS=0 dex, playsafe-permission removal, 16 KB native alignment), verifies
+# the APK signatures, and publishes them to a DRAFT GitHub Release for the tag (maintainer reviews +
+# publishes). Real signing requires the RELEASE_* secrets; without them the build is debug-signed
+# (useful for testing the pipeline via workflow_dispatch, NOT for store upload).
+#
+#   fullPlaysafe  -> AAB -> Google Play          (com.ventouxlabs.relais)
+#   fullOpen      -> APK -> IzzyOnDroid           (com.ventouxlabs.relais.izzy)
+#   degoogledOpen -> APK -> GrapheneOS / GitHub   (com.ventouxlabs.relais.degoogled)
+
+on:
+  push:
+    tags: [ 'v*' ]
+  workflow_dispatch:
+
+permissions:
+  contents: write   # create the GitHub Release + upload assets
+
+jobs:
+  release:
+    name: Build, sign & publish release artifacts
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ./Android/src
+    steps:
+      - name: Checkout the source code
+        uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '21'
+
+      - name: Decode release keystore (if configured)
+        env:
+          RELEASE_KEYSTORE_BASE64: ${{ secrets.RELEASE_KEYSTORE_BASE64 }}
+        run: |
+          if [ -n "$RELEASE_KEYSTORE_BASE64" ]; then
+            echo "$RELEASE_KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/relais-release.jks"
+            echo "RELEASE_STORE_FILE=$RUNNER_TEMP/relais-release.jks" >> "$GITHUB_ENV"
+            echo "Release keystore decoded — building release-signed artifacts."
+          else
+            echo "::warning::RELEASE_KEYSTORE_BASE64 not set — building DEBUG-signed (NOT valid for store upload)."
+          fi
+
+      - name: Build release artifacts
+        # fullPlaysafe is built BOTH as an AAB (the Play upload) and an APK (gate-only, not published) so
+        # the permission + alignment gates run on the same merged manifest/libs the AAB ships.
+        env:
+          RELEASE_STORE_PASSWORD: ${{ secrets.RELEASE_STORE_PASSWORD }}
+          RELEASE_KEY_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS }}
+          RELEASE_KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
+        run: >
+          ./gradlew
+          bundleFullPlaysafeRelease
+          assembleFullPlaysafeRelease
+          assembleFullOpenRelease
+          assembleDegoogledOpenRelease
+
+      - name: Verify the degoogled flavor ships no Google-Mobile-Services classes
+        run: |
+          APK=$(find app/build/outputs/apk/degoogledOpen/release -name "*.apk" | head -1)
+          echo "Scanning $APK for GMS / AICore / ML Kit classes…"
+          COUNT=$(unzip -p "$APK" 'classes*.dex' | strings | grep -Ec "Lcom/google/(android/(gms|apps/aicore)|mlkit)" || true)
+          echo "Found $COUNT GMS/AICore/ML Kit class descriptors (expected 0)."
+          if [ "$COUNT" -ne 0 ]; then
+            echo "::error::degoogled flavor leaked GMS/AICore/ML Kit classes — flavor split is broken"
+            unzip -p "$APK" 'classes*.dex' | strings \
+              | grep -Eo "Lcom/google/(android/(gms|apps/aicore)|mlkit)[A-Za-z0-9/]*" | sort -u | head -50
+            exit 1
+          fi
+
+      - name: Verify the Play (playsafe) build drops the Play-restricted permissions
+        run: |
+          APK=$(find app/build/outputs/apk/fullPlaysafe/release -name "*.apk" | head -1)
+          AAPT2=$(ls "$ANDROID_HOME"/build-tools/*/aapt2 | sort -V | tail -1)
+          echo "Scanning $APK permissions with $AAPT2…"
+          PERMS=$("$AAPT2" dump permissions "$APK" \
+            | grep -E "USE_EXACT_ALARM|SCHEDULE_EXACT_ALARM|REQUEST_IGNORE_BATTERY_OPTIMIZATIONS|READ_CALENDAR" || true)
+          if [ -n "$PERMS" ]; then
+            echo "::error::playsafe build still declares Play-restricted permissions — src/playsafe manifest removal is broken"
+            echo "$PERMS"
+            exit 1
+          fi
+          COMPONENTS=$("$AAPT2" dump xmltree --file AndroidManifest.xml "$APK" 2>/dev/null \
+            | grep -E "RelaisNotificationListenerService|TriageControlActivity" || true)
+          if [ -n "$COMPONENTS" ]; then
+            echo "::error::playsafe build still ships a stripped component (notification listener / triage activity)"
+            echo "$COMPONENTS"
+            exit 1
+          fi
+          echo "OK — playsafe declares none of the restricted permissions and ships none of the stripped components."
+
+      - name: Verify all shipped native libs are 16 KB-page-aligned
+        run: |
+          shopt -s nullglob
+          BAD=0
+          for variant in fullOpen/release fullPlaysafe/release degoogledOpen/release; do
+            APK=$(find "app/build/outputs/apk/$variant" -name "*.apk" 2>/dev/null | head -1)
+            if [ -z "$APK" ]; then
+              echo "::error::$variant: no release APK found — alignment gate cannot verify"
+              BAD=1; continue
+            fi
+            TMP=$(mktemp -d)
+            unzip -q -o "$APK" 'lib/arm64-v8a/*.so' -d "$TMP" 2>/dev/null || true
+            libs=("$TMP"/lib/arm64-v8a/*.so)
+            if [ "${#libs[@]}" -eq 0 ]; then
+              echo "::error::$variant: no arm64-v8a .so extracted from $APK — gate cannot verify alignment"
+              BAD=1; continue
+            fi
+            echo "Checking ${#libs[@]} arm64 .so in $variant…"
+            for so in "${libs[@]}"; do
+              SMALL=$(readelf -lW "$so" | awk '/LOAD/{print $NF}' | grep -E '0x(1000|2000)$' | sort -u | tr '\n' ' ' || true)
+              if [ -n "$SMALL" ]; then
+                echo "::error::$variant/$(basename "$so") has sub-16KB LOAD alignment: $SMALL"
+                BAD=1
+              fi
+            done
+          done
+          if [ "$BAD" -ne 0 ]; then
+            echo "::error::Native-lib 16 KB alignment gate failed — will fault on Pixel 10 / Android 16"
+            exit 1
+          fi
+          echo "OK — every arm64 .so in every release variant is 16 KB-aligned."
+
+      - name: Verify APK signatures
+        # apksigner verifies APKs; the AAB is signature-checked by Play at upload. On a tag release the
+        # keystore is required, so a debug/unsigned APK here must FAIL rather than silently ship.
+        run: |
+          APKSIGNER=$(ls "$ANDROID_HOME"/build-tools/*/apksigner | sort -V | tail -1)
+          for variant in fullOpen degoogledOpen fullPlaysafe; do
+            APK=$(find "app/build/outputs/apk/$variant/release" -name "*.apk" | head -1)
+            echo "Verifying signature of $variant: $APK"
+            "$APKSIGNER" verify --verbose "$APK"
+          done
+          if [ "${GITHUB_REF_TYPE:-}" = "tag" ] && [ -z "${RELEASE_STORE_FILE:-}" ]; then
+            echo "::error::Tag release with no RELEASE_* secrets — artifacts are debug-signed. Configure signing secrets."
+            exit 1
+          fi
+
+      - name: Publish draft GitHub Release (tags only)
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          AAB=$(find app/build/outputs/bundle/fullPlaysafeRelease -name "*.aab" | head -1)
+          IZZY=$(find app/build/outputs/apk/fullOpen/release -name "*.apk" | head -1)
+          GOS=$(find app/build/outputs/apk/degoogledOpen/release -name "*.apk" | head -1)
+          echo "AAB=$AAB"; echo "IZZY=$IZZY"; echo "GOS=$GOS"
+          gh release create "$GITHUB_REF_NAME" --draft \
+            --title "Relais $GITHUB_REF_NAME" \
+            --notes "Automated release artifacts. Play AAB = fullPlaysafe; IzzyOnDroid APK = fullOpen; GrapheneOS/GitHub APK = degoogledOpen. Review and publish manually." \
+            "$AAB" "$IZZY" "$GOS"
+
+      - name: Upload artifacts (workflow_dispatch testing)
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: relais-release-artifacts
+          if-no-files-found: error
+          path: |
+            Android/src/app/build/outputs/bundle/fullPlaysafeRelease/*.aab
+            Android/src/app/build/outputs/apk/fullOpen/release/*.apk
+            Android/src/app/build/outputs/apk/degoogledOpen/release/*.apk
