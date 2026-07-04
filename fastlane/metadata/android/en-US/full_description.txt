@@ -1,0 +1,39 @@
+Your own relay station for AI.
+
+Relais turns an Android phone into a headless, always-on LLM node. It runs a language model directly on the phone's GPU and neural silicon using Google's LiteRT-LM runtime, and serves it over your LAN as a standard OpenAI-compatible API. Point any OpenAI client at the phone's IP address and it answers.
+
+HOW IT WORKS
+
+Install Relais on a spare phone, plug it in, put it on a shelf. On first run it downloads a default model (gemma-4-E4B-it, about 3.7 GB, no HuggingFace token required) and starts serving. You can also pick other LiteRT-LM models from a curated list or search HuggingFace directly.
+
+There is no chat UI to babysit. Relais auto-starts, survives Android Doze, recovers from crashes and out-of-memory kills, and draws a few watts. It is inference infrastructure you leave running.
+
+ENDPOINTS AND CAPABILITIES
+
+• POST /v1/chat/completions — OpenAI-compatible chat, streaming via SSE
+• POST /generate — native multimodal input: text, image, audio
+• GET /health — liveness check for your monitoring
+• GET /metrics — Prometheus metrics
+• Image generation on the full build
+• mDNS discovery on the local network
+• API-key bearer auth, key encrypted at rest, HTTPS on the LAN
+• Thermal backpressure: under sustained load it sheds requests with 503 + Retry-After instead of cooking the device
+• Crash and OOM auto-recovery
+
+WHAT IT IS NOT
+
+Relais will not outrun a desktop GPU on raw tokens per second, and does not pretend to. Its value is different: always-on, low-power, private, zero-marginal-cost inference. Use it for small-model workloads, agents, automation, and home-lab pipelines that need a local endpoint that is simply always there.
+
+PRIVACY AND SOVEREIGNTY
+
+Inference happens on the device. Prompts and completions never leave your network, and once a model is downloaded Relais runs fully offline. No cloud calls, no per-token bill, no third party in the loop. You operate this infrastructure; you do not rent it.
+
+REQUIREMENTS
+
+• A device LiteRT-LM supports on GPU; validated on Pixel 9 Pro Fold (Tensor G4)
+• Android 12 or newer
+• Storage for models (the default model is a ~3.7 GB download)
+
+LICENSE
+
+Relais is free software under the AGPL-3.0 license, forked from Google's AI Edge Gallery. Published by VentouxLabs (ventouxlabs.com).
