@@ -182,7 +182,10 @@ fun renderDashboardHtml(status: DashboardStatus): String {
       )
     } else {
       for (entry in status.recentRequests) {
-        val statusClass = if (entry.status >= 500) "stop" else if (entry.status >= 400) "warn" else ""
+        // Palette discipline (DESIGN.md): amber is the only accent and #FF5247 is Stop-only, so the
+        // log signals error salience by brightness, not hue — non-2xx stays paper-bright (notable),
+        // 2xx is muted (the quiet baseline). The status code itself distinguishes 4xx from 5xx.
+        val statusClass = if (entry.status >= 400) "" else "muted"
         append(
           """<tr>""" +
           """<td class="label">${escapeHtml(entry.endpoint)}</td>""" +
@@ -209,7 +212,6 @@ fun renderDashboardHtml(status: DashboardStatus): String {
   --text:     #EDEAE3;
   --muted:    #8A8780;
   --amber:    #FFB000;
-  --stop:     #FF5247;
   font-family: monospace;
 }
 *,*::before,*::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -240,8 +242,6 @@ tr:last-child td { border-bottom: none; }
 .value { color: var(--text); text-align: right; }
 .amber { color: var(--amber); }
 .muted { color: var(--muted); }
-.stop  { color: var(--stop); }
-.warn  { color: #FFCC44; }
 </style>
 </head>
 <body>
@@ -276,11 +276,11 @@ tr:last-child td { border-bottom: none; }
     </tr>
     <tr>
       <td class="label">errors total</td>
-      <td class="value ${if (status.errorsTotal > 0L) "stop" else ""}">${status.errorsTotal}</td>
+      <td class="value ${if (status.errorsTotal > 0L) "" else "muted"}">${status.errorsTotal}</td>
     </tr>
     <tr>
       <td class="label">shed total</td>
-      <td class="value ${if (status.shedTotal > 0L) "warn" else ""}">${status.shedTotal}</td>
+      <td class="value ${if (status.shedTotal > 0L) "" else "muted"}">${status.shedTotal}</td>
     </tr>
   </table>
 </div>

@@ -348,11 +348,13 @@ class RelaisDashboardTest {
   }
 
   // ---------------------------------------------------------------------------
-  // 6. Status-class branch: 5xx → "stop", 4xx → "warn", 2xx → neither
+  // 6. Status-class branch (palette discipline, DESIGN.md): salience by brightness, not hue.
+  //    non-2xx (4xx/5xx) → paper-bright (no muted qualifier); 2xx → muted. No stop-red / off-palette
+  //    warn anywhere — #FF5247 is Stop-only and #FFCC44 is not in the palette.
   // ---------------------------------------------------------------------------
 
   @Test
-  fun `renderDashboardHtml applies stop class for 5xx and warn for 4xx request log entries`() {
+  fun `renderDashboardHtml mutes 2xx and keeps 4xx and 5xx request log entries paper-bright with no off-palette hues`() {
     val status = assembleDashboardStatus(
       engineReady = true,
       startupInProgress = false,
@@ -361,8 +363,8 @@ class RelaisDashboardTest {
       currentModelId = "litert-community/test",
       uptimeSeconds = 0.0,
       queueDepth = 0,
-      errorsTotal = 0L,  // keep 0 so the errors-total row doesn't also emit class="... stop"
-      shedTotal = 0L,    // likewise for shedTotal / warn
+      errorsTotal = 0L,
+      shedTotal = 0L,
       recentRequests = listOf(
         RequestLogEntry("/generate", 503, 2L),
         RequestLogEntry("/v1/chat/completions", 429, 5L),
@@ -374,29 +376,22 @@ class RelaisDashboardTest {
     )
     val html = renderDashboardHtml(status)
 
-    // 5xx entry must carry the "stop" CSS class.
-    assertTrue(
-      "503 entry must have class=\"value stop\"",
-      html.contains("""class="value stop""""),
-    )
-    // 4xx entry must carry the "warn" CSS class.
-    assertTrue(
-      "429 entry must have class=\"value warn\"",
-      html.contains("""class="value warn""""),
-    )
-    // 2xx entry must NOT carry "stop" or "warn".
-    // Extract the region after </style> to avoid matching CSS rule definitions (.stop / .warn).
+    // Palette discipline: the off-palette / Stop-only hues must not appear anywhere in the output.
+    assertFalse("no Stop-red #FF5247 (Stop-only per DESIGN.md; no Stop control here)", html.contains("#FF5247"))
+    assertFalse("no off-palette warn #FFCC44", html.contains("#FFCC44"))
+    assertFalse("no legacy stop class", html.contains("""class="value stop""""))
+    assertFalse("no legacy warn class", html.contains("""class="value warn""""))
+
+    // Salience by brightness: 2xx is the quiet baseline (muted); 4xx/5xx stay paper-bright (no muted).
+    // Extract the region after </style> to avoid matching CSS rule definitions.
     val bodyRegion = html.substringAfter("</style>")
-    // The only cells with "stop"/"warn" class qualifiers must be the 503 and 429 rows respectively.
-    assertEquals("exactly one stop-class cell in body (from the 503)",
-      1, bodyRegion.split("""class="value stop"""").size - 1)
-    assertEquals("exactly one warn-class cell in body (from the 429)",
-      1, bodyRegion.split("""class="value warn"""").size - 1)
-    // The 200 cell must not carry stop or warn — confirm the escaped "200" text appears
-    // in a cell that has neither qualifier.
-    assertTrue("200 status text must appear in rendered body", bodyRegion.contains(">200<"))
-    assertFalse("200 cell must not have stop class", bodyRegion.contains("""class="value stop">200"""))
-    assertFalse("200 cell must not have warn class", bodyRegion.contains("""class="value warn">200"""))
+    assertTrue("200 entry must be muted (quiet baseline)", bodyRegion.contains("""class="value muted">200"""))
+    assertFalse("503 entry must stay paper-bright (not muted)", bodyRegion.contains("""class="value muted">503"""))
+    assertFalse("429 entry must stay paper-bright (not muted)", bodyRegion.contains("""class="value muted">429"""))
+    // All three status codes still render in the body.
+    assertTrue("503 status text present", bodyRegion.contains(">503<"))
+    assertTrue("429 status text present", bodyRegion.contains(">429<"))
+    assertTrue("200 status text present", bodyRegion.contains(">200<"))
   }
 
   // ---------------------------------------------------------------------------
