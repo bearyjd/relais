@@ -1,0 +1,1 @@
+Turn a spare phone into an always-on, OpenAI-compatible LLM server. No cloud.
