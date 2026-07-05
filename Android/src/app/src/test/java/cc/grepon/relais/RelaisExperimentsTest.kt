@@ -166,4 +166,33 @@ class RelaisExperimentsTest {
     assertTrue(html.contains("RELAIS"))
     assertTrue(html.contains("EXPERIMENTS"))
   }
+
+  // ---- audio transcription module ----
+
+  @Test
+  fun `audio module renders a file picker and transcribe control`() {
+    val html = renderExperimentsHtml(status(), nonce)
+    assertTrue("audio file input", html.contains("""<input type="file" accept="audio/*" id="audio-file">"""))
+    assertTrue("transcribe button", html.contains("""id="transcribe""""))
+    assertTrue("result starts as the muted idle baseline",
+      html.contains("""<div class="result muted" id="transcribe-result">idle</div>"""))
+  }
+
+  @Test
+  fun `audio module posts multipart to the transcriptions endpoint with a bearer header`() {
+    val html = renderExperimentsHtml(status(), nonce)
+    assertTrue(html.contains("'/v1/audio/transcriptions'"))
+    assertTrue("uses FormData so the browser sets the multipart boundary", html.contains("new FormData()"))
+    assertTrue("file field name is 'file'", html.contains("fd.append('file', file)"))
+    assertTrue("sends the model id", html.contains("fd.append('model'"))
+    assertTrue(html.contains("'Authorization': 'Bearer ' + key"))
+  }
+
+  @Test
+  fun `audio module never sets a Content-Type header manually`() {
+    val html = renderExperimentsHtml(status(), nonce)
+    // A manual multipart Content-Type would omit the boundary and break the upload; the fetch must
+    // let the browser set it. Guard on the header KEY the fetch would use, not prose in comments.
+    assertFalse("browser must set Content-Type + boundary itself", html.contains("'Content-Type'"))
+  }
 }

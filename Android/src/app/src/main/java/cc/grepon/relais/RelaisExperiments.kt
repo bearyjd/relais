@@ -127,6 +127,10 @@ input[type="password"], input[type="text"], textarea {
   border: 1px solid var(--hairline); border-radius: 6px;
   padding: 8px 10px; font-family: monospace; font-size: 13px;
 }
+input[type="file"] { width: 100%; color: var(--muted); font-family: monospace; font-size: 12px; }
+.result {
+  padding: 9px 14px; font-size: 13px; white-space: pre-wrap; word-break: break-word;
+}
 button {
   background: var(--amber); color: var(--bg); border: none; border-radius: 6px;
   padding: 8px 14px; font-family: monospace; font-size: 12px; font-weight: bold;
@@ -148,7 +152,7 @@ button:disabled { background: var(--hairline); color: var(--muted); cursor: defa
     </tr>
     <tr>
       <td class="label">model</td>
-      <td class="value">${escapeHtml(status.currentModelId)}</td>
+      <td class="value" id="node-model">${escapeHtml(status.currentModelId)}</td>
     </tr>
     <tr>
       <td class="label">capabilities</td>
@@ -174,13 +178,15 @@ button:disabled { background: var(--hairline); color: var(--muted); cursor: defa
 </div>
 
 <div class="panel">
-  <div class="panel-title">Modules</div>
+  <div class="panel-title">Audio Transcription</div>
   <div id="modules">
-    <table>
-      <tr>
-        <td class="label" style="width:100%">experiment modules dock here as they come online</td>
-      </tr>
-    </table>
+    <div class="field">
+      <input type="file" accept="audio/*" id="audio-file">
+    </div>
+    <div class="field">
+      <button id="transcribe" type="button">Transcribe</button>
+    </div>
+    <div class="result muted" id="transcribe-result">idle</div>
   </div>
 </div>
 
@@ -214,6 +220,38 @@ button:disabled { background: var(--hairline); color: var(--muted); cursor: defa
         setLink('LINKED — ' + (ids || 'no models reported'), 'ok');
       })
       .catch(function (err) { setLink('LINK FAILED — ' + err.message, 'err'); });
+  });
+
+  // --- Audio Transcription module: POST multipart/form-data to /v1/audio/transcriptions ---
+  var audioInput = document.getElementById('audio-file');
+  var transcribeResult = document.getElementById('transcribe-result');
+  var modelCell = document.getElementById('node-model');
+
+  // Same palette discipline as setLink: amber = the transcription (live signal), paper-bright =
+  // failure (notable), muted = the quiet in-progress/idle baseline. No new hues.
+  function setTranscribe(text, state) {
+    transcribeResult.textContent = text;
+    transcribeResult.className = state === 'ok' ? 'result amber' : state === 'err' ? 'result' : 'result muted';
+  }
+
+  document.getElementById('transcribe').addEventListener('click', function () {
+    var key = window.relaisApiKey();
+    if (!key) { setTranscribe('enter the node api key', 'err'); return; }
+    var file = audioInput.files && audioInput.files[0];
+    if (!file) { setTranscribe('choose an audio file', 'err'); return; }
+    setTranscribe('transcribing…', 'busy');
+    var fd = new FormData();
+    fd.append('file', file);
+    // Current model id read from the Node panel cell (no injection: browser-decoded text, not markup).
+    fd.append('model', (modelCell ? modelCell.textContent : '').trim());
+    // Deliberately no Content-Type header: the browser sets multipart/form-data + boundary itself.
+    fetch('/v1/audio/transcriptions', { method: 'POST', headers: { 'Authorization': 'Bearer ' + key }, body: fd })
+      .then(function (r) {
+        if (!r.ok) { throw new Error('HTTP ' + r.status); }
+        return r.json();
+      })
+      .then(function (body) { setTranscribe(body.text || '(no text)', 'ok'); })
+      .catch(function (err) { setTranscribe('LINK FAILED — ' + err.message, 'err'); });
   });
 })();
 </script>

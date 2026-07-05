@@ -36,9 +36,7 @@ import cc.grepon.relais.worker.BatchWorker
 import cc.grepon.relais.templates.parseTemplateId
 import cc.grepon.relais.templates.parseTemplateMode
 import cc.grepon.relais.templates.resolveSystemPrompt
-import java.io.BufferedReader
 import java.io.File
-import java.io.InputStreamReader
 import java.io.OutputStream
 import java.math.BigInteger
 import java.net.Inet4Address
@@ -69,7 +67,9 @@ private const val TLS_KEY_ALIAS = "relais-tls"
 private const val TLS_KEYSTORE_FILE = "relais_tls.p12"
 private const val SOCKET_TIMEOUT_MS = 15_000 // read timeout: bounds slow/idle clients (slowloris)
 private const val MAX_CONNECTIONS = 16 // cap worker threads (single-engine node serializes anyway)
-private const val MAX_BODY_BYTES = 32 * 1024 * 1024 // 32 MB cap (base64 image/audio)
+// Shared body cap. `internal` so the byte-oriented [HttpRequestReader.readBodyBytes] enforces the
+// same ceiling as the server's front-door 413 check (single source of truth across the module).
+internal const val MAX_BODY_BYTES = 32 * 1024 * 1024 // 32 MB cap (base64 image/audio)
 private const val MAX_HEADER_LINES = 64 // bound header parsing (slowloris / header-flood)
 private const val MAX_HEADER_BYTES = 16 * 1024
 private const val DEFAULT_MODEL = "gemma-4-e4b-it"
@@ -245,7 +245,7 @@ class RelaisHttpServer(
       var endpoint = "other"
       try {
         sock.soTimeout = SOCKET_TIMEOUT_MS // don't let an idle/slow client hold a worker thread
-        val reader = BufferedReader(InputStreamReader(sock.getInputStream()))
+        val reader = HttpRequestReader(sock.getInputStream())
         val requestLine = reader.readLine() ?: return
         val parts = requestLine.split(" ")
         if (parts.size < 2) return
@@ -262,6 +262,7 @@ class RelaisHttpServer(
         var contentLength = 0
         var authorization: String? = null
         var accept: String? = null
+        var contentType: String? = null
         var sessionHeader: String? = null
         var headerLines = 0
         var headerBytes = 0
@@ -282,6 +283,8 @@ class RelaisHttpServer(
             lower.startsWith("content-length:") -> contentLength = line.substringAfter(":").trim().toIntOrNull() ?: 0
             lower.startsWith("authorization:") -> authorization = line.substringAfter(":").trim()
             lower.startsWith("accept:") -> accept = lower.substringAfter(":").trim()
+            // Original-case value: the multipart boundary token is case-sensitive.
+            lower.startsWith("content-type:") -> contentType = line.substringAfter(":").trim()
             sessionEnabled && lower.startsWith("x-relais-session:") ->
               sessionHeader = line.substringAfter(":").trim()
           }
@@ -435,6 +438,77 @@ class RelaisHttpServer(
               )
             } finally {
               RelaisMetrics.recordEndpointLatency("/generate", (System.nanoTime() - inferStartNs) / 1e9)
+              admissionGate.releaseShared()
+            }
+          }
+
+          method == "POST" && path == "/v1/audio/transcriptions" -> {
+            // OpenAI /v1/audio/transcriptions (multipart/form-data audio upload). Auth + per-IP rate
+            // limit + 32MB body cap are already enforced above for every non-/health route. This is
+            // heavy resident-engine inference, so it mirrors /generate EXACTLY: thermal 503 first,
+            // admission 429 second, then the shared gate released + the endpoint-labeled latency
+            // recorded in finally for every outcome (success, guard-reject, error).
+            if (shedIfHot(::reply)) return         // thermal 503 wins first
+            if (rejectIfQueueFull(::reply)) return  // admission 429 second — shared permit acquired
+            val inferStartNs = System.nanoTime()
+            try {
+              val boundary = contentType?.let { parseMultipartBoundary(it) }
+              if (boundary == null) {
+                reply(400, JSONObject().put("error", "expected multipart/form-data"))
+                return
+              }
+              val bodyBytes = reader.readBodyBytes(contentLength)
+              val fileParts = parseMultipartFormData(bodyBytes, boundary)
+              val filePart = fileParts.firstOrNull { it.name == "file" }
+              if (filePart == null) {
+                reply(400, JSONObject().put("error", "missing 'file' field"))
+                return
+              }
+              // Optional text fields. `model` is ignored (the node serves its resident model);
+              // temperature/language/prompt are accepted and ignored (v1). Unknown fields never reject.
+              val responseFormat = fileParts.firstOrNull { it.name == "response_format" }
+                ?.let { String(it.bytes, Charsets.UTF_8).trim() }
+                ?.ifBlank { null } ?: "json"
+              // Audio-support guard: a non-multimodal model would silently transcribe to garbage, so
+              // fail clearly (per the audio plan). Engine-not-ready is a transient 503.
+              if (!RelaisEngine.isReady) {
+                reply(503, JSONObject().put("error", "engine not ready"))
+                return
+              }
+              if (!RelaisEngine.isMultimodal) {
+                reply(400, JSONObject().put("error", "resident model does not support audio input"))
+                return
+              }
+              // Bridge to the resident engine reusing the SAME audio wiring as /generate: the raw WAV
+              // bytes go through RelaisRequest.audioWav, driven by a verbatim-transcription instruction.
+              val request = RelaisRequest(
+                text = "Transcribe the following audio to text verbatim. Output only the " +
+                  "transcription, with no commentary, labels, or quotation marks.",
+                audioWav = filePart.bytes,
+              )
+              val result = RelaisEngine.generate(context, request, shouldCancel = { ThermalGovernor.shouldTruncate() })
+              when (responseFormat) {
+                "text" -> {
+                  // respondText does not record a metric (unlike reply), so record it explicitly.
+                  respondText(sock, 200, result.text, "text/plain; charset=utf-8")
+                  RelaisMetrics.recordRequest(endpoint, 200)
+                }
+                // verbose_json: honestly-empty task metadata; NO fabricated timestamps/segments.
+                "verbose_json" ->
+                  reply(
+                    200,
+                    JSONObject()
+                      .put("task", "transcribe")
+                      .put("language", "")
+                      .put("duration", 0)
+                      .put("text", result.text)
+                      .put("segments", JSONArray()),
+                  )
+                // "json" default, and any unknown response_format value -> default json (never reject).
+                else -> reply(200, JSONObject().put("text", result.text))
+              }
+            } finally {
+              RelaisMetrics.recordEndpointLatency("/v1/audio/transcriptions", (System.nanoTime() - inferStartNs) / 1e9)
               admissionGate.releaseShared()
             }
           }
@@ -1347,6 +1421,7 @@ class RelaisHttpServer(
       path.startsWith("/metrics") -> "/metrics"
       path.startsWith("/generate") -> "/generate"
       path.startsWith("/v1/chat/completions") -> "/v1/chat/completions"
+      path.startsWith("/v1/audio/transcriptions") -> "/v1/audio/transcriptions"
       path.startsWith("/v1/embeddings") -> "/v1/embeddings"
       path.startsWith("/v1/images/generations") -> "/v1/images/generations"
       path.startsWith("/v1/models") -> "/v1/models"
@@ -1379,23 +1454,13 @@ class RelaisHttpServer(
   }
 
   /**
-   * Reads up to [length] (capped) chars of body without pre-allocating the client-claimed size:
-   * a malicious large Content-Length no longer forces a multi-MB allocation per worker (security M1).
+   * Reads up to [length] (capped) bytes of body and decodes them as UTF-8 for the JSON endpoints.
+   * Behavior-preserving vs. the previous `BufferedReader`-based reader (whose platform default charset
+   * was already UTF-8), but routed through the byte-safe [HttpRequestReader] so the multipart route can
+   * read the SAME body stream as raw bytes. The size cap (security M1) lives in [HttpRequestReader].
    */
-  private fun readBody(reader: BufferedReader, length: Int): String {
-    if (length <= 0) return ""
-    val cap = minOf(length, MAX_BODY_BYTES)
-    val sb = StringBuilder(minOf(cap, 64 * 1024))
-    val chunk = CharArray(8192)
-    var remaining = cap
-    while (remaining > 0) {
-      val r = reader.read(chunk, 0, minOf(chunk.size, remaining))
-      if (r < 0) break
-      sb.append(chunk, 0, r)
-      remaining -= r
-    }
-    return sb.toString()
-  }
+  private fun readBody(reader: HttpRequestReader, length: Int): String =
+    String(reader.readBodyBytes(length), Charsets.UTF_8)
 
   private fun decode(b64: String): ByteArray = Base64.decode(b64, Base64.DEFAULT)
 
