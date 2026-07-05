@@ -49,6 +49,7 @@ import java.security.KeyPair
 import java.security.KeyPairGenerator
 import java.security.KeyStore
 import java.security.MessageDigest
+import java.security.SecureRandom
 import java.security.cert.X509Certificate
 import java.util.Calendar
 import java.util.Date
@@ -347,6 +348,40 @@ class RelaisHttpServer(
               listOf(
                 // Scriptless page — no script-src at all; default-src 'none' blocks everything else.
                 "Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'",
+                "X-Content-Type-Options: nosniff",
+                "X-Frame-Options: DENY",
+                "Referrer-Policy: no-referrer",
+              ),
+            )
+          }
+
+          method == "GET" && path == "/experiments" -> {
+            // Auth-gated like "/" (bearer required). Unlike the scriptless dashboard, this page
+            // carries ONE inline script, authorized via a per-request CSP nonce — no other script
+            // can execute. connect-src 'self' lets that script call the node's own /v1 endpoints.
+            RelaisMetrics.recordRequest(endpoint, 200)
+            val expCaps = RelaisClientConfig.Capabilities(
+              multimodal = RelaisEngine.isMultimodal,
+              tools = true,
+              reasoning = true,
+            )
+            val expStatus = assembleExperimentsStatus(
+              engineReady = RelaisEngine.isReady,
+              startupInProgress = RelaisEngine.startupInProgress,
+              currentModelId = RelaisConfig.modelId(context),
+              capabilities = expCaps.toCapsString(),
+            )
+            val nonce = Base64.encodeToString(
+              ByteArray(16).also { SecureRandom().nextBytes(it) },
+              Base64.NO_WRAP,
+            )
+            val html = renderExperimentsHtml(expStatus, nonce)
+            respondText(
+              sock, 200, html, "text/html; charset=utf-8",
+              listOf(
+                "Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; " +
+                  "script-src 'nonce-$nonce'; connect-src 'self'; base-uri 'none'; " +
+                  "frame-ancestors 'none'; form-action 'none'",
                 "X-Content-Type-Options: nosniff",
                 "X-Frame-Options: DENY",
                 "Referrer-Policy: no-referrer",
@@ -1308,6 +1343,7 @@ class RelaisHttpServer(
     when {
       path.startsWith("/health") -> "/health"
       path == "/" -> "/"
+      path.startsWith("/experiments") -> "/experiments"
       path.startsWith("/metrics") -> "/metrics"
       path.startsWith("/generate") -> "/generate"
       path.startsWith("/v1/chat/completions") -> "/v1/chat/completions"
