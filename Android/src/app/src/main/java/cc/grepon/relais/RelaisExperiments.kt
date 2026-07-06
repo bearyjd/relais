@@ -204,6 +204,20 @@ button:disabled { background: var(--hairline); color: var(--muted); cursor: defa
   <div class="result muted" id="vision-result">idle</div>
 </div>
 
+<div class="panel">
+  <div class="panel-title">Image Generation</div>
+  <div class="field">
+    <input type="text" id="imagegen-prompt" autocomplete="off" placeholder="a red bicycle on a beach">
+  </div>
+  <div class="field">
+    <button id="generate" type="button">Generate</button>
+  </div>
+  <div class="result muted" id="imagegen-result">idle</div>
+  <div class="field">
+    <img id="imagegen-image" alt="generated image" style="display:none; max-width:100%; border-radius:6px;">
+  </div>
+</div>
+
 <script nonce="$nonce">
 (function () {
   'use strict';
@@ -304,6 +318,55 @@ button:disabled { background: var(--hairline); color: var(--muted); cursor: defa
         setVision((msg && msg.content) || '(no content)', 'ok');
       })
       .catch(function (err) { setVision('LINK FAILED — ' + err.message, 'err'); });
+  });
+
+  // --- Image Generation module: POST JSON to the node's images-generations endpoint ---
+  // The generated PNG is rendered ONLY through an <img src="data:image/png;base64,…"> URL; the page
+  // CSP allows img-src data: for exactly this. Status text is always set via textContent, so no
+  // untrusted markup is ever parsed.
+  var imagegenPrompt = document.getElementById('imagegen-prompt');
+  var imagegenResult = document.getElementById('imagegen-result');
+  var imagegenImage = document.getElementById('imagegen-image');
+
+  // Same palette discipline as the other modules: amber = the finished image (live signal),
+  // paper-bright = failure (notable), muted = the quiet in-progress/idle baseline. No new hues.
+  function setImagegen(text, state) {
+    imagegenResult.textContent = text;
+    imagegenResult.className = state === 'ok' ? 'result amber' : state === 'err' ? 'result' : 'result muted';
+  }
+
+  document.getElementById('generate').addEventListener('click', function () {
+    var key = window.relaisApiKey();
+    if (!key) { setImagegen('enter the node api key', 'err'); return; }
+    var prompt = (imagegenPrompt ? imagegenPrompt.value : '').trim();
+    if (!prompt) { setImagegen('enter a prompt', 'err'); return; }
+    setImagegen('generating…', 'busy');
+    imagegenImage.style.display = 'none';
+    fetch('/v1/images/generations', {
+      method: 'POST',
+      headers: { 'Authorization': 'Bearer ' + key, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt: prompt, size: '512x512', response_format: 'b64_json', n: 1 }),
+    })
+      .then(function (r) {
+        // 503 (warming/thermal) and 501 (no backend on this build) are expected states, not crashes:
+        // report them and stop — no auto-retry.
+        if (r.status === 503) {
+          setImagegen('warming up — the image model is loading, try again in a few seconds', 'busy');
+          return null;
+        }
+        if (r.status === 501) { setImagegen('image generation not available on this build', 'err'); return null; }
+        if (!r.ok) { setImagegen('GENERATE FAILED — HTTP ' + r.status, 'err'); return null; }
+        return r.json();
+      })
+      .then(function (body) {
+        if (!body) { return; }
+        var b64 = body && body.data && body.data[0] && body.data[0].b64_json;
+        if (!b64) { setImagegen('(no image returned)', 'err'); return; }
+        imagegenImage.src = 'data:image/png;base64,' + b64;
+        imagegenImage.style.display = 'block';
+        setImagegen('done', 'ok');
+      })
+      .catch(function (err) { setImagegen('GENERATE FAILED — ' + err.message, 'err'); });
   });
 })();
 </script>

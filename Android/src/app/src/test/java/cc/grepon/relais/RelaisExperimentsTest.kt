@@ -189,11 +189,16 @@ class RelaisExperimentsTest {
   }
 
   @Test
-  fun `audio module never sets a Content-Type header manually`() {
+  fun `multipart modules never hand-set a Content-Type, only the image-gen JSON fetch does`() {
     val html = renderExperimentsHtml(status(), nonce)
-    // A manual multipart Content-Type would omit the boundary and break the upload; the fetch must
-    // let the browser set it. Guard on the header KEY the fetch would use, not prose in comments.
-    assertFalse("browser must set Content-Type + boundary itself", html.contains("'Content-Type'"))
+    // A manual multipart Content-Type would omit the boundary and break the FormData upload; the
+    // audio + vision fetches must let the browser set it. The JSON image-generation fetch is the
+    // sole exception. So the ONLY Content-Type header on the page is application/json — guard the
+    // count, not prose in comments.
+    val ctCount = Regex("'Content-Type'").findAll(html).count()
+    assertEquals("exactly one Content-Type on the page (the image-gen JSON fetch)", 1, ctCount)
+    assertTrue("that one Content-Type is application/json",
+      html.contains("'Content-Type': 'application/json'"))
   }
 
   // ---- vision / photo module ----
@@ -226,5 +231,55 @@ class RelaisExperimentsTest {
     assertTrue("reads choices[0].message.content", html.contains("body.choices[0].message"))
     assertTrue("renders through textContent", html.contains("visionResult.textContent"))
     assertFalse("never innerHTML anywhere on the page", html.contains("innerHTML"))
+  }
+
+  // ---- image generation module ----
+
+  @Test
+  fun `image generation module renders a prompt field, generate control, result and hidden img`() {
+    val html = renderExperimentsHtml(status(), nonce)
+    assertTrue("prompt text input", html.contains("""id="imagegen-prompt""""))
+    assertTrue("prompt placeholder", html.contains("""placeholder="a red bicycle on a beach""""))
+    assertTrue("generate button", html.contains("""id="generate""""))
+    assertTrue("img result element", html.contains("""id="imagegen-image""""))
+    assertTrue("img starts hidden until an image arrives", html.contains("display:none"))
+    assertTrue("result starts as the muted idle baseline",
+      html.contains("""<div class="result muted" id="imagegen-result">idle</div>"""))
+  }
+
+  @Test
+  fun `image generation module posts JSON to the images endpoint with a bearer header`() {
+    val html = renderExperimentsHtml(status(), nonce)
+    assertTrue(html.contains("'/v1/images/generations'"))
+    assertTrue("method is POST", html.contains("method: 'POST'"))
+    assertTrue("bearer header", html.contains("'Authorization': 'Bearer ' + key"))
+    assertTrue("sends the prompt", html.contains("prompt: prompt"))
+    assertTrue("requests the only supported size", html.contains("size: '512x512'"))
+    assertTrue("requests base64 output", html.contains("response_format: 'b64_json'"))
+    assertTrue("single image", html.contains("n: 1"))
+  }
+
+  @Test
+  fun `image generation renders the returned b64 as an img src data URI, never innerHTML`() {
+    val html = renderExperimentsHtml(status(), nonce)
+    assertTrue("reads data[0].b64_json", html.contains("body.data[0].b64_json"))
+    assertTrue("assigns a PNG data URI", html.contains("'data:image/png;base64,'"))
+    assertTrue("renders the image via .src", html.contains("imagegenImage.src"))
+    assertTrue("status via textContent", html.contains("imagegenResult.textContent"))
+    assertFalse("never innerHTML anywhere on the page", html.contains("innerHTML"))
+  }
+
+  @Test
+  fun `image generation surfaces 503 warming and 501 unavailable without auto-retry`() {
+    val html = renderExperimentsHtml(status(), nonce)
+    assertTrue("503 branch", html.contains("r.status === 503"))
+    assertTrue("503 warming status",
+      html.contains("warming up — the image model is loading, try again in a few seconds"))
+    assertTrue("501 branch", html.contains("r.status === 501"))
+    assertTrue("501 unavailable status", html.contains("image generation not available on this build"))
+    assertTrue("generic failure status", html.contains("GENERATE FAILED — HTTP '"))
+    // No auto-retry: the only fetch to the images endpoint is the operator-triggered one.
+    assertEquals("no auto-retry loop to the images endpoint", 1,
+      Regex("/v1/images/generations").findAll(html).count())
   }
 }
