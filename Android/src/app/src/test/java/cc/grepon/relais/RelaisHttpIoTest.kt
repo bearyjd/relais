@@ -20,8 +20,11 @@ package cc.grepon.relais
 
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
+import java.util.Base64
+import org.json.JSONObject
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -270,5 +273,110 @@ class RelaisHttpIoTest {
     sb.append("--b--\r\n")
     val parts = parseMultipartFormData(sb.toString().toByteArray(Charsets.ISO_8859_1), "b")
     assertTrue("part count must be capped at 16, was ${parts.size}", parts.size <= 16)
+  }
+
+  // ---- buildMultipartChatRequest (the multipart -> synthetic OpenAI vision request adapter) ----
+  //
+  // org.json is a real JVM impl here (build.gradle.kts testImplementation "org.json:json"), so these
+  // assert directly on the constructed JSONObject — the same object the route hands to handleOpenAi.
+
+  private val imageBytes = byteArrayOf(0x00, 0x01, 0xFF.toByte(), 0x0A, 0x2D, 0x7F, 0x80.toByte())
+
+  @Test
+  fun `buildMultipartChatRequest emits a user turn with a text part and an image_url data-uri part`() {
+    val req = buildMultipartChatRequest(imageBytes, "image/png", "what is this?", "gemma-3n-e4b", null, false)
+
+    assertEquals("gemma-3n-e4b", req.getString("model"))
+    assertFalse("stream defaults off for a plain upload", req.getBoolean("stream"))
+
+    val messages = req.getJSONArray("messages")
+    assertEquals("no system field -> user turn only", 1, messages.length())
+    val user = messages.getJSONObject(0)
+    assertEquals("user", user.getString("role"))
+
+    val content = user.getJSONArray("content")
+    assertEquals(2, content.length())
+    val textPart = content.getJSONObject(0)
+    assertEquals("text", textPart.getString("type"))
+    assertEquals("what is this?", textPart.getString("text"))
+
+    val imagePart = content.getJSONObject(1)
+    assertEquals("image_url", imagePart.getString("type"))
+    val url = imagePart.getJSONObject("image_url").getString("url")
+    val expected = "data:image/png;base64," + Base64.getEncoder().encodeToString(imageBytes)
+    assertEquals("data uri must carry the exact base64 of the uploaded bytes", expected, url)
+  }
+
+  @Test
+  fun `buildMultipartChatRequest prepends a system message only when the system field is present`() {
+    val req = buildMultipartChatRequest(imageBytes, "image/jpeg", "hi", null, "be terse", true)
+    val messages = req.getJSONArray("messages")
+    assertEquals("system + user", 2, messages.length())
+    val system = messages.getJSONObject(0)
+    assertEquals("system", system.getString("role"))
+    assertEquals("be terse", system.getString("content"))
+    assertEquals("user", messages.getJSONObject(1).getString("role"))
+    assertTrue("stream passed through", req.getBoolean("stream"))
+    assertFalse("blank/absent model must be omitted so the resident model is used", req.has("model"))
+  }
+
+  @Test
+  fun `buildMultipartChatRequest omits a blank system and a blank model`() {
+    val req = buildMultipartChatRequest(imageBytes, "image/png", "", "   ", "   ", false)
+    assertEquals("blank system -> user turn only", 1, req.getJSONArray("messages").length())
+    assertEquals("user", req.getJSONArray("messages").getJSONObject(0).getString("role"))
+    assertFalse("blank model omitted", req.has("model"))
+  }
+
+  @Test
+  fun `buildMultipartChatRequest defaults a null prompt to an empty text part`() {
+    val req = buildMultipartChatRequest(imageBytes, "image/png", null, null, null, false)
+    val text = req.getJSONArray("messages").getJSONObject(0)
+      .getJSONArray("content").getJSONObject(0)
+    assertEquals("", text.getString("text"))
+  }
+
+  @Test
+  fun `buildMultipartChatRequest JSON-escapes untrusted prompt and system with special chars`() {
+    // Newline, double-quote, backslash, and a script-close sequence must round-trip verbatim through
+    // serialization — proof the org.json path escapes rather than concatenates raw bytes into JSON.
+    val nasty = "line1\nline2 \"q\" \\b </script>  end"
+    val req = buildMultipartChatRequest(imageBytes, "image/png", nasty, null, nasty, false)
+
+    // Serialize + reparse: a broken/unescaped string would fail to parse or come back mangled.
+    val reparsed = JSONObject(req.toString())
+    val messages = reparsed.getJSONArray("messages")
+    assertEquals("system + user", 2, messages.length())
+    assertEquals(nasty, messages.getJSONObject(0).getString("content"))
+    assertEquals(
+      nasty,
+      messages.getJSONObject(1).getJSONArray("content").getJSONObject(0).getString("text"),
+    )
+    // The raw JSON text must carry the ESCAPED forms, never the literal control/quote sequences.
+    val raw = req.toString()
+    assertTrue("newline escaped", raw.contains("line1\\nline2"))
+    assertTrue("quote escaped", raw.contains("\\\"q\\\""))
+    assertFalse("no raw newline inside the JSON string value", raw.contains("line1\nline2"))
+  }
+
+  @Test
+  fun `buildMultipartChatRequest sanitizes a non-image mime to image jpeg`() {
+    val req = buildMultipartChatRequest(imageBytes, "application/octet-stream", "x", null, null, false)
+    val url = req.getJSONArray("messages").getJSONObject(0)
+      .getJSONArray("content").getJSONObject(1).getJSONObject("image_url").getString("url")
+    assertTrue("bogus type falls back to image/jpeg", url.startsWith("data:image/jpeg;base64,"))
+  }
+
+  @Test
+  fun `buildMultipartChatRequest sanitizes a null mime and strips mime parameters`() {
+    val nullMime = buildMultipartChatRequest(imageBytes, null, null, null, null, false)
+      .getJSONArray("messages").getJSONObject(0)
+      .getJSONArray("content").getJSONObject(1).getJSONObject("image_url").getString("url")
+    assertTrue("null type -> image/jpeg", nullMime.startsWith("data:image/jpeg;base64,"))
+
+    val paramMime = buildMultipartChatRequest(imageBytes, "image/WEBP; charset=binary", null, null, null, false)
+      .getJSONArray("messages").getJSONObject(0)
+      .getJSONArray("content").getJSONObject(1).getJSONObject("image_url").getString("url")
+    assertTrue("params stripped + lowercased", paramMime.startsWith("data:image/webp;base64,"))
   }
 }

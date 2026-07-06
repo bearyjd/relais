@@ -70,6 +70,10 @@ private const val MAX_CONNECTIONS = 16 // cap worker threads (single-engine node
 // Shared body cap. `internal` so the byte-oriented [HttpRequestReader.readBodyBytes] enforces the
 // same ceiling as the server's front-door 413 check (single source of truth across the module).
 internal const val MAX_BODY_BYTES = 32 * 1024 * 1024 // 32 MB cap (base64 image/audio)
+// A multipart image upload (the /v1/chat/completions convenience path) is re-encoded to base64 in
+// memory and decoded again downstream — a ~5x transient peak per request. Cap the decoded image well
+// below MAX_BODY_BYTES so concurrent uploads can't spike memory on a phone hosting a resident LLM.
+private const val MAX_MULTIPART_IMAGE_BYTES = 12 * 1024 * 1024 // 12 MB decoded image
 private const val MAX_HEADER_LINES = 64 // bound header parsing (slowloris / header-flood)
 private const val MAX_HEADER_BYTES = 16 * 1024
 private const val DEFAULT_MODEL = "gemma-4-e4b-it"
@@ -812,7 +816,42 @@ class RelaisHttpServer(
             try {
               // Resolve the session key only when session memory is enabled (null otherwise = inert).
               val sessionKey = if (sessionEnabled) resolveSessionKey(sock, sessionHeader) else null
-              handleOpenAi(sock, JSONObject(readBody(reader, contentLength)), sessionKey)
+              // Body construction branches on Content-Type; everything downstream (session, streaming,
+              // response) is identical. A multipart/form-data upload is a convenience adapter that
+              // produces the SAME synthetic OpenAI chat request the standard JSON vision path handles.
+              val boundary = contentType?.let { parseMultipartBoundary(it) }
+              if (boundary != null) {
+                val bodyBytes = reader.readBodyBytes(contentLength)
+                val fileParts = parseMultipartFormData(bodyBytes, boundary)
+                val filePart = fileParts.firstOrNull { it.name == "file" }
+                if (filePart == null) {
+                  // Return INSIDE the try so the gate release + latency record in finally still run.
+                  reply(400, JSONObject().put("error", "missing 'file' field"))
+                  return
+                }
+                // Bound the decoded image below the body cap (transient base64 amplification): a huge
+                // upload would otherwise peak ~5x its size while holding an admission permit.
+                if (filePart.bytes.size > MAX_MULTIPART_IMAGE_BYTES) {
+                  reply(413, JSONObject().put("error", "image too large (max ${MAX_MULTIPART_IMAGE_BYTES / (1024 * 1024)}MB)"))
+                  return
+                }
+                fun textField(name: String): String? =
+                  fileParts.firstOrNull { it.name == name }?.let { String(it.bytes, Charsets.UTF_8) }
+                val streamRequested =
+                  textField("stream")?.trim()?.equals("true", ignoreCase = true) ?: false
+                // Untrusted multipart fields — buildMultipartChatRequest JSON-escapes them via org.json.
+                val synthetic = buildMultipartChatRequest(
+                  fileBytes = filePart.bytes,
+                  mimeType = filePart.contentType,
+                  prompt = textField("prompt") ?: textField("text"),
+                  model = textField("model"),
+                  system = textField("system"),
+                  stream = streamRequested,
+                )
+                handleOpenAi(sock, synthetic, sessionKey)
+              } else {
+                handleOpenAi(sock, JSONObject(readBody(reader, contentLength)), sessionKey)
+              }
             } finally {
               RelaisMetrics.recordEndpointLatency("/v1/chat/completions", (System.nanoTime() - inferStartNs) / 1e9)
               admissionGate.releaseShared()

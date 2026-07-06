@@ -190,6 +190,20 @@ button:disabled { background: var(--hairline); color: var(--muted); cursor: defa
   </div>
 </div>
 
+<div class="panel">
+  <div class="panel-title">Vision / Photo</div>
+  <div class="field">
+    <input type="file" accept="image/*" id="vision-file">
+  </div>
+  <div class="field">
+    <input type="text" id="vision-prompt" autocomplete="off" placeholder="what's in this photo?">
+  </div>
+  <div class="field">
+    <button id="analyze" type="button">Analyze</button>
+  </div>
+  <div class="result muted" id="vision-result">idle</div>
+</div>
+
 <script nonce="$nonce">
 (function () {
   'use strict';
@@ -252,6 +266,44 @@ button:disabled { background: var(--hairline); color: var(--muted); cursor: defa
       })
       .then(function (body) { setTranscribe(body.text || '(no text)', 'ok'); })
       .catch(function (err) { setTranscribe('LINK FAILED — ' + err.message, 'err'); });
+  });
+
+  // --- Vision / Photo module: POST multipart/form-data to /v1/chat/completions ---
+  // The node adapts the multipart upload into the SAME synthetic OpenAI vision request the JSON path
+  // uses (a user message carrying the image as a data URI), so this is just a convenience client.
+  var visionInput = document.getElementById('vision-file');
+  var visionPrompt = document.getElementById('vision-prompt');
+  var visionResult = document.getElementById('vision-result');
+
+  // Same palette discipline as setLink/setTranscribe: amber = the answer (live signal), paper-bright =
+  // failure (notable), muted = the quiet in-progress/idle baseline. No new hues.
+  function setVision(text, state) {
+    visionResult.textContent = text;
+    visionResult.className = state === 'ok' ? 'result amber' : state === 'err' ? 'result' : 'result muted';
+  }
+
+  document.getElementById('analyze').addEventListener('click', function () {
+    var key = window.relaisApiKey();
+    if (!key) { setVision('enter the node api key', 'err'); return; }
+    var file = visionInput.files && visionInput.files[0];
+    if (!file) { setVision('choose an image file', 'err'); return; }
+    setVision('analyzing…', 'busy');
+    var fd = new FormData();
+    fd.append('file', file);
+    fd.append('prompt', visionPrompt ? visionPrompt.value : '');
+    // Current model id read from the Node panel cell (no injection: browser-decoded text, not markup).
+    fd.append('model', (modelCell ? modelCell.textContent : '').trim());
+    // Deliberately no Content-Type header: the browser sets multipart/form-data + boundary itself.
+    fetch('/v1/chat/completions', { method: 'POST', headers: { 'Authorization': 'Bearer ' + key }, body: fd })
+      .then(function (r) {
+        if (!r.ok) { throw new Error('HTTP ' + r.status); }
+        return r.json();
+      })
+      .then(function (body) {
+        var msg = body && body.choices && body.choices[0] && body.choices[0].message;
+        setVision((msg && msg.content) || '(no content)', 'ok');
+      })
+      .catch(function (err) { setVision('LINK FAILED — ' + err.message, 'err'); });
   });
 })();
 </script>
