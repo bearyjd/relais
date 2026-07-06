@@ -195,4 +195,36 @@ class RelaisExperimentsTest {
     // let the browser set it. Guard on the header KEY the fetch would use, not prose in comments.
     assertFalse("browser must set Content-Type + boundary itself", html.contains("'Content-Type'"))
   }
+
+  // ---- vision / photo module ----
+
+  @Test
+  fun `vision module renders a file picker, prompt field, analyze control and result`() {
+    val html = renderExperimentsHtml(status(), nonce)
+    assertTrue("image file input", html.contains("""<input type="file" accept="image/*" id="vision-file">"""))
+    assertTrue("prompt text input", html.contains("""id="vision-prompt""""))
+    assertTrue("prompt placeholder", html.contains("""placeholder="what's in this photo?""""))
+    assertTrue("analyze button", html.contains("""id="analyze""""))
+    assertTrue("result starts as the muted idle baseline",
+      html.contains("""<div class="result muted" id="vision-result">idle</div>"""))
+  }
+
+  @Test
+  fun `vision module posts multipart to the chat completions endpoint with a bearer header`() {
+    val html = renderExperimentsHtml(status(), nonce)
+    assertTrue(html.contains("'/v1/chat/completions'"))
+    assertTrue("uses FormData so the browser sets the multipart boundary", html.contains("new FormData()"))
+    assertTrue("file field name is 'file'", html.contains("fd.append('file', file)"))
+    assertTrue("sends the prompt field", html.contains("fd.append('prompt'"))
+    assertTrue("sends the model id", html.contains("fd.append('model'"))
+    assertTrue(html.contains("'Authorization': 'Bearer ' + key"))
+  }
+
+  @Test
+  fun `vision module renders the OpenAI choice content via textContent, never innerHTML`() {
+    val html = renderExperimentsHtml(status(), nonce)
+    assertTrue("reads choices[0].message.content", html.contains("body.choices[0].message"))
+    assertTrue("renders through textContent", html.contains("visionResult.textContent"))
+    assertFalse("never innerHTML anywhere on the page", html.contains("innerHTML"))
+  }
 }

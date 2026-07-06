@@ -18,6 +18,8 @@
 
 package cc.grepon.relais
 
+import org.json.JSONArray
+import org.json.JSONObject
 import java.io.BufferedInputStream
 import java.io.ByteArrayOutputStream
 import java.io.InputStream
@@ -252,4 +254,72 @@ private fun indexOf(haystack: ByteArray, needle: ByteArray, from: Int): Int {
     i++
   }
   return -1
+}
+
+private const val DEFAULT_IMAGE_MIME = "image/jpeg"
+private val IMAGE_MIME_REGEX = Regex("^image/[a-z0-9.+-]+$")
+
+/**
+ * Builds the synthetic OpenAI chat-completions request for the `multipart/form-data` convenience path
+ * on `POST /v1/chat/completions`: one uploaded image ([fileBytes]) plus optional text fields become
+ * the EXACT JSON body the standard JSON vision path already understands — a `user` message whose
+ * `content[]` carries a `text` part and an `image_url` data-URI part (see extractParts in
+ * [buildPromptParts]). The route hands the result straight to `handleOpenAi`, so all streaming,
+ * session, and response logic is shared with the JSON path.
+ *
+ * Pure and device-free: base64-encodes via `java.util.Base64` (NOT `android.util.Base64`) so it runs
+ * unchanged in JVM unit tests and on-device (minSdk 31), and constructs the body with `org.json` so
+ * every UNTRUSTED field ([prompt], [system], [model]) and the data-URI is JSON-escaped by the
+ * serializer — never string-concatenated into JSON.
+ *
+ * @param fileBytes  raw uploaded image bytes (base64-encoded into the data URI).
+ * @param mimeType   the file part's declared Content-Type; sanitized to `image/<subtype>` (defaults to
+ *                   `image/jpeg` for anything not a well-formed image type) so an arbitrary attacker
+ *                   string never lands inside the emitted data URI.
+ * @param prompt     user text (null -> empty string).
+ * @param model      requested model id (null/blank -> omitted, so the node's resident model is used).
+ * @param system     optional system prompt (null/blank -> no system message emitted).
+ * @param stream     whether to request SSE streaming.
+ */
+fun buildMultipartChatRequest(
+  fileBytes: ByteArray,
+  mimeType: String?,
+  prompt: String?,
+  model: String?,
+  system: String?,
+  stream: Boolean,
+): JSONObject {
+  val encoded = java.util.Base64.getEncoder().encodeToString(fileBytes)
+  val dataUri = buildString(encoded.length + 40) {
+    append("data:").append(sanitizeImageMime(mimeType)).append(";base64,").append(encoded)
+  }
+
+  val userContent = JSONArray()
+    .put(JSONObject().put("type", "text").put("text", prompt ?: ""))
+    .put(
+      JSONObject().put("type", "image_url")
+        .put("image_url", JSONObject().put("url", dataUri)),
+    )
+
+  val messages = JSONArray()
+  if (!system.isNullOrBlank()) {
+    messages.put(JSONObject().put("role", "system").put("content", system))
+  }
+  messages.put(JSONObject().put("role", "user").put("content", userContent))
+
+  val request = JSONObject().put("stream", stream).put("messages", messages)
+  if (!model.isNullOrBlank()) request.put("model", model)
+  return request
+}
+
+/**
+ * Sanitizes a multipart file part's Content-Type into a safe `image/<subtype>` for the data URI.
+ * Strips any parameters (`; charset=…`), lowercases, then accepts only `image/<token>` with a
+ * conservative subtype charset; anything else (a non-image type, malformed value, or null) becomes
+ * [DEFAULT_IMAGE_MIME]. The image decoder ignores the declared type anyway (it strips to `;base64,`),
+ * so this is pure hygiene — it keeps an arbitrary attacker string out of the emitted data URI.
+ */
+private fun sanitizeImageMime(raw: String?): String {
+  val base = raw?.substringBefore(';')?.trim()?.lowercase() ?: return DEFAULT_IMAGE_MIME
+  return if (base.matches(IMAGE_MIME_REGEX)) base else DEFAULT_IMAGE_MIME
 }
