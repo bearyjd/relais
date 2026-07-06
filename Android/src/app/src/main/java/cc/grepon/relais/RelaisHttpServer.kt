@@ -387,7 +387,7 @@ class RelaisHttpServer(
               sock, 200, html, "text/html; charset=utf-8",
               listOf(
                 "Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; " +
-                  "script-src 'nonce-$nonce'; connect-src 'self'; base-uri 'none'; " +
+                  "script-src 'nonce-$nonce'; connect-src 'self'; img-src data:; base-uri 'none'; " +
                   "frame-ancestors 'none'; form-action 'none'",
                 "X-Content-Type-Options: nosniff",
                 "X-Frame-Options: DENY",
