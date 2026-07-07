@@ -126,6 +126,9 @@ internal fun controlPanelDetailLine(
   when {
     // Checked first: an in-flight (still "running") attempt that already failed renders OFFLINE
     // above, but must never be confused with a plain, intentional stop.
+    // The "START again" promise is only honest because RelaisNodeService.onStartCommand
+    // re-dispatches the init attempt against an already-alive service — don't drop that dispatch
+    // guard without also revisiting this copy.
     status == NodeStatus.OFFLINE && failed -> "start failed · check model/token, then START again"
     // Thermal shed is expressed in-line, in Paper, rather than a new color (§4.4) — the Compose
     // layer is responsible for the color choice; this function only owns the text.
