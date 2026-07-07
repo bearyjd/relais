@@ -77,12 +77,14 @@ class RelaisNodeService : Service() {
       RelaisEngine.lastInitFailed = false // new attempt: drop any prior failure so a restart-after-
       // failure doesn't flash NodeState.ERROR in the window before startupInProgress flips.
       RelaisEngine.startupInProgress = true // tell the watchdog "coming up", not "dead" (slow downloads)
+      RelaisNodeProgress.reset() // drop any stale phase/bytes from a prior attempt (control-panel phase line)
       try {
         updateNotification("Provisioning model…")
         val modelPath =
           RelaisModelProvisioner.ensureModel(applicationContext) { pct ->
             updateNotification("Downloading model $pct%…")
           }
+        RelaisNodeProgress.phase = ProvisionPhase.LOADING_ENGINE
         RelaisEngine.ensureInitialized(applicationContext, modelPath)
         // Register the EmbeddingGemma embedder so /v1/embeddings can report availability + provision
         // on demand. register() is cheap (no download/load). warmIfProvisioned() background-loads an
@@ -113,6 +115,7 @@ class RelaisNodeService : Service() {
         updateNotification("Init failed: ${e.message}")
       } finally {
         RelaisEngine.startupInProgress = false
+        RelaisNodeProgress.reset()
       }
     }
   }

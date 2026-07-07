@@ -288,25 +288,27 @@ No START/STOP on Configure — one place to operate the node, one place to set i
 
 ## 6. Open questions (need your call before implementation)
 
-- **Q1 — Configure surface form.** Recommendation: **second full-screen activity**
-  (matches the existing `PromptTemplateEditorActivity`/`NfcWriteActivity` pattern, and
-  the model selector already being a bottom sheet makes sheet-from-sheet awkward).
-  Alternatives: expandable section (keeps one screen, but re-clutters it), bottom sheet
-  (conflicts with the nested model-selector sheet). Confirm: second activity?
-- **Q2 — Access-key masking.** Today the full key renders in cleartext whenever the
-  screen is open (shoulder-surf on a device that may sit on a desk LIVE). Option: show
-  `••••…last-4` with the existing tap still copying the full key, and a `SHOW` toggle.
-  Costs one glance-affordance; gains real exposure reduction. Mask by default?
-- **Q3 — OFFLINE endpoint display.** Spec §4.1 shows the prospective LAN endpoint in
-  Muted while offline (useful for pre-configuring clients). Alternative: hide endpoints
-  entirely until LIVE (stricter "don't show what isn't true"). Keep the Muted preview?
-- **Q4 — CANCEL during download.** §4.2 wires CANCEL to `RelaisNodeService.stop`.
-  Should canceling mid-download also discard the partial download, or keep it for
-  resume? (Current provisioner behavior decides the honest label.)
-- **Q5 — Thermal plumbing scope.** Is the `RelaisEngine` thermal getter (§4.4) in scope
-  for the redesign PR, or stub-now/land-later?
-- **Q6 — Download-progress plumbing.** Phase-line percentages (§4.2) require the model
-  provisioner to expose progress to the activity. Same scope question as Q5.
+- **Q1 — Configure surface form. ANSWERED: second full-screen activity.**
+  `RelaisConfigureActivity`, exported=false, `‹ CONFIGURE` header, matching the existing
+  `PromptTemplateEditorActivity`/`NfcWriteActivity` internal-screen pattern.
+- **Q2 — Access-key masking. ANSWERED: masked by default.** The home-screen chip
+  renders `••••…last-4` (monospace) with a `SHOW`/`HIDE` toggle at label tier; tapping
+  the chip still copies the full raw key regardless of mask state.
+- **Q3 — OFFLINE endpoint display. ANSWERED: keep the Muted preview.** The LAN row
+  shows the prospective endpoint in Muted while OFFLINE/STARTING, Paper only when LIVE;
+  the LOCAL row stays hidden unless LIVE.
+- **Q4 — CANCEL during download. ANSWERED: keep the partial download.** CANCEL wires to
+  `RelaisNodeService.stop`, which does not touch on-disk bytes; the provisioner's
+  existing `DownloadWorker` resumes the partial file (byte-range) on the next START
+  rather than re-downloading from scratch.
+- **Q5 — Thermal plumbing scope. ANSWERED: full plumbing, this PR.** The home screen
+  polls `ThermalGovernor.shouldShed()` (already public, no new getter needed) each tick;
+  while LIVE and shedding, the detail line reads `thermal · shedding load` in Paper.
+- **Q6 — Download-progress plumbing. ANSWERED: full plumbing, this PR.** A new
+  `RelaisNodeProgress` object (phase + received/total bytes) is written by
+  `RelaisModelProvisioner`/`RelaisNodeService`'s init thread and polled by the activity,
+  driving the `resolving model…` / `downloading model · N% · x.x/y.y GB` /
+  `loading engine…` phase line and the determinate download progress bar.
 
 ---
 
