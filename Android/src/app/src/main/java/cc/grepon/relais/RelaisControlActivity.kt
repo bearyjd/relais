@@ -149,6 +149,7 @@ class RelaisControlActivity : ComponentActivity() {
           var phase by remember { mutableStateOf(RelaisNodeProgress.phase) }
           var downloadReceivedBytes by remember { mutableStateOf(0L) }
           var downloadTotalBytes by remember { mutableStateOf(0L) }
+          var initFailed by remember { mutableStateOf(RelaisEngine.lastInitFailed) }
           val ip = remember { lanIpv4() }
 
           LaunchedEffect(Unit) {
@@ -162,6 +163,7 @@ class RelaisControlActivity : ComponentActivity() {
               phase = RelaisNodeProgress.phase
               downloadReceivedBytes = RelaisNodeProgress.downloadReceivedBytes
               downloadTotalBytes = RelaisNodeProgress.downloadTotalBytes
+              initFailed = RelaisEngine.lastInitFailed
               delay(1000)
             }
           }
@@ -176,6 +178,7 @@ class RelaisControlActivity : ComponentActivity() {
               phase = phase,
               downloadReceivedBytes = downloadReceivedBytes,
               downloadTotalBytes = downloadTotalBytes,
+              initFailed = initFailed,
             )
 
           val statusColor =
@@ -236,9 +239,9 @@ class RelaisControlActivity : ComponentActivity() {
               }
               Text(
                 panel.detailLine,
-                // Thermal shed reads Paper (bright = attention by brightness, no new color) — every
-                // other detail line stays Muted (§4.4).
-                color = if (panel.status == NodeStatus.LIVE && thermalShedding) Paper else Muted,
+                // detailLineBright is derived once in the pure state (thermal shed or failed-init) —
+                // Paper = attention by brightness, no new color; every other detail line stays Muted.
+                color = if (panel.detailLineBright) Paper else Muted,
                 fontFamily = FontFamily.Monospace,
                 fontSize = 11.sp, // Caption tier
               )

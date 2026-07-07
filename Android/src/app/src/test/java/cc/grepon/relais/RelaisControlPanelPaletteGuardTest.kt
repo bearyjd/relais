@@ -45,6 +45,17 @@ class RelaisControlPanelPaletteGuardTest {
 
   private val hexLiteralRegex = Regex("0x[0-9A-Fa-f]{6,8}")
 
+  // Compose's built-in Color companion members (Color.Red, Color.White, Color.Black, …) are a
+  // second way an off-palette color can slip in without ever writing a hex literal. None of them
+  // are needed today — RelaisPalette.kt's seven tokens cover every color this UI uses — so the
+  // allowlist is empty; a real future need (e.g. Color.Transparent) should extend it deliberately,
+  // not silently pass because the hex-literal scan alone didn't catch it (review L2).
+  private val allowedNamedColorMembers = emptySet<String>()
+
+  // Negative lookbehind excludes any identifier merely ENDING in "Color" (e.g. `statusColor.copy(`,
+  // `animatedStatusColor.copy(`) — only a bare `Color.Xxx` (the Compose companion object) matches.
+  private val namedColorRegex = Regex("""(?<![A-Za-z0-9_])Color\.([A-Za-z][A-Za-z0-9]*)""")
+
   /**
    * Finds `RelaisPalette.kt`'s directory by walking up from this test class's own source-relative
    * location — robust to whichever directory Gradle's Test task happens to run `user.dir` from.
@@ -75,11 +86,37 @@ class RelaisControlPanelPaletteGuardTest {
     )
   }
 
-  @Test
-  fun `RelaisControlActivity uses only palette colors`() = assertNoOffPaletteHex("RelaisControlActivity.kt")
+  /**
+   * A second way an off-palette color can slip in without ever writing a hex literal: reaching for
+   * Compose's built-in `Color.Red`/`Color.White`/`Color.Black`/… companion members directly instead
+   * of one of RelaisPalette.kt's seven named tokens (review L2). `Color(` constructor calls and
+   * bare `Color` type references (e.g. a `valueColor: Color` parameter) are unaffected — only a
+   * dotted member access on `Color` is flagged.
+   */
+  private fun assertNoOffPaletteNamedColors(fileName: String) {
+    val file = File(packageDir(), fileName)
+    assertTrue("$fileName must exist for the palette guard to scan it", file.isFile)
+    val text = file.readText()
+    val found = namedColorRegex.findAll(text).map { it.groupValues[1] }.toSet()
+    val offPalette = found - allowedNamedColorMembers
+    assertTrue(
+      "$fileName references off-palette Color.* member(s) not allowlisted: $offPalette " +
+        "(use one of RelaisPalette.kt's tokens instead — DESIGN.md is law, no new colors)",
+      offPalette.isEmpty(),
+    )
+  }
 
   @Test
-  fun `RelaisConfigureActivity uses only palette colors`() = assertNoOffPaletteHex("RelaisConfigureActivity.kt")
+  fun `RelaisControlActivity uses only palette colors`() {
+    assertNoOffPaletteHex("RelaisControlActivity.kt")
+    assertNoOffPaletteNamedColors("RelaisControlActivity.kt")
+  }
+
+  @Test
+  fun `RelaisConfigureActivity uses only palette colors`() {
+    assertNoOffPaletteHex("RelaisConfigureActivity.kt")
+    assertNoOffPaletteNamedColors("RelaisConfigureActivity.kt")
+  }
 
   @Test
   fun `RelaisControlPanelState uses no hardcoded color literals at all`() {

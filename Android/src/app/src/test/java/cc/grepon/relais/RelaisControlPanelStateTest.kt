@@ -292,4 +292,141 @@ class RelaisControlPanelStateTest {
     assertEquals(key, displayApiKey(key, revealed = true))
     assertEquals(maskAccessKey(key), displayApiKey(key, revealed = false))
   }
+
+  // ---------------------------------------------------------------------------
+  // M1 — failed-init honesty. RelaisNodeService leaves shouldRun=true and never resets
+  // RelaisEngine.lastInitFailed after a failed init (e.g. a first-run gated-repo 401), so without
+  // this the panel would show a perpetual "STARTING · resolving model…" with a CANCEL button and
+  // nothing actually running. Scenario: running=true, ready=false, initFailed=true.
+  // ---------------------------------------------------------------------------
+
+  @Test
+  fun `initFailed with running true and ready false renders as OFFLINE with an honest failed detail line`() {
+    val s = computeControlPanelState(
+      ready = false, running = true, modelDisplayName = "Gemma 4 E2B",
+      thermalShedding = false, phase = ProvisionPhase.RESOLVING,
+      downloadReceivedBytes = 0L, downloadTotalBytes = 0L, initFailed = true,
+    )
+    assertEquals(NodeStatus.OFFLINE, s.status)
+    assertEquals("OFFLINE", s.statusWord)
+    assertEquals("start failed · check model/token, then START again", s.detailLine)
+    // Retry action, never stranded without one.
+    assertEquals(PrimaryAction.START, s.primaryAction)
+    // The likely fix is changing model/token — the row must not be locked.
+    assertTrue(s.modelRowEnabled)
+    assertNull(s.modelLockedCaption)
+    // Never a phase line/progress bar for a phase that isn't actually happening.
+    assertFalse(s.showProgressBar)
+    assertNull(s.progressFraction)
+    assertFalse(s.showLocalEndpoint)
+    assertFalse(s.lanEndpointLive)
+  }
+
+  @Test
+  fun `initFailed with running false (already stopped) does not resurface the failed message`() {
+    // Once the operator has explicitly stopped, a stale lastInitFailed from a prior attempt must
+    // not keep claiming "start failed" — that's now a plain, honest OFFLINE.
+    val s = computeControlPanelState(
+      ready = false, running = false, modelDisplayName = "Gemma 4 E2B",
+      thermalShedding = false, phase = ProvisionPhase.IDLE,
+      downloadReceivedBytes = 0L, downloadTotalBytes = 0L, initFailed = true,
+    )
+    assertEquals(NodeStatus.OFFLINE, s.status)
+    assertEquals("node stopped · Gemma 4 E2B", s.detailLine)
+    assertEquals(PrimaryAction.START, s.primaryAction)
+    assertFalse(s.detailLineBright)
+  }
+
+  @Test
+  fun `initFailed is irrelevant once ready (LIVE always wins)`() {
+    val s = computeControlPanelState(
+      ready = true, running = true, modelDisplayName = "Gemma 4 E2B",
+      thermalShedding = false, phase = ProvisionPhase.IDLE,
+      downloadReceivedBytes = 0L, downloadTotalBytes = 0L, initFailed = true,
+    )
+    assertEquals(NodeStatus.LIVE, s.status)
+    assertEquals("engine resident · Gemma 4 E2B", s.detailLine)
+  }
+
+  @Test
+  fun `initFailed false with running true and ready false is unaffected — still STARTING`() {
+    val s = computeControlPanelState(
+      ready = false, running = true, modelDisplayName = "Gemma 4 E2B",
+      thermalShedding = false, phase = ProvisionPhase.RESOLVING,
+      downloadReceivedBytes = 0L, downloadTotalBytes = 0L, initFailed = false,
+    )
+    assertEquals(NodeStatus.STARTING, s.status)
+    assertEquals("resolving model…", s.detailLine)
+    assertEquals(PrimaryAction.CANCEL, s.primaryAction)
+  }
+
+  @Test
+  fun `initFailed defaults to false when omitted (back-compat with existing call sites)`() {
+    val s = computeControlPanelState(
+      ready = false, running = true, modelDisplayName = "m",
+      thermalShedding = false, phase = ProvisionPhase.RESOLVING,
+      downloadReceivedBytes = 0L, downloadTotalBytes = 0L,
+    )
+    assertEquals(NodeStatus.STARTING, s.status)
+  }
+
+  // ---------------------------------------------------------------------------
+  // L4 — thermal shedding must never leak into a detail line for a state where it isn't LIVE.
+  // ---------------------------------------------------------------------------
+
+  @Test
+  fun `thermalShedding true is ignored while STARTING`() {
+    val s = computeControlPanelState(
+      ready = false, running = true, modelDisplayName = "m",
+      thermalShedding = true, phase = ProvisionPhase.RESOLVING,
+      downloadReceivedBytes = 0L, downloadTotalBytes = 0L, initFailed = false,
+    )
+    assertEquals("resolving model…", s.detailLine)
+    assertFalse("thermalShedding must not leak into a non-LIVE detail line", s.detailLine.contains("thermal"))
+    assertFalse(s.detailLineBright)
+  }
+
+  @Test
+  fun `thermalShedding true is ignored while plain OFFLINE`() {
+    val s = computeControlPanelState(
+      ready = false, running = false, modelDisplayName = "m",
+      thermalShedding = true, phase = ProvisionPhase.IDLE,
+      downloadReceivedBytes = 0L, downloadTotalBytes = 0L, initFailed = false,
+    )
+    assertEquals("node stopped · m", s.detailLine)
+    assertFalse(s.detailLine.contains("thermal"))
+    assertFalse(s.detailLineBright)
+  }
+
+  @Test
+  fun `thermalShedding true is ignored in the failed-init state`() {
+    val s = computeControlPanelState(
+      ready = false, running = true, modelDisplayName = "m",
+      thermalShedding = true, phase = ProvisionPhase.IDLE,
+      downloadReceivedBytes = 0L, downloadTotalBytes = 0L, initFailed = true,
+    )
+    assertEquals("start failed · check model/token, then START again", s.detailLine)
+    assertFalse(s.detailLine.contains("thermal"))
+    // Bright because it's the failed message, not because of thermal.
+    assertTrue(s.detailLineBright)
+  }
+
+  // ---------------------------------------------------------------------------
+  // L5 — detailLineBright is derived in the pure function; the composable must not re-derive it.
+  // ---------------------------------------------------------------------------
+
+  @Test
+  fun `detailLineBright is true only for LIVE-plus-thermal-shed and the failed state`() {
+    val liveNormal = computeControlPanelState(true, true, "m", false, ProvisionPhase.IDLE, 0, 0, initFailed = false)
+    val liveShed = computeControlPanelState(true, true, "m", true, ProvisionPhase.IDLE, 0, 0, initFailed = false)
+    val starting = computeControlPanelState(false, true, "m", false, ProvisionPhase.RESOLVING, 0, 0, initFailed = false)
+    val offline = computeControlPanelState(false, false, "m", false, ProvisionPhase.IDLE, 0, 0, initFailed = false)
+    val failed = computeControlPanelState(false, true, "m", false, ProvisionPhase.IDLE, 0, 0, initFailed = true)
+
+    assertFalse(liveNormal.detailLineBright)
+    assertTrue(liveShed.detailLineBright)
+    assertFalse(starting.detailLineBright)
+    assertFalse(offline.detailLineBright)
+    assertTrue(failed.detailLineBright)
+  }
 }
