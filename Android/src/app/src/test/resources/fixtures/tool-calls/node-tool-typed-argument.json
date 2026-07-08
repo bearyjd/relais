@@ -1,0 +1,12 @@
+{
+  "provenance": "synthetic",
+  "note": "Hand-authored, matches the documented typed-argument quirk from Function_Calling_Guide.md ({\"type\":\"STRING\",\"value\":\"…\"}). Not a device capture — see README.md in this directory.",
+  "toolName": "calculator",
+  "arguments": {
+    "expression": { "type": "STRING", "value": "2+2" },
+    "note": "plain string values (no wrapper) must also pass through unchanged"
+  },
+  "expected": {
+    "expression": "2+2"
+  }
+}
