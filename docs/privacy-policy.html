@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Relais — Privacy Policy</title>
+<style>
+  /* Relais brand: amber signal-relay on near-black, monospace (DESIGN.md) */
+  :root{--amber:#FFB000;--charcoal:#0B0B0D;--panel:#16171A;--line:#2A2B30;--paper:#EDEAE3;--muted:#8A8780;}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--charcoal);color:var(--paper);
+       font-family:ui-monospace,'JetBrains Mono','Cascadia Mono',Menlo,Consolas,monospace;
+       font-size:15px;line-height:1.65}
+  main{max-width:44rem;margin:0 auto;padding:3rem 1.5rem 5rem}
+  .wordmark{color:var(--amber);font-weight:700;letter-spacing:.35em;font-size:1.4rem}
+  .wordmark::before{content:"";display:inline-block;width:.6em;height:.6em;border-radius:50%;
+       background:var(--amber);margin-right:.6em;vertical-align:baseline}
+  h1{font-size:1.05rem;color:var(--muted);font-weight:400;letter-spacing:.15em;
+     text-transform:uppercase;margin:.4rem 0 0}
+  .meta{color:var(--muted);font-size:.85rem;margin-top:1.2rem}
+  hr{border:0;border-top:1px solid var(--line);margin:2rem 0}
+  h2{color:var(--amber);font-size:.95rem;letter-spacing:.12em;text-transform:uppercase;
+     margin:2.2rem 0 .8rem}
+  p,li{color:var(--paper)}
+  li{margin:.45rem 0}
+  strong{color:var(--paper)}
+  a{color:var(--amber);text-decoration:none;border-bottom:1px solid var(--line)}
+  a:hover{border-bottom-color:var(--amber)}
+  code{background:var(--panel);border:1px solid var(--line);border-radius:4px;
+       padding:.08em .35em;font-size:.9em}
+  .lead li::marker{color:var(--amber)}
+  footer{color:var(--muted);font-size:.85rem;margin-top:3rem}
+</style>
+</head>
+<body>
+<main>
+  <div class="wordmark">RELAIS</div>
+  <h1>Privacy Policy</h1>
+  <p class="meta">Effective 2026-07-07 · Publisher: VentouxLabs · App: Relais
+     (<code>com.ventouxlabs.relais</code> and its IzzyOnDroid/GitHub variants)</p>
+
+  <p>Relais turns a phone you own into a private AI inference node: it runs language models
+     <strong>on the device</strong> and serves an OpenAI-compatible API <strong>on your local
+     network</strong>. It is built so that your prompts, documents, audio, and images never leave
+     hardware you control.</p>
+
+  <h2>The short version</h2>
+  <ul class="lead">
+    <li><strong>All AI processing happens on your device.</strong> Prompts, chat history,
+        transcribed audio, analyzed images, generated images, and retrieval documents are processed
+        by models running locally. None of it is sent to us or to any cloud AI service.</li>
+    <li><strong>We collect nothing.</strong> Relais has no analytics, no telemetry, no crash
+        reporting, no ads, no tracking, and no account system. There is no VentouxLabs server; we
+        never see your data.</li>
+    <li><strong>You control the network surface.</strong> The API is served only on your local
+        network, protected by an access key generated on your device. You start and stop it.</li>
+  </ul>
+
+  <h2>What the app stores on your device</h2>
+  <ul>
+    <li><strong>Models</strong> you download (multi-gigabyte files, in the app's private storage).</li>
+    <li><strong>Configuration</strong>, including the node's access key and — only if you provide
+        one — a Hugging Face access token. Both are stored in Android's encrypted preferences.</li>
+    <li><strong>Content you put into features</strong>: chat/session state, prompt templates,
+        documents you ingest for retrieval (RAG), and batch jobs. All local, all deleted when you
+        clear the app's data or uninstall.</li>
+  </ul>
+
+  <h2>When the app talks to the internet</h2>
+  <p>Relais makes no background connections to us — there is nothing to connect to. It reaches the
+     internet only for these specific, user-visible purposes:</p>
+  <ul>
+    <li><strong>Downloading models.</strong> When you pick a model, the app fetches it from
+        <a href="https://huggingface.co">Hugging Face</a> (<code>huggingface.co</code>) or, for the
+        built-in Gallery catalog, from Google's model hosting (<code>dl.google.com</code>). Model
+        searches you type in the model selector are sent to Hugging Face as search queries.</li>
+    <li><strong>Your Hugging Face token</strong> (optional, for license-gated models) is sent
+        <strong>only</strong> to <code>huggingface.co</code> as authentication on those downloads,
+        and nowhere else.</li>
+    <li><strong>Model catalog + update check.</strong> The app fetches its curated model list from
+        the upstream project's GitHub repository (<code>raw.githubusercontent.com</code>) and checks
+        GitHub (<code>api.github.com</code>) for a newer app release. These are plain HTTPS fetches;
+        they carry no personal data beyond what any web request exposes (your IP address).</li>
+    <li><strong>Destinations you configure.</strong> If you set up a webhook for batch-job results,
+        or load an agent skill from a URL, the app sends/fetches exactly what you configured, to the
+        destination you chose. These features are off until you configure them.</li>
+  </ul>
+  <p>Requests from your own apps and devices to the node's LAN API stay on your network; the node
+     also announces itself on your local network via mDNS (service name and port — no personal
+     data) so clients can discover it.</p>
+
+  <h2>Permissions, in plain language</h2>
+  <ul>
+    <li><strong>Microphone / Camera</strong> — used only when you actively use voice input, audio
+        transcription, or image analysis; the audio/images are processed on-device and are not
+        uploaded anywhere.</li>
+    <li><strong>Notifications</strong> — so the always-on node can show its status.</li>
+    <li><strong>Network/Internet</strong> — for the model downloads and LAN serving described
+        above.</li>
+    <li><strong>NFC</strong> — only if you enable NFC workflow tags.</li>
+    <li><strong>Start at boot / keep awake</strong> — so the node can run unattended, if you enable
+        it.</li>
+  </ul>
+
+  <h2>Data sharing and selling</h2>
+  <p>We don't collect your data, so we cannot share or sell it. The app sends data to third parties
+     only in the user-directed cases listed above (Hugging Face downloads with your own token;
+     webhooks and skill URLs you configure). Those services' own privacy policies apply to what they
+     receive.</p>
+
+  <h2>Data retention and deletion</h2>
+  <p>Everything lives on your device. Delete any of it at any time via the in-app controls,
+     Android's <em>Clear data</em>, or by uninstalling the app. There is nothing to delete on our
+     side.</p>
+
+  <h2>Children</h2>
+  <p>Relais is developer/infrastructure tooling and is not directed at children.</p>
+
+  <h2>Changes</h2>
+  <p>We'll update this policy if the app's data behavior changes, and note changes in the app's
+     changelog. The canonical source of this page is <code>docs/privacy-policy.md</code> in the
+     app's repository.</p>
+
+  <footer>VentouxLabs · bryn@ventouxadvisoryco.com</footer>
+</main>
+</body>
+</html>

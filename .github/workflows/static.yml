@@ -7,6 +7,7 @@ on:
     branches: ["main"]
     paths:
       - 'skills/**'
+      - 'docs/privacy-policy.html'
 
   # Allows you to run this workflow manually from the Actions tab
   workflow_dispatch:
@@ -39,6 +40,8 @@ jobs:
           mkdir -p staging/skills
           # Move all files (except the staging folder itself) into the subdirectory
           rsync -rr --exclude='staging' ./skills/ staging/skills/
+          # Privacy policy at a stable URL for the Play Console (docs/privacy-policy.md is the source of truth)
+          cp docs/privacy-policy.html staging/privacy-policy.html
       - name: Setup Pages
         uses: actions/configure-pages@v5
       - name: Upload artifact
