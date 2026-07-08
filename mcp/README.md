@@ -1,4 +1,54 @@
-# Model Context Protocol (MCP) in Google AI Edge Gallery
+# Model Context Protocol (MCP) in Relais
+
+## Relais-specific notes (read this first)
+
+This directory's walkthrough (below) is **upstream `google-ai-edge/gallery` content**, kept
+because it's still accurate end-user documentation for adding a local or cloud MCP server. This
+section is Relais-specific: what MCP means in this fork, where it lives in code, and how it
+differs from the node's own HTTP tool-calling surface.
+
+**MCP here is an in-app Agent Chat client feature, not the node's HTTP API.** Relais serves an
+OpenAI-compatible API (`/v1/chat/completions`) with its own tool-calling surfaces — client-side
+`tools[]` and node-side `node_tools` built-ins (`rag_search`, `calculator`, `current_datetime`,
+`unit_convert`) — documented in [`Function_Calling_Guide.md`](../Function_Calling_Guide.md). MCP
+is unrelated to that HTTP surface: it only powers the **Agent Chat** screen inside the app, where
+the on-device model itself acts as an MCP *client* connecting out to remote MCP *servers* the user
+configures (e.g. `fetch`, Maps Grounding Lite). The two systems don't share code or state.
+
+**Where it lives** (all under
+`Android/src/app/src/main/java/cc/grepon/relais/customtasks/agentchat/`):
+
+| File | Role |
+|---|---|
+| `McpManagerViewModel.kt` | Owns the MCP client state: connects (`StreamableHttpClientTransport` from the [MCP Kotlin SDK](https://github.com/modelcontextprotocol/kotlin-sdk)), discovers tools via `listTools()`, persists servers to a proto `DataStore`, and builds the tools prompt injected into the model (`getToolsPrompt()`). |
+| `McpServersSerializer.kt` | The `DataStore<McpServers>` `Serializer` — reads/writes the persisted server list as a protobuf, matching `mcp.proto` below. |
+| `McpToolCallPermissionDialog.kt` | The per-invocation permission prompt (`AlertDialog`) shown when the model wants to call a tool: **Always Allow** / **Allow Once** / **Don't Allow** (`PermissionResult`). "Always Allow" persists via `McpManagerViewModel.setMcpToolAlwaysAllow`. |
+| `McpToolManagerBottomSheet.kt` | Per-server tool list UI — toggle individual tools/servers on or off. |
+| `McpManagerBottomSheet.kt` | The "Manage MCP servers" screen reachable from the **MCP** button under the Agent Chat input field (add/remove servers, see connection status/errors). |
+| `AddMcpServerFromUrlDialog.kt` | The "Add MCP Server" form — URL + optional auth header (`McpAuth`: none / request header / OAuth-reserved). |
+| `AddMcpDisclaimerDialog.kt` | One-time disclaimer shown before a user adds their first MCP server (data leaves the device to a third-party server). |
+
+The persisted schema is `Android/src/app/src/main/proto/mcp.proto`: `McpServers` (a list of
+`McpServer`), each `McpServer` has a `url`, `enabled` flag, and a list of `McpTool` (`name`,
+`description`, `input_schema` as a JSON string, `enabled`, `always_allow`). `AgentChatScreen.kt` is
+the call site — it owns the `McpManagerViewModel` instance (via `hiltViewModel()`), renders
+`McpToolCallPermissionDialog` when a tool call needs a decision, and folds
+`mcpManagerViewModel.getToolsPrompt()` into the model's context.
+
+**Permission model:** every tool call from a server without an "always allow" flag set surfaces
+`McpToolCallPermissionDialog` before it runs. The user's choice maps to `PermissionResult`
+(`ALWAYS_ALLOW` / `ALLOW_ONCE` / `DENY`); `ALWAYS_ALLOW` is persisted per tool
+(`setMcpToolAlwaysAllow`) so future calls to that exact tool skip the prompt.
+
+**Status:** MCP integration is experimental in this fork, same as upstream (see the `[!IMPORTANT]`
+note below) — the walkthrough content is unmodified upstream Gallery documentation.
+
+---
+
+## Model Context Protocol (MCP) in Google AI Edge Gallery
+
+*(Upstream `google-ai-edge/gallery` documentation — general MCP walkthrough, not Relais-specific.
+Still accurate for adding a local or cloud MCP server to the app.)*
 
 ## Overview
 
