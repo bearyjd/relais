@@ -35,6 +35,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -228,7 +229,14 @@ private fun ConfigureScreen(activity: RelaisConfigureActivity) {
     // 3. POWER
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
       SectionLabel("POWER")
-      Readout("POWER", if (batteryUnrestricted) "unrestricted" else "restricted")
+      // Value only, no repeated "POWER" row label — SectionLabel above already names the section
+      // (matches the MODEL section's ModelRow, which drops its own former "MODEL" label prefix).
+      Text(
+        if (batteryUnrestricted) "unrestricted" else "restricted",
+        color = Paper,
+        fontFamily = FontFamily.Monospace,
+        fontSize = 13.sp,
+      )
       // The direct battery-exemption request needs REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, which is
       // stripped from the Play (playsafe) build — hide the action there (POLICY_OPEN=false) rather
       // than surface a button that silently degrades to the generic settings list.
@@ -316,21 +324,6 @@ private fun ActionLink(label: String, onClick: () -> Unit) {
   }
 }
 
-/** A control-panel readout row: muted mono label on the left, mono value on the right. */
-@Composable
-private fun Readout(label: String, value: String) {
-  Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-    Text(label, color = Muted, fontFamily = FontFamily.Monospace, fontSize = 11.sp, letterSpacing = 1.5.sp)
-    Text(
-      value,
-      color = Paper,
-      fontFamily = FontFamily.Monospace,
-      fontSize = 13.sp,
-      modifier = Modifier.weight(1f, fill = false),
-    )
-  }
-}
-
 /**
  * A single-row boolean toggle (P9): label left, `on`/`off` value right, the whole row tappable —
  * replaces the old paired readout-row + command-link idiom.
@@ -365,6 +358,7 @@ private fun ModelRow(value: String, enabled: Boolean, onClick: () -> Unit) {
         overflow = TextOverflow.Ellipsis,
         modifier = Modifier.weight(1f),
       )
+      Spacer(Modifier.width(10.dp)) // same value-to-glyph gap as the home screen's ModelSummaryRow
       Text("▸", color = Amber, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold, fontSize = 14.sp)
     }
   }
