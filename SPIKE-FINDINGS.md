@@ -163,6 +163,21 @@ Implemented in `app/.../relais/` (`RelaisEngine`, `RelaisNodeService`, `RelaisHt
   empirically confirming the device is excluded from AICore, so all traffic resolves to GPU. The
   `g4b_npuAicorePathOrSkip` test runs the real NPU generation on a Pixel 10+ and auto-skips as
   **UNVERIFIED** here — the deferred gate closes by simply connecting a Pixel 10, no code change.
+- **G4b — deferred gate CLOSED 2026-07-07 (Pixel 10 in hand): AICore is UNAVAILABLE on this
+  Pixel 10, honest skip.** Ran `g4b_npuAicorePathOrSkip` (fullOpen debug, `main`-era build) on
+  rango — Pixel 10 Pro Fold / Tensor G5 / **GrapheneOS** with sandboxed Play services
+  (`app.grapheneos.gmscompat` + `com.google.android.gms` + Play Store present). Result:
+  `RelaisBench: AICore/NPU available=false on Pixel 10 Pro Fold` → the real ML Kit
+  `checkStatus()` probe reported not-available (no exception logged — a clean non-AVAILABLE
+  `FeatureStatus`), so the test skipped via its assumption
+  (`org.junit.AssumptionViolatedException`, instrument run `OK (1 test)`, 0.138 s). Root cause:
+  the **AICore system app (`com.google.android.aicore`) is absent** — GrapheneOS does not ship
+  it and sandboxed Play cannot install privileged system components, so ML Kit GenAI / Gemini
+  Nano has no on-device runtime to bind. **Verdict:** the selector behaves correctly (everything
+  resolves to GPU_LITERTLM, which is exactly what this node has been serving on rango all along);
+  the NPU_AICORE path remains code-verified but hardware-unverified — it needs a **stock-OS
+  Pixel 10**, not just Pixel 10 silicon. GOAL.md-wedge note: the wedge's NPU story on GrapheneOS
+  devices runs through LiteRT-LM's accelerator delegation, not AICore.
 
 ## Robustness (workstream 3 — validated on Pixel 9)
 - **Battery saver ✅** — inference under `low_power=1` works (6.0 tok/s).
