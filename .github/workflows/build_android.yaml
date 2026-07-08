@@ -1,19 +1,59 @@
 name: Build Android APK
 
+# No trigger-level `paths:` filter, deliberately. "Build Android APK" and "JVM unit tests"
+# are REQUIRED status checks on main, and the two documented ways to reconcile that with
+# path filtering both failed here:
+#   - workflow-level paths filter: docs-only PRs produce NO check runs → auto-merge deadlocks
+#     on "Expected" (hit on PR #92).
+#   - paths-ignore no-op twin (PR #93): on a MIXED PR both workflows run under the same check
+#     names, and auto-merge fires on whichever goes green FIRST — the 3-second no-op gated a
+#     full Android change before the real build finished (hit on PR #126; build passed post-hoc).
+# So: this workflow always runs, a cheap `changes` job diffs the event base, and the heavy
+# jobs are skipped via job-level `if` when nothing under Android/** changed. A skipped job
+# reports one `skipped` check run per name — which satisfies branch protection — and there is
+# never a duplicate check name for auto-merge to race.
+
 on:
   workflow_dispatch:
   push:
     branches: [ "main" ]
-    paths:
-      - 'Android/**'
   pull_request:
     branches: [ "main" ]
-    paths:
-      - 'Android/**'
 
 jobs:
+  changes:
+    name: Detect Android changes
+    runs-on: ubuntu-latest
+    outputs:
+      android: ${{ steps.filter.outputs.android }}
+    steps:
+      - name: Checkout the source code
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+      - name: Diff changed paths against the event base
+        id: filter
+        # Unknown base (forced push, branch creation) and workflow_dispatch fail toward
+        # android=true — the safe direction is an unnecessary build, never a skipped gate.
+        run: |
+          case "${{ github.event_name }}" in
+            pull_request) BASE="${{ github.event.pull_request.base.sha }}" ;;
+            push)         BASE="${{ github.event.before }}" ;;
+            *)            echo "android=true" >> "$GITHUB_OUTPUT"; exit 0 ;;
+          esac
+          if ! git cat-file -e "$BASE" 2>/dev/null; then
+            echo "android=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          if git diff --name-only "$BASE" "${{ github.sha }}" | grep -q '^Android/'; then
+            echo "android=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "android=false" >> "$GITHUB_OUTPUT"
+          fi
+
   build_apk:
     name: Build Android APK
+    needs: changes
+    if: needs.changes.outputs.android == 'true'
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -111,6 +151,8 @@ jobs:
 
   unit_tests:
     name: JVM unit tests
+    needs: changes
+    if: needs.changes.outputs.android == 'true'
     runs-on: ubuntu-latest
     defaults:
       run:
