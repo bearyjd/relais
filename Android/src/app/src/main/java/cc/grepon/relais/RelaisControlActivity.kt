@@ -16,17 +16,12 @@
 
 package cc.grepon.relais
 
-import android.annotation.SuppressLint
-import android.content.Context
 import android.content.Intent
-import android.net.Uri
-import android.nfc.NfcAdapter
 import android.os.Bundle
-import android.os.PowerManager
-import android.provider.Settings
 import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
@@ -54,9 +49,9 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.darkColorScheme
@@ -70,19 +65,16 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
-import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import cc.grepon.relais.nfc.NfcWriteActivity
-import cc.grepon.relais.templates.PromptTemplateEditorActivity
-import cc.grepon.relais.triage.TriageControlActivity
 import java.net.Inet4Address
 import java.net.NetworkInterface
 import kotlinx.coroutines.delay
@@ -90,12 +82,16 @@ import kotlinx.coroutines.delay
 private const val TAG = "RelaisControl"
 
 // Brand palette (Amber/Charcoal/Panel/Line/Paper/Muted/StopRed) lives in RelaisPalette.kt — the
-// single DESIGN.md-traceable source shared with the model selector.
+// single DESIGN.md-traceable source shared with the model selector. State derivation and text
+// formatting live in RelaisControlPanelState.kt (pure, JVM-testable) — this file stays a thin
+// Compose projection of that state (AUDIT.md §4).
 
 /**
- * Relais node control panel. Tapping the "Relais Node" launcher icon opens this; it shows whether
- * the node is actually serving (LIVE / STARTING / OFFLINE), the real LAN endpoints + API key, and
- * lets the operator pick the model and start/stop the server.
+ * Relais node control panel — home screen. Shows whether the node is actually serving (LIVE /
+ * STARTING / OFFLINE), the real LAN endpoint + API key, and the one state-appropriate primary
+ * action (START / CANCEL / STOP). Setup-time and rare controls (model picker, HF token, power
+ * exemption, share/NFC toggles, prompt templates, notification triage) live one tap away on
+ * [RelaisConfigureActivity] (AUDIT.md §3-§4.5).
  *
  * Also honors `--es cmd start|stop` for adb automation. The activity is exported (launchable), so
  * the `cmd` extra is gated behind the node's API key; the in-app buttons call [RelaisNodeService]
@@ -149,32 +145,54 @@ class RelaisControlActivity : ComponentActivity() {
           var running by remember { mutableStateOf(RelaisConfig.shouldRun(ctx)) }
           var modelId by remember { mutableStateOf(RelaisConfig.modelId(ctx)) }
           var modelRef by remember { mutableStateOf(RelaisConfig.modelRef(ctx)) }
-          var showModelSheet by remember { mutableStateOf(false) }
-          var hfToken by remember { mutableStateOf(RelaisConfig.hfToken(ctx) ?: "") }
-          var shareEnabled by remember { mutableStateOf(RelaisConfig.shareEnabled(ctx)) }
-          val nfcAvailable = remember { NfcAdapter.getDefaultAdapter(ctx) != null }
-          var nfcEnabled by remember { mutableStateOf(RelaisConfig.nfcEnabled(ctx)) }
-          var savedNote by remember { mutableStateOf("") }
+          var thermalShedding by remember { mutableStateOf(false) }
+          var phase by remember { mutableStateOf(RelaisNodeProgress.phase) }
+          var downloadReceivedBytes by remember { mutableStateOf(0L) }
+          var downloadTotalBytes by remember { mutableStateOf(0L) }
+          var initFailed by remember { mutableStateOf(RelaisEngine.lastInitFailed) }
           val ip = remember { lanIpv4() }
-          val powerManager = remember { ctx.getSystemService(Context.POWER_SERVICE) as PowerManager }
-          var batteryUnrestricted by remember {
-            mutableStateOf(powerManager.isIgnoringBatteryOptimizations(ctx.packageName))
-          }
+
           LaunchedEffect(Unit) {
             while (true) {
               ready = RelaisEngine.isReady
               running = RelaisConfig.shouldRun(ctx)
-              batteryUnrestricted = powerManager.isIgnoringBatteryOptimizations(ctx.packageName)
+              // Re-read on every tick — model/ref can change while Configure is open in another task.
+              modelId = RelaisConfig.modelId(ctx)
+              modelRef = RelaisConfig.modelRef(ctx)
+              thermalShedding = ThermalGovernor.shouldShed()
+              phase = RelaisNodeProgress.phase
+              downloadReceivedBytes = RelaisNodeProgress.downloadReceivedBytes
+              downloadTotalBytes = RelaisNodeProgress.downloadTotalBytes
+              initFailed = RelaisEngine.lastInitFailed
               delay(1000)
             }
           }
 
-          val statusText = if (ready) "LIVE" else if (running) "STARTING" else "OFFLINE"
-          val statusColor = if (ready) Amber else if (running) Amber.copy(alpha = 0.6f) else Muted
+          val modelDisplay = modelRef?.takeIf { it.modelId == modelId }?.displayName ?: modelId
+          val panel =
+            computeControlPanelState(
+              ready = ready,
+              running = running,
+              modelDisplayName = modelDisplay,
+              thermalShedding = thermalShedding,
+              phase = phase,
+              downloadReceivedBytes = downloadReceivedBytes,
+              downloadTotalBytes = downloadTotalBytes,
+              initFailed = initFailed,
+            )
 
-          // Beacon pulse only while live.
+          val statusColor =
+            when (panel.status) {
+              NodeStatus.LIVE -> Amber
+              NodeStatus.STARTING -> Amber.copy(alpha = 0.6f)
+              NodeStatus.OFFLINE -> Muted
+            }
+          // State transitions crossfade color over ~300ms (§5) instead of an instant color jump.
+          val animatedStatusColor by animateColorAsState(statusColor, tween(300), label = "statusColor")
+
+          // Beacon pulse stays exclusive to LIVE — STARTING is a static 60%-alpha dot, no spinner (§5).
           val pulse =
-            if (ready) {
+            if (panel.status == NodeStatus.LIVE) {
               val t = rememberInfiniteTransition(label = "beacon")
               t.animateFloat(
                   initialValue = 0.3f,
@@ -189,167 +207,90 @@ class RelaisControlActivity : ComponentActivity() {
             modifier =
               Modifier.fillMaxSize().systemBarsPadding().padding(horizontal = 24.dp, vertical = 20.dp)
                 .verticalScroll(rememberScrollState()),
-            verticalArrangement = Arrangement.spacedBy(14.dp),
+            verticalArrangement = Arrangement.spacedBy(20.dp), // 20dp between divider-separated sections (§4.0)
           ) {
-            // Wordmark + live status
-            Row(verticalAlignment = Alignment.CenterVertically) {
-              Box(
-                modifier =
-                  Modifier.size(11.dp).clip(CircleShape)
-                    .background(statusColor.copy(alpha = pulse))
-              )
-              Spacer(Modifier.width(10.dp))
+            // Header: dot + wordmark + state word, then the single detail/phase line (P8, P12 — the
+            // old STATUS row and tagline are gone; the header + this one line carry all of it).
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+              Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(
+                  modifier =
+                    Modifier.size(11.dp).clip(CircleShape)
+                      .background(animatedStatusColor.copy(alpha = pulse))
+                )
+                Spacer(Modifier.width(10.dp))
+                Text(
+                  "RELAIS",
+                  color = Amber,
+                  fontFamily = FontFamily.Monospace,
+                  fontWeight = FontWeight.Bold,
+                  fontSize = 22.sp, // Display tier
+                  letterSpacing = 5.sp,
+                )
+                Spacer(Modifier.weight(1f))
+                Text(
+                  panel.statusWord,
+                  color = animatedStatusColor,
+                  fontFamily = FontFamily.Monospace,
+                  fontWeight = FontWeight.Bold,
+                  fontSize = 13.sp,
+                  letterSpacing = 2.sp,
+                )
+              }
               Text(
-                "RELAIS",
-                color = Amber,
+                panel.detailLine,
+                // detailLineBright is derived once in the pure state (thermal shed or failed-init) —
+                // Paper = attention by brightness, no new color; every other detail line stays Muted.
+                color = if (panel.detailLineBright) Paper else Muted,
                 fontFamily = FontFamily.Monospace,
-                fontWeight = FontWeight.Bold,
-                fontSize = 22.sp,
-                letterSpacing = 5.sp,
+                fontSize = 11.sp, // Caption tier
               )
-              Spacer(Modifier.weight(1f))
-              Text(
-                statusText,
-                color = statusColor,
-                fontFamily = FontFamily.Monospace,
-                fontWeight = FontWeight.Bold,
-                fontSize = 13.sp,
-                letterSpacing = 2.sp,
-              )
-            }
-            Text(
-              "on-device relay · OpenAI-compatible LAN endpoint",
-              color = Muted,
-              fontFamily = FontFamily.Monospace,
-              fontSize = 11.sp,
-            )
-
-            Divider()
-            Readout("STATUS", if (ready) "engine resident" else if (running) "starting…" else "stopped")
-            Readout("LAN (https)", "$ip:8443")
-            Readout("LOCAL (http)", "127.0.0.1:8080")
-            Readout("POWER", if (batteryUnrestricted) "unrestricted" else "restricted")
-            // The direct battery-exemption request needs REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, which is
-            // stripped from the Play (playsafe) build — hide the action there (POLICY_OPEN=false) rather
-            // than surface a button that silently degrades to the generic settings list.
-            if (BuildConfig.POLICY_OPEN && !batteryUnrestricted) {
-              ActionLink("ALLOW UNRESTRICTED ›") { requestIgnoreBatteryOptimizations(ctx) }
-            }
-            Spacer(Modifier.height(2.dp))
-            AccessKeyChip(apiKey = RelaisConfig.apiKey(ctx), baseUrl = "https://$ip:8443/v1")
-            Divider()
-
-            val modelDisplay = modelRef?.takeIf { it.modelId == modelId }?.displayName ?: modelId
-            // Block model changes while the node is STARTING (running but not yet ready): ensureModel
-            // may be mid-resolve/-download, and its terminal setModelPath() could resurrect the path a
-            // concurrent setModelRef() just cleared — leaving the next boot serving the superseded
-            // model. Changing while fully stopped or LIVE (path already settled) is safe.
-            val nodeBusy = running && !ready
-            ModelRow(value = modelDisplay, enabled = !nodeBusy) { showModelSheet = true }
-            OutlinedTextField(
-              value = hfToken,
-              onValueChange = { hfToken = it; savedNote = "" },
-              label = { Text("HF TOKEN (gated repos only)", fontFamily = FontFamily.Monospace, fontSize = 11.sp) },
-              textStyle = TextStyle(fontFamily = FontFamily.Monospace, fontSize = 14.sp),
-              singleLine = true,
-              modifier = Modifier.fillMaxWidth(),
-            )
-            OutlinedButton(
-              onClick = {
-                RelaisConfig.setHfToken(ctx, hfToken.trim().ifBlank { null })
-                savedNote = "HF token saved. Restart to apply."
-              },
-              colors = ButtonDefaults.outlinedButtonColors(contentColor = Amber),
-            ) {
-              Text("SAVE HF TOKEN", fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold)
-            }
-            if (savedNote.isNotEmpty()) {
-              Text(savedNote, color = Muted, fontFamily = FontFamily.Monospace, fontSize = 11.sp)
-            }
-
-            if (showModelSheet) {
-              RelaisModelSelectorSheet(
-                currentModelId = modelId,
-                // The saved token (not the editable field above): HF resolve and the later download
-                // both authenticate with the persisted token, so a gated repo needs SAVE HF TOKEN first.
-                hfToken = RelaisConfig.hfToken(ctx),
-                onPickRef = { ref ->
-                  RelaisConfig.setModelRef(ctx, ref)
-                  modelRef = ref
-                  modelId = ref.modelId
-                  // Show the resolved file, not just the repo — an HF repo can hold several
-                  // .litertlm variants and the operator should see which one was chosen before Start.
-                  savedNote = "Selected ${ref.displayName} · ${ref.modelFile}. Restart to apply."
-                  showModelSheet = false
-                },
-                onPickManualId = { id ->
-                  // Entering a raw id is an explicit "resolve this via the allowlist" intent, so
-                  // drop any curated ref first (even if the id matches the ref's repo) — otherwise
-                  // the pinned ref would keep overriding allowlist resolution.
-                  RelaisConfig.clearModelRef(ctx)
-                  RelaisConfig.setModelId(ctx, id)
-                  modelRef = null
-                  modelId = id
-                  savedNote = "Set model id $id. Restart to apply."
-                  showModelSheet = false
-                },
-                onDismiss = { showModelSheet = false },
-              )
+              if (panel.showProgressBar) {
+                val fraction = panel.progressFraction ?: 0f
+                LinearProgressIndicator(
+                  progress = { fraction },
+                  modifier = Modifier.fillMaxWidth().height(2.dp).clip(RoundedCornerShape(1.dp)),
+                  color = Amber,
+                  trackColor = Line,
+                )
+              }
             }
 
             Divider()
-            ActionLink("PROMPT TEMPLATES ›") {
-              ctx.startActivity(Intent(ctx, PromptTemplateEditorActivity::class.java))
-            }
-            // Notification triage is stripped from the Play (playsafe) build — its listener service +
-            // control activity are removed from that manifest (notification-access policy), so hide the
-            // entry there or the launch would ActivityNotFoundException. POLICY_OPEN=false in playsafe.
-            if (BuildConfig.POLICY_OPEN) {
-              ActionLink("NOTIFICATION TRIAGE ›") {
-                ctx.startActivity(Intent(ctx, TriageControlActivity::class.java))
+
+            // Connection: the daily values an operator leaves the app with (P3, P4).
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+              if (panel.lanEndpointLive) {
+                HeroCopyableRow(label = "LAN (https)", value = "$ip:8443")
+              } else {
+                CopyableRow(label = "LAN (https)", value = "$ip:8443", valueColor = Muted)
               }
+              if (panel.showLocalEndpoint) {
+                CopyableRow(label = "LOCAL (http)", value = "127.0.0.1:8080", valueColor = Paper)
+              }
+              AccessKeyChip(apiKey = RelaisConfig.apiKey(ctx), baseUrl = "https://$ip:8443/v1")
             }
 
-            // Share-sheet inference target (#1): on/off. The manifest entry is always present; this
-            // is the runtime opt-out — when off, a share reports "disabled" instead of running.
-            Readout("SHARE TARGET", if (shareEnabled) "on" else "off")
-            ActionLink(if (shareEnabled) "DISABLE SHARE TARGET" else "ENABLE SHARE TARGET") {
-              val next = !shareEnabled
-              RelaisConfig.setShareEnabled(ctx, next)
-              shareEnabled = next
+            Divider()
+
+            // Model summary (read-only; opens Configure) + the one deliberate tap to everything rare.
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+              ModelSummaryRow(value = modelDisplay, enabled = panel.modelRowEnabled) {
+                ctx.startActivity(Intent(ctx, RelaisConfigureActivity::class.java))
+              }
+              panel.modelLockedCaption?.let { caption ->
+                Text(caption, color = Muted, fontFamily = FontFamily.Monospace, fontSize = 11.sp)
+              }
+              ActionLink("CONFIGURE ›") { ctx.startActivity(Intent(ctx, RelaisConfigureActivity::class.java)) }
             }
 
-            // NFC workflow triggers (#15): opt-in, only when the device has NFC. When on, tapping a
-            // tag that encodes com.ventouxlabs.relais://workflow/<id> runs that prompt template.
-            if (nfcAvailable) {
-              Readout("NFC WORKFLOWS", if (nfcEnabled) "on" else "off")
-              ActionLink(if (nfcEnabled) "DISABLE NFC" else "ENABLE NFC") {
-                val next = !nfcEnabled
-                RelaisConfig.setNfcEnabled(ctx, next)
-                nfcEnabled = next
-              }
-              if (nfcEnabled) {
-                ActionLink("WRITE NFC TAG ›") { ctx.startActivity(Intent(ctx, NfcWriteActivity::class.java)) }
-              }
-            }
-
-            Spacer(Modifier.height(4.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-              Button(
-                onClick = { RelaisNodeService.start(ctx) },
-                shape = RoundedCornerShape(6.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = Amber, contentColor = Charcoal),
-                modifier = Modifier.weight(1f),
-              ) {
-                Text("START", fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold, letterSpacing = 2.sp)
-              }
-              OutlinedButton(
-                onClick = { RelaisNodeService.stop(ctx) },
-                shape = RoundedCornerShape(6.dp),
-                colors = ButtonDefaults.outlinedButtonColors(contentColor = StopRed),
-                modifier = Modifier.weight(1f),
-              ) {
-                Text("STOP", fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold, letterSpacing = 2.sp)
+            PrimaryButton(panel.primaryAction) {
+              when (panel.primaryAction) {
+                PrimaryAction.START -> RelaisNodeService.start(ctx)
+                // CANCEL wires to the same stop() as STOP (Q4) — "stop the node" is the honest label
+                // for both; RelaisNodeService.stop() does not touch the on-disk partial download, so a
+                // cancelled download resumes (byte-range) on the next START rather than restarting.
+                PrimaryAction.CANCEL, PrimaryAction.STOP -> RelaisNodeService.stop(ctx)
               }
             }
           }
@@ -359,31 +300,113 @@ class RelaisControlActivity : ComponentActivity() {
   }
 }
 
-/** A control-panel readout row: muted mono label on the left, mono value on the right. */
 @Composable
-private fun Readout(label: String, value: String) {
-  Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-    Text(label, color = Muted, fontFamily = FontFamily.Monospace, fontSize = 12.sp, letterSpacing = 1.sp)
+private fun Divider() {
+  Box(Modifier.fillMaxWidth().height(1.dp).background(Line))
+}
+
+/** Amber tap affordance, e.g. "CONFIGURE ›" — matches the "SHARE CONNECTION ›" idiom. */
+@Composable
+private fun ActionLink(label: String, onClick: () -> Unit) {
+  Box(Modifier.clip(RoundedCornerShape(6.dp)).clickable { onClick() }.padding(vertical = 4.dp)) {
+    Text(label, color = Amber, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+  }
+}
+
+/**
+ * A copyable label/value row (LAN, LOCAL): tapping the row copies [value] and the trailing glyph
+ * swaps `⧉` → `COPIED` for 1.5s (the [AccessKeyChip] timing, reused). [valueColor] carries the
+ * Muted-preview-vs-Paper-live distinction (§4.1/§4.3).
+ */
+@Composable
+private fun CopyableRow(label: String, value: String, valueColor: Color) {
+  val clipboard = LocalClipboardManager.current
+  var copied by remember { mutableStateOf(false) }
+  LaunchedEffect(copied) {
+    if (copied) {
+      delay(1500)
+      copied = false
+    }
+  }
+  Row(
+    modifier =
+      Modifier.fillMaxWidth().clip(RoundedCornerShape(6.dp))
+        .clickable { clipboard.setText(AnnotatedString(value)); copied = true },
+    horizontalArrangement = Arrangement.SpaceBetween,
+    verticalAlignment = Alignment.CenterVertically,
+  ) {
+    Text(label, color = Muted, fontFamily = FontFamily.Monospace, fontSize = 11.sp, letterSpacing = 1.5.sp)
     Spacer(Modifier.width(16.dp))
     Text(
       value,
-      color = Paper,
+      color = valueColor,
       fontFamily = FontFamily.Monospace,
       fontSize = 13.sp,
       modifier = Modifier.weight(1f, fill = false),
     )
+    Spacer(Modifier.width(10.dp))
+    Text(
+      if (copied) "COPIED" else "⧉",
+      color = Amber,
+      fontFamily = FontFamily.Monospace,
+      fontWeight = FontWeight.Bold,
+      fontSize = 11.sp,
+    )
   }
 }
 
-/** Tappable model row: muted MODEL label, current selection, amber ▸ — opens the model selector. */
+/**
+ * The LIVE-only Hero-tier row (§4.3): label above, then the value at 17sp Paper — the single
+ * highest-salience element on the screen — with the same copy affordance as [CopyableRow].
+ */
 @Composable
-private fun ModelRow(value: String, enabled: Boolean = true, onClick: () -> Unit) {
+private fun HeroCopyableRow(label: String, value: String) {
+  val clipboard = LocalClipboardManager.current
+  var copied by remember { mutableStateOf(false) }
+  LaunchedEffect(copied) {
+    if (copied) {
+      delay(1500)
+      copied = false
+    }
+  }
+  Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+    Text(label, color = Muted, fontFamily = FontFamily.Monospace, fontSize = 11.sp, letterSpacing = 1.5.sp)
+    Row(
+      modifier =
+        Modifier.fillMaxWidth().clip(RoundedCornerShape(6.dp))
+          .clickable { clipboard.setText(AnnotatedString(value)); copied = true },
+      horizontalArrangement = Arrangement.SpaceBetween,
+      verticalAlignment = Alignment.CenterVertically,
+    ) {
+      Text(
+        value,
+        color = Paper,
+        fontFamily = FontFamily.Monospace,
+        fontWeight = FontWeight.Bold,
+        fontSize = 17.sp, // Hero tier — the screen's peak (at most one per state, §4.0)
+        modifier = Modifier.weight(1f, fill = false),
+      )
+      Spacer(Modifier.width(10.dp))
+      Text(
+        if (copied) "COPIED" else "⧉",
+        color = Amber,
+        fontFamily = FontFamily.Monospace,
+        fontWeight = FontWeight.Bold,
+        fontSize = 11.sp,
+      )
+    }
+  }
+}
+
+/** Read-only MODEL summary row: value + amber `›`, tap → [RelaisConfigureActivity] (never the sheet). */
+@Composable
+private fun ModelSummaryRow(value: String, enabled: Boolean, onClick: () -> Unit) {
   Box(
     Modifier.fillMaxWidth().clip(RoundedCornerShape(6.dp)).clickable(enabled = enabled) { onClick() }
       .alpha(if (enabled) 1f else 0.5f).padding(vertical = 6.dp)
   ) {
     Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-      Text("MODEL", color = Muted, fontFamily = FontFamily.Monospace, fontSize = 12.sp, letterSpacing = 1.sp)
+      Text("MODEL", color = Muted, fontFamily = FontFamily.Monospace, fontSize = 11.sp, letterSpacing = 1.5.sp)
       Spacer(Modifier.width(16.dp))
       Text(
         value,
@@ -396,56 +419,52 @@ private fun ModelRow(value: String, enabled: Boolean = true, onClick: () -> Unit
         modifier = Modifier.weight(1f),
       )
       Spacer(Modifier.width(10.dp))
-      Text("▸", color = Amber, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+      Text("›", color = Amber, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold, fontSize = 14.sp)
     }
   }
 }
 
+/** The one state-appropriate primary action — full-width, last element, never more than one (§4.0). */
 @Composable
-private fun Divider() {
-  Box(Modifier.fillMaxWidth().height(1.dp).background(Line))
-}
-
-/** Amber tap affordance, e.g. "ALLOW UNRESTRICTED ›" — matches the "SHARE CONNECTION ›" idiom. */
-@Composable
-private fun ActionLink(label: String, onClick: () -> Unit) {
-  Box(Modifier.clip(RoundedCornerShape(6.dp)).clickable { onClick() }.padding(vertical = 4.dp)) {
-    Text(
-      label,
-      color = Amber,
-      fontFamily = FontFamily.Monospace,
-      fontWeight = FontWeight.Bold,
-      fontSize = 12.sp,
-    )
+private fun PrimaryButton(action: PrimaryAction, onClick: () -> Unit) {
+  val label = when (action) {
+    PrimaryAction.START -> "START"
+    PrimaryAction.CANCEL -> "CANCEL"
+    PrimaryAction.STOP -> "STOP"
+  }
+  if (action == PrimaryAction.START) {
+    Button(
+      onClick = onClick,
+      shape = RoundedCornerShape(6.dp),
+      colors = ButtonDefaults.buttonColors(containerColor = Amber, contentColor = Charcoal),
+      modifier = Modifier.fillMaxWidth(),
+    ) {
+      Text(label, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold, fontSize = 14.sp, letterSpacing = 2.sp)
+    }
+  } else {
+    // CANCEL and STOP are both "stop the node" — StopRed's reserved meaning covers both (Q4/§7).
+    OutlinedButton(
+      onClick = onClick,
+      shape = RoundedCornerShape(6.dp),
+      colors = ButtonDefaults.outlinedButtonColors(contentColor = StopRed),
+      modifier = Modifier.fillMaxWidth(),
+    ) {
+      Text(label, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold, fontSize = 14.sp, letterSpacing = 2.sp)
+    }
   }
 }
 
 /**
- * Opens the system "ignore battery optimizations" dialog so the always-on node survives
- * Doze/app-standby. Falls back to the battery-optimization settings list on OEMs that don't honor
- * the direct request action.
- */
-@SuppressLint("BatteryLife")
-private fun requestIgnoreBatteryOptimizations(ctx: Context) {
-  val direct =
-    Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:${ctx.packageName}"))
-  runCatching { ctx.startActivity(direct) }
-    .onFailure {
-      runCatching { ctx.startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)) }
-        .onFailure { e -> Log.w(TAG, "Could not open battery-optimization settings: ${e.message}") }
-    }
-}
-
-/**
- * The node's bearer key as a tap-to-copy chip, plus a share action. Tapping the chip copies the
- * raw key to the clipboard; "SHARE CONNECTION" opens the system share sheet with the base URL +
- * key (a bare key is useless without the endpoint).
+ * The node's bearer key: masked by default (`••••…last-4`, Q2) with a `SHOW`/`HIDE` toggle, plus a
+ * share action. Tapping the chip copies the FULL raw key regardless of mask state; "SHARE
+ * CONNECTION" opens the system share sheet with the base URL + key.
  */
 @Composable
 private fun AccessKeyChip(apiKey: String, baseUrl: String) {
   val clipboard = LocalClipboardManager.current
   val ctx = LocalContext.current
   var copied by remember { mutableStateOf(false) }
+  var revealed by remember { mutableStateOf(false) }
   LaunchedEffect(copied) {
     if (copied) {
       delay(1500)
@@ -453,7 +472,22 @@ private fun AccessKeyChip(apiKey: String, baseUrl: String) {
     }
   }
   Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-    Text("ACCESS KEY", color = Muted, fontFamily = FontFamily.Monospace, fontSize = 12.sp, letterSpacing = 1.sp)
+    Row(
+      modifier = Modifier.fillMaxWidth(),
+      horizontalArrangement = Arrangement.SpaceBetween,
+      verticalAlignment = Alignment.CenterVertically,
+    ) {
+      Text("ACCESS KEY", color = Muted, fontFamily = FontFamily.Monospace, fontSize = 11.sp, letterSpacing = 1.5.sp)
+      Box(Modifier.clip(RoundedCornerShape(6.dp)).clickable { revealed = !revealed }) {
+        Text(
+          if (revealed) "HIDE" else "SHOW",
+          color = Amber,
+          fontFamily = FontFamily.Monospace,
+          fontWeight = FontWeight.Bold,
+          fontSize = 12.sp,
+        )
+      }
+    }
     Box(
       modifier =
         Modifier.fillMaxWidth()
@@ -466,7 +500,13 @@ private fun AccessKeyChip(apiKey: String, baseUrl: String) {
           .padding(horizontal = 14.dp, vertical = 12.dp)
     ) {
       Row(verticalAlignment = Alignment.CenterVertically) {
-        Text(apiKey, color = Paper, fontFamily = FontFamily.Monospace, fontSize = 13.sp, modifier = Modifier.weight(1f))
+        Text(
+          displayApiKey(apiKey, revealed),
+          color = Paper,
+          fontFamily = FontFamily.Monospace,
+          fontSize = 13.sp,
+          modifier = Modifier.weight(1f),
+        )
         Spacer(Modifier.width(12.dp))
         Text(
           if (copied) "COPIED" else "TAP TO COPY",

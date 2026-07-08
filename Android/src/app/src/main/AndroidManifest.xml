@@ -150,6 +150,20 @@
             </intent-filter>
         </activity>
 
+        <!-- Configure surface (control-panel redesign): model picker, HF token, power exemption,
+             share/NFC toggles, prompt templates, notification triage — everything setup/rare, one
+             tap away from the home screen's MODEL row / CONFIGURE ›. Internal screen, not exported,
+             no launcher icon. Up-navigates to RelaisControlActivity. -->
+        <activity
+            android:name=".RelaisConfigureActivity"
+            android:exported="false"
+            android:label="Configure"
+            android:parentActivityName=".RelaisControlActivity">
+            <meta-data
+                android:name="android.support.PARENT_ACTIVITY"
+                android:value="cc.grepon.relais.RelaisControlActivity" />
+        </activity>
+
         <!-- In-app prompt-template editor (#12). Internal screen launched only from the control
              panel — not exported, no launcher icon. Up-navigates to RelaisControlActivity. -->
         <activity

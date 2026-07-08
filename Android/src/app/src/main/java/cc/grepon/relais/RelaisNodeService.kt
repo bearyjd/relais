@@ -28,11 +28,22 @@ import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
 import android.util.Log
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.concurrent.thread
 
 private const val TAG = "RelaisNodeService"
 private const val CHANNEL_ID = "relais_node"
 private const val NOTIFICATION_ID = 4242
+
+/**
+ * Pure decision behind [RelaisNodeService]'s startup dispatch guard: should a new init attempt be
+ * launched right now? Extracted so the exact onCreate/onStartCommand gating logic is JVM-testable
+ * without a Context/Service. The real concurrency guard is an `AtomicBoolean.compareAndSet` in
+ * [RelaisNodeService] itself — this predicate is a readable pre-check, not the sole source of
+ * atomicity (this file can't observe a CAS race in a plain JVM test).
+ */
+internal fun shouldDispatchStartup(ready: Boolean, dispatchInFlight: Boolean): Boolean =
+  !ready && !dispatchInFlight
 
 /**
  * Headless foreground service that hosts the resident multimodal engine (Gate 1) and the LAN
@@ -46,6 +57,13 @@ class RelaisNodeService : Service() {
   private var httpServer: RelaisHttpServer? = null
   private var httpsServer: RelaisHttpServer? = null
   private var wakeLock: PowerManager.WakeLock? = null
+
+  // Guards the single init path (delta review: onStartCommand used to be a bare START_STICKY, so a
+  // retry START against an already-alive-but-failed service — gated-repo 401, bad model id, process
+  // never died — silently did nothing; same dead path for the watchdog's revive). CAS makes repeated
+  // dispatch calls (onCreate racing onStartCommand, multiple START taps, watchdog + operator racing)
+  // launch at most one concurrent "relais-init" thread.
+  private val startupDispatchInFlight = AtomicBoolean(false)
 
   inner class LocalBinder : Binder() {
     val isReady: Boolean
@@ -71,18 +89,38 @@ class RelaisNodeService : Service() {
     RelaisConfig.incrementRestartCount(applicationContext) // process/service starts; via /metrics (Gate 3)
     ThermalGovernor.register(applicationContext) // thermal-aware backpressure (Gate 3)
 
+    dispatchStartupIfNeeded()
+  }
+
+  /**
+   * The single guarded entry point into the "relais-init" path — called from both [onCreate] (a
+   * fresh process/service instance) and [onStartCommand] (every `startForegroundService` call,
+   * including one against an already-alive instance). That second call site is the fix: a service
+   * that's alive but never came up (failed init, no `stopSelf()`) previously had no way to re-init —
+   * `onStartCommand` was a bare `START_STICKY` — so a retry START (control-panel or
+   * [RelaisWatchdog]'s revive) silently did nothing.
+   *
+   * [shouldDispatchStartup] is a readable pre-check; [startupDispatchInFlight]'s `compareAndSet` is
+   * what actually makes concurrent calls (onCreate racing onStartCommand, repeated START taps) safe.
+   */
+  private fun dispatchStartupIfNeeded() {
+    if (!shouldDispatchStartup(RelaisEngine.isReady, startupDispatchInFlight.get())) return
+    if (!startupDispatchInFlight.compareAndSet(false, true)) return // lost the race; another dispatch is already running
+
     // Provision the model (download if missing) then initialize the resident engine off the main
     // thread; start the endpoint when ready.
     thread(name = "relais-init") {
       RelaisEngine.lastInitFailed = false // new attempt: drop any prior failure so a restart-after-
       // failure doesn't flash NodeState.ERROR in the window before startupInProgress flips.
       RelaisEngine.startupInProgress = true // tell the watchdog "coming up", not "dead" (slow downloads)
+      RelaisNodeProgress.reset() // drop any stale phase/bytes from a prior attempt (control-panel phase line)
       try {
         updateNotification("Provisioning model…")
         val modelPath =
           RelaisModelProvisioner.ensureModel(applicationContext) { pct ->
             updateNotification("Downloading model $pct%…")
           }
+        RelaisNodeProgress.phase = ProvisionPhase.LOADING_ENGINE
         RelaisEngine.ensureInitialized(applicationContext, modelPath)
         // Register the EmbeddingGemma embedder so /v1/embeddings can report availability + provision
         // on demand. register() is cheap (no download/load). warmIfProvisioned() background-loads an
@@ -113,11 +151,19 @@ class RelaisNodeService : Service() {
         updateNotification("Init failed: ${e.message}")
       } finally {
         RelaisEngine.startupInProgress = false
+        RelaisNodeProgress.reset()
+        startupDispatchInFlight.set(false) // release the guard — a future retry (fresh START) may dispatch again
       }
     }
   }
 
-  override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int = START_STICKY
+  override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+    // Re-dispatch on every start command, not just onCreate — this is what lets a retry START (or
+    // RelaisWatchdog's revive) actually re-init an already-alive-but-failed service. No-ops via
+    // shouldDispatchStartup/the CAS guard when already LIVE or already mid-attempt.
+    dispatchStartupIfNeeded()
+    return START_STICKY
+  }
 
   override fun onTaskRemoved(rootIntent: Intent?) {
     // The node is headless and must outlive its control-panel task. If the task is removed (user

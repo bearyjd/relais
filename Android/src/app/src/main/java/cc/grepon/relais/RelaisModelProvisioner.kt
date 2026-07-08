@@ -196,6 +196,10 @@ object RelaisModelProvisioner {
    * license-gated repo, set [RelaisConfig.setHfToken] first or the download 401s.
    */
   fun ensureModel(context: Context, onProgress: (Int) -> Unit = {}): String {
+    // Control-panel phase line (AUDIT.md §4.2/Q6): every path through this function starts in
+    // RESOLVING — the offline fast paths below finish before ever reaching DOWNLOADING, so a node
+    // that boots from a persisted/pre-staged model never shows a stale phase from a prior attempt.
+    RelaisNodeProgress.phase = ProvisionPhase.RESOLVING
     // Fresh Pixel 10 (Tensor G5): substitute the G5-compatible default before ANY provisioning,
     // so the E4B default never reaches the G5 gate — even via a persisted path or a pre-staged
     // E4B file. setModelRef clears the stale modelPath and sets modelId=E2B, so the fast-paths
@@ -349,6 +353,7 @@ object RelaisModelProvisioner {
           if (received > lastReceived) {
             lastReceived = received
             lastProgressAt = System.currentTimeMillis()
+            RelaisNodeProgress.onDownloadProgress(received, totalBytes)
             if (totalBytes > 0) onProgress(((received * 100) / totalBytes).toInt().coerceIn(0, 99))
           }
         }

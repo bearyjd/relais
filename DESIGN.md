@@ -30,29 +30,49 @@ The one thing to remember: an amber relay light on a black panel.
 - **Text (paper):** `#EDEAE3`
 - **Muted text / labels:** `#8A8780`
 - **Stop / destructive:** `#FF5247` (used only for Stop)
-- **Status mapping:** LIVE = full amber + pulsing dot; STARTING = amber 60%; OFFLINE = muted.
+- **Status mapping:** LIVE = full amber + pulsing dot; STARTING = amber 60%, static dot, with a
+  phase line (resolve / download+progress / engine load); OFFLINE = muted. THERMAL SHED = a LIVE
+  sub-state, not a fourth status: dot stays pulsing amber; the detail line reads
+  `thermal · shedding load` in Paper (salience by brightness — no new color). StopRed covers STOP
+  and CANCEL-start (both are "stop the node").
 - **Mode:** Dark only. This is infra tooling; a light theme is out of scope.
 
 ## Typography
 - **Wordmark / labels / readouts / buttons:** Monospace (`FontFamily.Monospace`, bundled — no font download). The machine voice; also keeps endpoints/keys/model ids aligned.
 - **Body / prose:** same monospace for now (control-panel consistency). If a prose surface is added later, pair with a clean grotesk for body.
-- **Scale (control screen):** wordmark 22sp / status 13sp / readout label 12sp / value 13-14sp / caption 11sp.
+- **Scale (control screen):** display 22sp (wordmark) / hero 17sp (the state's single most-copied
+  value — LIVE LAN endpoint only) / status 13sp / value 13sp / label 11sp @ +1.5sp tracking /
+  caption 11sp / action link 12sp bold / button 14sp bold @ +2sp tracking. At most ONE hero element
+  per screen state.
 
 ## Spacing & Layout
 - **Density:** Comfortable. Readouts as label-left / value-right rows separated by hairline dividers.
 - **Insets:** Always apply `systemBarsPadding()` — content must clear the status/nav bars.
 - **Border radius:** Buttons 6dp; text fields use M3 default. Keep it crisp, not bubbly.
+- **Rhythm:** 4dp base grid; 20dp between divider-separated sections; 10dp between rows within a
+  section. **Primary action:** full-width, one per screen state, last in the layout; the home
+  screen must fit a 6.1" display without scrolling.
 
 ## Motion
 - **Approach:** Minimal-functional, one signature.
 - **Signature:** The status dot pulses amber (alpha 0.3→1.0, ~900ms, reverse) only while the node is LIVE. A beacon heartbeat. Nothing else animates.
+- State changes crossfade dot/status color over ~300ms; a determinate model download may show a
+  2dp amber hairline progress bar under the phase line. Nothing else moves.
 
 ## Application
 - **App label:** "Relais" (was "Edge Gallery"). Control tile: "Relais Node".
 - **Icon:** both launcher tiles share the amber-beacon mark.
 - **Control screen:** `RelaisControlActivity` — the canonical expression of this system.
+- **Surfaces:** the control screen shows status, connection, model summary, and the single
+  state-appropriate action (START / CANCEL / STOP — never more than one). Setup-time and rare
+  controls live on the CONFIGURE screen (`RelaisConfigureActivity`), one tap away, in the same
+  panel styling.
+- Every copyable value (endpoints, access key) carries an explicit trailing copy affordance
+  (`⧉` / TAP TO COPY) that acknowledges with `COPIED` for ~1.5s. Toggles render as single
+  label/value rows, tappable across the row — never as paired readout + command-link rows.
 
 ## Decisions Log
 | Date | Decision | Rationale |
 |------|----------|-----------|
 | 2026-05-25 | Initial brand identity: amber signal-relay on near-black, monospace, broadcast-beacon mark | Created via /design-consultation. Amber-on-black breaks from the blue/purple AI-SaaS norm and says "live, transmitting, sovereign" — the relay thesis. Verified on-device (Pixel 9 Pro Fold). |
+| 2026-07-07 | Control-panel buttonology pass: frequency-ranked layout, single state-appropriate primary action, Configure split, hero endpoint on LIVE, phase-line STARTING, thermal sub-state | AUDIT.md redesign audit |
