@@ -65,9 +65,10 @@ import org.junit.runner.RunWith
  *    not survive the one-generate-per-process design, so every image pays the full cold compile
  *    (confirmed: two back-to-back fresh processes were identical). Usable latency needs a custom sd.cpp
  *    JNI (persisted VkPipelineCache, or a warm reused ctx).
- *  - **PowerVR-DXT (Tensor G5 / Pixel 10):** the real-generate test **DEADLOCKS** at the first
- *    ggml-vulkan compute submit (0 % CPU, never reaches sampling) — an upstream llmedge/sd.cpp ↔
- *    PowerVR driver bug (#69). The two control tests still pass on G5.
+ *  - **PowerVR-DXT (Tensor G5 / Pixel 10):** Vulkan **DEADLOCKS** at the first ggml-vulkan compute
+ *    submit (0 % CPU, never reaches sampling) — an upstream llmedge/sd.cpp ↔ PowerVR driver bug (#69).
+ *    Since llmedge 0.4.2 + [imageGenForcesCpuBackend], [ImageGenService] forces the **CPU** backend on
+ *    this SoC, so the real-generate test now **PASSES on G5** too — measured ~269 s (CPU, VAE-dominant).
  *
  *   adb push sdturbo.gguf /data/local/tmp/relais/imagegen/sdturbo/sdturbo.gguf   # happy path only
  *   adb shell am instrument -w -e class cc.grepon.relais.imagegen.ImageGenServiceProbe \
@@ -86,7 +87,13 @@ class ImageGenServiceProbe {
   private class Reply(val what: Int, val pngPath: String?, val error: String?, val pid: Int)
 
   /** Outcome of binding the service and sending [requestCount] generate requests. */
-  private class Outcome(val replies: List<Reply>, val allReplied: Boolean, val processGone: Boolean)
+  private class Outcome(val replies: List<Reply>, val allReplied: Boolean, val processGone: Boolean) {
+    /**
+     * The single terminal reply (MSG_RESULT/MSG_ERROR). The service also sends a MSG_STARTED pid-ack
+     * BEFORE the generate (PR-C), so `replies` holds [STARTED, terminal] — filter the ack out.
+     */
+    fun terminalReply(): Reply = replies.single { it.what != ImageGenIpc.MSG_STARTED }
+  }
 
   @Test
   fun bindGenerateOnceAndProcessExits() {
@@ -100,7 +107,7 @@ class ImageGenServiceProbe {
     val outcome = runGenerates(listOf(generateRequest(modelPath)), timeoutS = GENERATE_TIMEOUT_S)
 
     assertTrue("no reply within ${GENERATE_TIMEOUT_S}s — generate hung or process died first", outcome.allReplied)
-    val reply = outcome.replies.single()
+    val reply = outcome.terminalReply()
     assertNull("generate reported an error: ${reply.error}", reply.error)
 
     val path = reply.pngPath
@@ -126,7 +133,7 @@ class ImageGenServiceProbe {
     val outcome = runGenerates(listOf(generateRequest(bogus)), timeoutS = CONTROL_TIMEOUT_S)
 
     assertTrue("no reply within ${CONTROL_TIMEOUT_S}s", outcome.allReplied)
-    val reply = outcome.replies.single()
+    val reply = outcome.terminalReply()
     assertEquals("should be an error reply", ImageGenIpc.MSG_ERROR, reply.what)
     assertNull("no PNG should be produced on the error path", reply.pngPath)
     assertTrue("error should explain unreadable model, got: ${reply.error}", reply.error?.contains("not readable") == true)
@@ -171,7 +178,9 @@ class ImageGenServiceProbe {
           )
         )
       }
-      latch.countDown()
+      // MSG_STARTED (PR-C) is a pre-generate pid ack, NOT a terminal reply — it must not satisfy the
+      // latch, or await() returns before the generate finishes. Only MSG_RESULT/MSG_ERROR are terminal.
+      if (msg.what != ImageGenIpc.MSG_STARTED) latch.countDown()
       true
     })
 
@@ -248,7 +257,7 @@ class ImageGenServiceProbe {
 
   private companion object {
     const val DEFAULT_MODEL_PATH = "/data/local/tmp/relais/imagegen/sdturbo/sdturbo.gguf"
-    const val GENERATE_TIMEOUT_S = 300L
+    const val GENERATE_TIMEOUT_S = 600L // headroom for the CPU backend (PowerVR/G5): ~270 s measured
     const val CONTROL_TIMEOUT_S = 30L
     const val PROCESS_EXIT_TIMEOUT_MS = 10_000L
   }

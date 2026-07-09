@@ -30,6 +30,9 @@ import android.os.Messenger
 import android.os.Process
 import android.os.RemoteException
 import android.util.Log
+import cc.grepon.relais.common.isPixel10
+import io.aatricks.llmedge.ImageRuntimeConfig
+import io.aatricks.llmedge.LLMEdgeConfig
 import io.aatricks.llmedge.image.ImageClient
 import io.aatricks.llmedge.image.ImageGenerationRequest
 import io.aatricks.llmedge.model.ModelSpec
@@ -162,7 +165,19 @@ class ImageGenService : Service() {
     // facade (hangs), never reused, never closed+recreated (deadlocks). We deliberately do NOT call
     // client.close()/cancelGeneration(): process death (the kill path) is the reclaim mechanism, and an
     // in-process close() is an untested teardown that risks the very deadlock the verdict warns about.
-    val client = ImageClient.create(applicationContext, scope)
+    // On the Tensor G5 / PowerVR DXT-48 (Pixel 10), Vulkan sd.cpp deadlocks at the first compute
+    // dispatch (#69): the model loads, then the first submit never returns and no automatic fallback
+    // can fire. llmedge 0.4.2's ImageRuntimeConfig.useVulkan=false forces the CPU backend — the
+    // upstream escape hatch for exactly this device (Aatricks/llmedge#30). Gated to the affected SoC
+    // via [imageGenForcesCpuBackend] so Mali (Tensor G3/G4) keeps the fast Vulkan path.
+    val forceCpu = imageGenForcesCpuBackend(isPixel10())
+    if (forceCpu) Log.i(TAG, "forcing CPU backend for image-gen (PowerVR/G5 Vulkan deadlock, #69)")
+    val client =
+      ImageClient.create(
+        applicationContext,
+        scope,
+        config = LLMEdgeConfig(image = ImageRuntimeConfig(useVulkan = !forceCpu)),
+      )
     val bitmap: Bitmap = client.generate(
       ImageGenerationRequest(
         prompt = prompt,
