@@ -90,7 +90,7 @@ import kotlinx.coroutines.withContext
  *  - PDF              → first page rendered via [PdfRenderer] → vision encoder (single-image cap)
  *  - audio (WAV only) → raw bytes → audio encoder, same pass-through as /v1/audio/transcriptions
  *  - text-ish files   → inlined above the prompt, capped hard: the resident engine runs
- *    MAX_NUM_TOKENS=1024 total, so docs are trimmed to [DOC_CHAR_CAP] chars (works on any model)
+ *    MAX_NUM_TOKENS=4096 total, so docs are trimmed to [DOC_CHAR_CAP] chars (works on any model)
  * (Mime names spelled out in prose here because Kotlin block comments NEST — a literal
  * slash-star wildcard inside a KDoc opens a nested comment and eats the rest of the file.)
  */
@@ -130,8 +130,11 @@ private sealed interface Attachment {
   }
 }
 
-/** Hard cap for inlined documents: the resident engine runs MAX_NUM_TOKENS=1024 total. */
-private const val DOC_CHAR_CAP = 2000
+/**
+ * Hard cap for inlined documents. The resident engine runs MAX_NUM_TOKENS=4096 total (prompt +
+ * history + reply share it); 12,000 chars ≈ 3,000 prose tokens, leaving ~1,000 for the rest.
+ */
+private const val DOC_CHAR_CAP = 12_000
 
 private const val CHAT_TAG = "RelaisChat"
 
@@ -378,7 +381,7 @@ private fun stageAttachment(context: Context, uri: Uri, multimodal: Boolean): St
     }
     else -> {
       // Text-ish: accept if it decodes as UTF-8 without NUL bytes (covers code files that come
-      // through as application/octet-stream). Cap hard — the engine has 1024 tokens total.
+      // through as application/octet-stream). Cap hard — the engine has 4096 tokens total.
       val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
         ?: return StageResult.Err("couldn't read file")
       if (bytes.any { it == 0.toByte() }) return StageResult.Err("unsupported binary file ($mime)")
