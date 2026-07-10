@@ -138,6 +138,9 @@ private const val DOC_CHAR_CAP = 12_000
 
 private const val CHAT_TAG = "RelaisChat"
 
+/** Cap applied to the READ itself, before buffering — a hostile provider can stream unbounded. */
+private const val MAX_ATTACH_BYTES = 32 * 1024 * 1024
+
 @Composable
 private fun ChatScreen() {
   val ctx = LocalActivityContext()
@@ -148,10 +151,16 @@ private fun ChatScreen() {
   var readout by remember { mutableStateOf("") }
   var pending by remember { mutableStateOf<Attachment?>(null) }
   val listState = rememberLazyListState()
+  // Stops the native decode loop when the screen goes away — without this, closing chat mid-reply
+  // keeps decoding to maxNumTokens (battery/thermal) and mutating a disposed screen's state.
+  val cancelled = remember { java.util.concurrent.atomic.AtomicBoolean(false) }
+  androidx.compose.runtime.DisposableEffect(Unit) {
+    onDispose { cancelled.set(true) }
+  }
 
   val pickFile =
     rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
-      android.util.Log.i(CHAT_TAG, "picker returned uri=$uri")
+      android.util.Log.d(CHAT_TAG, "picker returned: ${if (uri != null) "uri" else "null"}")
       if (uri != null) {
         scope.launch {
           // Read the multimodal flag at attach time, NOT at composition: the screen can be opened
@@ -165,7 +174,12 @@ private fun ChatScreen() {
                   StageResult.Err(t.message ?: t.javaClass.simpleName)
                 }
             }
-          android.util.Log.i(CHAT_TAG, "stage result: $result (multimodal=$multimodal)")
+          android.util.Log.d(
+            CHAT_TAG,
+            "stage result: ${result.javaClass.simpleName}" +
+              (if (result is StageResult.Err) " (${result.message})" else "") +
+              " multimodal=$multimodal",
+          )
           when (result) {
             is StageResult.Ok -> pending = result.attachment
             is StageResult.Err -> readout = "⚠ attach failed: ${result.message}"
@@ -185,8 +199,12 @@ private fun ChatScreen() {
     if ((prompt.isEmpty() && attachment == null) || streaming) return
     draft = ""
     pending = null
-    // Prior turns become history; the live prompt is the only one that decodes.
-    val history = messages.map { ParsedTurn(role = it.role, text = it.text) }
+    // Prior turns become history; the live prompt is the only one that decodes. Failed ("⚠ …")
+    // and empty assistant turns are display-only — replaying them as context confuses the model.
+    val history =
+      messages
+        .filterNot { it.role == "assistant" && (it.text.isBlank() || it.text.startsWith("⚠")) }
+        .map { ParsedTurn(role = it.role, text = it.text) }
     val (requestText, shownText) = composeUserText(prompt, attachment)
     messages.add(ChatMsg("user", shownText))
     messages.add(ChatMsg("assistant", ""))
@@ -210,6 +228,7 @@ private fun ChatScreen() {
                   val cur = messages[replyIndex]
                   messages[replyIndex] = cur.copy(text = cur.text + tok)
                 },
+                shouldCancel = { cancelled.get() },
               )
             }
             .getOrElse { err ->
@@ -357,7 +376,8 @@ private sealed interface StageResult {
 private fun stageAttachment(context: Context, uri: Uri, multimodal: Boolean): StageResult {
   val mime = context.contentResolver.getType(uri) ?: ""
   val name = uri.lastPathSegment?.substringAfterLast('/') ?: "file"
-  android.util.Log.i(CHAT_TAG, "staging uri=$uri mime='$mime' name='$name'")
+  // Log mime only — URIs/filenames are PII-adjacent and land in the system log (readable via adb).
+  android.util.Log.d(CHAT_TAG, "staging attachment mime='$mime'")
   return when {
     mime.startsWith("image/") -> {
       if (!multimodal) return StageResult.Err("model is text-only — images unsupported")
@@ -371,10 +391,13 @@ private fun stageAttachment(context: Context, uri: Uri, multimodal: Boolean): St
     }
     mime.startsWith("audio/") -> {
       if (!multimodal) return StageResult.Err("model is text-only — audio unsupported")
-      val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
-        ?: return StageResult.Err("couldn't read audio")
+      val bytes = readCapped(context, uri) ?: return StageResult.Err("couldn't read audio (or >32 MB)")
       // The engine's audio encoder takes WAV bytes (same pass-through as /v1/audio/transcriptions).
-      if (bytes.size < 4 || String(bytes, 0, 4, Charsets.US_ASCII) != "RIFF") {
+      // Check both the RIFF container magic AND the WAVE form type — AVI is also RIFF.
+      if (bytes.size < 12 ||
+        String(bytes, 0, 4, Charsets.US_ASCII) != "RIFF" ||
+        String(bytes, 8, 4, Charsets.US_ASCII) != "WAVE"
+      ) {
         return StageResult.Err("only WAV audio supported (got $mime)")
       }
       StageResult.Ok(Attachment.Audio(bytes, name))
@@ -382,8 +405,7 @@ private fun stageAttachment(context: Context, uri: Uri, multimodal: Boolean): St
     else -> {
       // Text-ish: accept if it decodes as UTF-8 without NUL bytes (covers code files that come
       // through as application/octet-stream). Cap hard — the engine has 4096 tokens total.
-      val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
-        ?: return StageResult.Err("couldn't read file")
+      val bytes = readCapped(context, uri) ?: return StageResult.Err("couldn't read file (or >32 MB)")
       if (bytes.any { it == 0.toByte() }) return StageResult.Err("unsupported binary file ($mime)")
       val text = bytes.toString(Charsets.UTF_8)
       val truncated = text.length > DOC_CHAR_CAP
@@ -405,17 +427,43 @@ private fun composeUserText(prompt: String, attachment: Attachment?): Pair<Strin
     null -> prompt to prompt
   }
 
+/** Reads at most [MAX_ATTACH_BYTES]; null on failure or oversize (never buffers unbounded input). */
+private fun readCapped(context: Context, uri: Uri): ByteArray? =
+  runCatching {
+      context.contentResolver.openInputStream(uri)?.use { input ->
+        // Manual capped copy: InputStream.readNBytes(int) needs API 33, minSdk is 31.
+        val out = ByteArrayOutputStream()
+        val buf = ByteArray(64 * 1024)
+        while (true) {
+          val n = input.read(buf)
+          if (n < 0) break
+          out.write(buf, 0, n)
+          if (out.size() > MAX_ATTACH_BYTES) return null
+        }
+        out.toByteArray()
+      }
+    }
+    .getOrNull()
+
 /**
  * Reads [uri] and re-encodes it as a downscaled PNG (≤1024 px long edge) for [RelaisRequest.imagePng].
- * Returns null if the image can't be decoded. Downscaling caps prefill cost and memory — the vision
- * encoder resizes internally anyway, so full-res upload is wasted work.
+ * Returns null if the image can't be decoded. Bounds-decodes first and subsamples so a crafted
+ * huge-dimension image never fully allocates; the vision encoder resizes internally anyway.
  */
 private fun decodeToPng(context: Context, uri: Uri): ByteArray? =
   runCatching {
+      val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+      context.contentResolver.openInputStream(uri).use { BitmapFactory.decodeStream(it, null, bounds) }
+      if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
+      val opts =
+        BitmapFactory.Options().apply {
+          inSampleSize = 1
+          while (maxOf(bounds.outWidth, bounds.outHeight) / inSampleSize > 2048) inSampleSize *= 2
+        }
       val bitmap =
-        context.contentResolver.openInputStream(uri).use { BitmapFactory.decodeStream(it) }
+        context.contentResolver.openInputStream(uri).use { BitmapFactory.decodeStream(it, null, opts) }
           ?: return null
-      bitmap.downscaled(maxEdge = 1024).toPngBytes()
+      bitmap.downscaledToPngBytes(maxEdge = 1024)
     }
     .getOrNull()
 
@@ -427,26 +475,38 @@ private fun pdfFirstPageToPng(context: Context, uri: Uri): ByteArray? =
         PdfRenderer(pfd).use { renderer ->
           if (renderer.pageCount == 0) return null
           renderer.openPage(0).use { page ->
-            // 2x page size for legibility, then the shared downscale cap keeps memory bounded.
-            val bitmap = Bitmap.createBitmap(page.width * 2, page.height * 2, Bitmap.Config.ARGB_8888)
+            // 2x page size for legibility, CLAMPED — a hostile media box otherwise allocates GBs.
+            val scale = minOf(2f, 3000f / maxOf(page.width, page.height, 1))
+            val bw = (page.width * scale).toInt().coerceIn(1, 3000)
+            val bh = (page.height * scale).toInt().coerceIn(1, 3000)
+            val bitmap = Bitmap.createBitmap(bw, bh, Bitmap.Config.ARGB_8888)
             bitmap.eraseColor(android.graphics.Color.WHITE)
             page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
-            bitmap.downscaled(maxEdge = 1536).toPngBytes()
+            bitmap.downscaledToPngBytes(maxEdge = 1536)
           }
         }
       }
     }
     .getOrNull()
 
-private fun Bitmap.downscaled(maxEdge: Int): Bitmap {
+/**
+ * Downscales (≤[maxEdge] long edge), PNG-encodes, and recycles both the receiver and any
+ * intermediate — repeated large attaches must not accumulate native bitmap memory.
+ */
+private fun Bitmap.downscaledToPngBytes(maxEdge: Int): ByteArray {
   val longest = maxOf(width, height)
-  if (longest <= maxEdge) return this
-  val ratio = maxEdge.toFloat() / longest
-  return Bitmap.createScaledBitmap(this, (width * ratio).toInt(), (height * ratio).toInt(), true)
+  val scaled =
+    if (longest <= maxEdge) this
+    else {
+      val ratio = maxEdge.toFloat() / longest
+      Bitmap.createScaledBitmap(this, (width * ratio).toInt(), (height * ratio).toInt(), true)
+    }
+  if (scaled !== this) recycle()
+  val png =
+    ByteArrayOutputStream().use { out ->
+      scaled.compress(Bitmap.CompressFormat.PNG, 100, out)
+      out.toByteArray()
+    }
+  scaled.recycle()
+  return png
 }
-
-private fun Bitmap.toPngBytes(): ByteArray =
-  ByteArrayOutputStream().use { out ->
-    compress(Bitmap.CompressFormat.PNG, 100, out)
-    out.toByteArray()
-  }

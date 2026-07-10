@@ -61,14 +61,6 @@ android {
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
   }
 
-  packaging {
-    // Backend.NPU(nativeLibraryDir) resolves vendor dispatch libs (libLiteRtDispatch_GoogleTensor.so,
-    // fetched by scripts/fetch-tensor-dispatcher.sh into src/debug/jniLibs) by absolute path, which
-    // only exists when native libs are extracted at install time — the same setting the official
-    // LiteRT sample_app_tpu uses. Without it the TPU lane cannot load the dispatcher.
-    jniLibs { useLegacyPackaging = true }
-  }
-
   signingConfigs {
     // Populated only when the RELEASE_* env is present (the CI release job decodes the keystore from
     // the RELEASE_KEYSTORE_BASE64 secret). Left empty otherwise — buildTypes.release then signs with
@@ -84,6 +76,14 @@ android {
   }
 
   buildTypes {
+    debug {
+      // Backend.NPU(nativeLibraryDir) resolves vendor dispatch libs (libLiteRtDispatch_GoogleTensor.so,
+      // fetched by scripts/fetch-tensor-dispatcher.sh into src/debug/jniLibs) by absolute path, which
+      // only exists when native libs are extracted at install time — the same setting the official
+      // LiteRT sample_app_tpu uses. DEBUG-ONLY: the dispatcher ships only in src/debug, so release
+      // keeps the modern uncompressed in-APK packaging (smaller installs, Play-recommended).
+      packaging { jniLibs.useLegacyPackaging = true }
+    }
     release {
       isMinifyEnabled = false
       proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
