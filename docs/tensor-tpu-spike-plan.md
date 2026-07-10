@@ -1,9 +1,48 @@
 # Tensor G5 TPU via the Google Tensor SDK — Spike & Verification Plan
 
-**Status:** UNBLOCKED (2026-07-09) — beta access is **not required for Pixel 10** and a public,
-Google-validated runtime config exists (see the 2026-07-09 update below). T-0 sample scaffolded at
-`spikes/tensor-tpu-t0/`. **Parent:** Epic E4 (#98). **Device:** rango — Pixel 10 Pro Fold /
-Tensor G5 / GrapheneOS with sandboxed Play (serial `57211FDCG0023C`).
+**Status:** ✅ **T-2 PASSED on-device (2026-07-09)** — Gemma 3 1B executes on the Tensor G5 TPU
+under GrapheneOS, proven by the dedicated TPU power rail (see "T-2 RESULT" below). Beta access is
+**not required for Pixel 10** and a public, Google-validated runtime config exists (2026-07-09
+update). T-0 sample at `spikes/tensor-tpu-t0/`. **Parent:** Epic E4 (#98). **Device:** rango —
+Pixel 10 Pro Fold / Tensor G5 / GrapheneOS with sandboxed Play (serial `57211FDCG0023C`).
+
+---
+
+## ✅ T-2 RESULT — TPU execution proven on rango (2026-07-09)
+
+Ran the validated stack (`litert:2.1.1` dispatcher + a Google-published `_Google_Tensor_G5`
+`.litertlm`) via the official LiteRT `sample_app_tpu`, patched (blockers below). Evidence:
+
+- **Engine log:** `Trying backend: NPU → Successfully loaded libLiteRtDispatch_GoogleTensor.so →
+  Backend NPU SUCCEEDED → Initialization SUCCEEDED on backend: NPU`. No SIGSEGV, no #7787 failure.
+- **Dedicated TPU power rail** (`power.rails.tpu`, sampled via `perfetto --txt` android.power):
+  **0.0 mW idle → sustained ~442 mW** (343–534 mW, every 0.5 s across the full 25 s generation).
+  The anti-fallback proof T-2 requires — an independent hardware meter, not a self-report.
+  Sampler: `spikes/tensor-tpu-t0/collect-evidence.sh` (thermal) + a perfetto power-rail trace.
+- **GPU rail negative signal:** `power.S2S_VDD_GPU` stayed at idle (~29 mW) during the NPU run.
+- **App self-report:** green NPU badge, **TTFT 267 ms, 12.1 tok/s** decode (Gemma 3 1B, q8).
+
+Model used: `Gemma3-1B-IT_q8_ekv1280_Google_Tensor_G5.litertlm` (litert-community, Gemma-gated).
+A `_Google_Tensor_G5` build also exists for **Gemma 4 E2B** (ungated, Apache-2.0) — the *same model
+class* as Relais's resident E2B, so the TPU is not limited to a tiny-model lane. E4B has no public
+G5 build (compiling one needs the still-ACL'd beta compiler).
+
+**Three blockers found (none a hardware limit — all shape the T-4 work in Relais):**
+1. The sample **gated NPU on `com.google.android.aicore` being installed** — wrong; the TPU
+   dispatcher is unrelated to AICore/Gemini Nano. GrapheneOS lacks AICore, so stock behavior refuses
+   the TPU. Fix = gate on the dispatcher `.so` loading, not AICore. **Relais has the same bug** —
+   `BackendSelector`/`RelaisEngine` route NPU through `RelaisBackend.NPU_AICORE`; T-4 must add a
+   dispatcher-gated `Backend.NPU` lane instead.
+2. The app assumed multimodal and failed `TF_LITE_VISION_ENCODER not found`; its text-only retry
+   recovered. Relais already has this text-only fallback in `RelaisEngine.ensureInitialized`.
+3. **Model staging on GrapheneOS:** a shell-pushed `.litertlm` under `/sdcard/Android/data/<pkg>`
+   is unreadable by the app uid (FUSE ignores `chmod`); it must land in the app's own private
+   storage (app-owned). T-4 staging must not rely on adb-pushed sdcard files.
+
+T-1 (Play Feature Delivery) stays deferred — the spike used a bundled/fused dispatcher over adb,
+so production packaging is the only open question there. **Next: T-3 perf table, then T-4 wiring.**
+
+---
 
 This plan answers exactly one question: **does the Play-delivered Tensor TPU runtime actually
 execute a model on the Google Tensor G5 TPU under GrapheneOS's sandbox — or does it silently fall
