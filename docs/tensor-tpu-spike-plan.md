@@ -1,8 +1,48 @@
 # Tensor G5 TPU via the Google Tensor SDK — Spike & Verification Plan
 
-**Status:** BLOCKED on Tensor SDK Beta access. Everything below is executable the moment access
-lands. **Parent:** Epic E4 (#98). **Device:** rango — Pixel 10 Pro Fold / Tensor G5 / GrapheneOS
-with sandboxed Play (serial `57211FDCG0023C`).
+**Status:** ✅ **T-2 PASSED on-device (2026-07-09)** — Gemma 3 1B executes on the Tensor G5 TPU
+under GrapheneOS, proven by the dedicated TPU power rail (see "T-2 RESULT" below). Beta access is
+**not required for Pixel 10** and a public, Google-validated runtime config exists (2026-07-09
+update). T-0 sample at `spikes/tensor-tpu-t0/`. **Parent:** Epic E4 (#98). **Device:** rango —
+Pixel 10 Pro Fold / Tensor G5 / GrapheneOS with sandboxed Play (serial `57211FDCG0023C`).
+
+---
+
+## ✅ T-2 RESULT — TPU execution proven on rango (2026-07-09)
+
+Ran the validated stack (`litert:2.1.1` dispatcher + a Google-published `_Google_Tensor_G5`
+`.litertlm`) via the official LiteRT `sample_app_tpu`, patched (blockers below). Evidence:
+
+- **Engine log:** `Trying backend: NPU → Successfully loaded libLiteRtDispatch_GoogleTensor.so →
+  Backend NPU SUCCEEDED → Initialization SUCCEEDED on backend: NPU`. No SIGSEGV, no #7787 failure.
+- **Dedicated TPU power rail** (`power.rails.tpu`, sampled via `perfetto --txt` android.power):
+  **0.0 mW idle → sustained ~442 mW** (343–534 mW, every 0.5 s across the full 25 s generation).
+  The anti-fallback proof T-2 requires — an independent hardware meter, not a self-report.
+  Sampler: `spikes/tensor-tpu-t0/collect-evidence.sh` (thermal) + a perfetto power-rail trace.
+- **GPU rail negative signal:** `power.S2S_VDD_GPU` stayed at idle (~29 mW) during the NPU run.
+- **App self-report:** green NPU badge, **TTFT 267 ms, 12.1 tok/s** decode (Gemma 3 1B, q8).
+
+Model used: `Gemma3-1B-IT_q8_ekv1280_Google_Tensor_G5.litertlm` (litert-community, Gemma-gated).
+A `_Google_Tensor_G5` build also exists for **Gemma 4 E2B** (ungated, Apache-2.0) — the *same model
+class* as Relais's resident E2B, so the TPU is not limited to a tiny-model lane. E4B has no public
+G5 build (compiling one needs the still-ACL'd beta compiler).
+
+**Three blockers found (none a hardware limit — all shape the T-4 work in Relais):**
+1. The sample **gated NPU on `com.google.android.aicore` being installed** — wrong; the TPU
+   dispatcher is unrelated to AICore/Gemini Nano. GrapheneOS lacks AICore, so stock behavior refuses
+   the TPU. Fix = gate on the dispatcher `.so` loading, not AICore. **Relais has the same bug** —
+   `BackendSelector`/`RelaisEngine` route NPU through `RelaisBackend.NPU_AICORE`; T-4 must add a
+   dispatcher-gated `Backend.NPU` lane instead.
+2. The app assumed multimodal and failed `TF_LITE_VISION_ENCODER not found`; its text-only retry
+   recovered. Relais already has this text-only fallback in `RelaisEngine.ensureInitialized`.
+3. **Model staging on GrapheneOS:** a shell-pushed `.litertlm` under `/sdcard/Android/data/<pkg>`
+   is unreadable by the app uid (FUSE ignores `chmod`); it must land in the app's own private
+   storage (app-owned). T-4 staging must not rely on adb-pushed sdcard files.
+
+T-1 (Play Feature Delivery) stays deferred — the spike used a bundled/fused dispatcher over adb,
+so production packaging is the only open question there. **Next: T-3 perf table, then T-4 wiring.**
+
+---
 
 This plan answers exactly one question: **does the Play-delivered Tensor TPU runtime actually
 execute a model on the Google Tensor G5 TPU under GrapheneOS's sandbox — or does it silently fall
@@ -55,24 +95,67 @@ runs classic ML not just Nano, LiteRT AOT compiler = Qualcomm-style app→delega
 
 ---
 
+## 2026-07-09 update — the beta gate collapsed (verified)
+
+Findings that supersede parts of the background section above; each was verified today, not assumed:
+
+1. **No beta sign-up needed for Pixel 10.** The Tensor SDK docs
+   (<https://developers.google.com/edge/litert/next/tensor-sdk>) state the beta sign-up
+   prerequisite **"does not apply to Pixel 10 devices."** `Tensor_G5` is the listed supported SoC.
+   The BLOCKED status this plan shipped with was wrong for rango.
+2. **Google-validated public config:** `com.google.ai.edge.litert:litert:2.1.1` (Maven) **+**
+   `litert_npu_runtime_libraries.zip` from the GitHub **v2.1.1** release. Verified: the zip exists
+   and contains `google_tensor_runtime/src/main/jni/arm64-v8a/libLiteRtDispatch_GoogleTensor.so`
+   (~400 KB), packaged as a ready-made dynamic-feature Gradle module. Do **not** use litert
+   2.1.2–2.1.5 — those release tags ship no dispatcher at all, and the version-mixed combo either
+   silently falls back to CPU or SIGSEGVs
+   ([LiteRT #7787](https://github.com/google-ai-edge/LiteRT/issues/7787)). Pin both sides to 2.1.1.
+3. **Google Tensor is AOT-only in this drop.** The `_jit.zip` variant ships on-device compiler
+   plugins for Qualcomm/MediaTek but **only the dispatcher** for Google Tensor — there is no
+   `libLiteRtCompilerPlugin_GoogleTensor.so`. The model must be **AOT-compiled for Tensor G5**
+   (LiteRT AOT toolchain, or a precompiled NPU model from `litert-community` on Hugging Face).
+   A plain un-compiled `.tflite` on a strict-NPU request is *expected* to fail — that failure is
+   diagnostic, not a spike result.
+4. **The Play coupling is weaker than assumed.** The dispatcher module's manifest sets
+   `dist:fusing include="true"` and the lib is plain `jniLibs` — a fused/universal APK carries it
+   inline and installs via `adb`, so the spike does **not** need Play Feature Delivery at all
+   (T-1 below is therefore a production-packaging question, not a spike prerequisite). The module
+   targets device groups `Google_Tensor_G3/G4/G5`, so G3/G4 Pixels are nominally in scope too.
+   If T-2 passes via the bundled-lib path, revisit the `degoogledOpen` exclusion in T-4.
+5. **Counter-evidence to hold in mind:** the #7787 reporter says even the 2.1.1+2.1.1 pairing
+   SIGABRTed on their Pixel 10 Pro XL AOT path (June 2026). Google says validated; the reporter
+   says crash. T-2's anti-fallback proof settles it on rango.
+
+---
+
 ## Gate T-0 — SDK in hand + a minimal TPU sample builds
 
-**Prereq (JD):** accept the Tensor SDK Beta; pull the SDK + its Play Feature Delivery / AI Pack
-Gradle wiring and a reference sample.
+**Prereq:** ~~accept the Tensor SDK Beta~~ none for Pixel 10 (2026-07-09 update, item 1). The
+pinned recipe is `litert:2.1.1` + the v2.1.1 zip's `libLiteRtDispatch_GoogleTensor.so`.
 
-**Do:** build the smallest possible standalone app that (a) declares the TPU runtime feature
-module, (b) loads a Tensor-SDK-compiled Gemma 3 1B, (c) runs one `generate`. Keep it *outside*
-Relais first — a clean sample removes Relais as a variable.
+**Do:** the standalone sample is scaffolded at **`spikes/tensor-tpu-t0/`** (kept *outside* the
+Relais app — a clean sample removes Relais as a variable; toolchain matches Relais: AGP 8.8.2 /
+Kotlin 2.2.0 / compileSdk 35 / minSdk 31). Run its `fetch-npu-libs.sh` to pull the dispatcher into
+`jniLibs` (binary stays out of git), stage an **AOT-compiled** model (update item 3), build,
+`adb install`, run. The app attempts CPU → NPU-lenient → NPU-strict in sequence and logs each
+outcome + per-inference latency to logcat tag `RelaisTpuT0`. Start with the smallest AOT-compiled
+classic model, **not** Gemma 3 1B — the 1B path adds the LiteRT-LM layer on top; prove raw TPU
+execution first, then graduate.
 
-**Pass:** the sample app compiles and installs on rango. **Fail →** capture the exact Gradle/SDK
-requirement that blocks (min SDK, AGP, a Play-services compile dep); that requirement itself is a
-finding about degoogled feasibility.
+**Pass:** the sample builds, installs on rango, and the strict-NPU request either runs or fails
+with a *dispatcher-level* error (proves the dispatcher loaded). **Fail →** capture the exact
+Gradle/SDK requirement or load error that blocks; that requirement itself is a finding about
+degoogled feasibility.
 
 ---
 
 ## Gate T-1 — Play Feature Delivery actually delivers the TPU runtime on GrapheneOS
 
-The first real GrapheneOS question. The docs say the runtime arrives via Play Feature Delivery;
+**Demoted to a production-packaging question (2026-07-09 update, item 4):** the spike bundles the
+dispatcher via `jniLibs` and installs over adb, so T-2 does **not** wait on this gate. Run T-1
+after T-2 passes, to decide the production delivery story (bundled lib vs Play Feature Delivery).
+
+The docs say the runtime arrives via Play Feature Delivery;
 GrapheneOS says it supports that — verify it *for this specific module* on rango.
 
 **Do:** install the T-0 app via the sandboxed Play Store (not `adb install` — Play Feature Delivery

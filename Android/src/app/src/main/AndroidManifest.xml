@@ -163,6 +163,16 @@
                 android:name="android.support.PARENT_ACTIVITY"
                 android:value="cc.grepon.relais.RelaisControlActivity" />
         </activity>
+        <activity
+            android:name=".RelaisChatActivity"
+            android:exported="false"
+            android:label="Chat"
+            android:windowSoftInputMode="adjustResize"
+            android:parentActivityName=".RelaisControlActivity">
+            <meta-data
+                android:name="android.support.PARENT_ACTIVITY"
+                android:value="cc.grepon.relais.RelaisControlActivity" />
+        </activity>
 
         <!-- In-app prompt-template editor (#12). Internal screen launched only from the control
              panel — not exported, no launcher icon. Up-navigates to RelaisControlActivity. -->

@@ -40,7 +40,10 @@ import java.util.concurrent.atomic.AtomicReference
 import org.json.JSONObject
 
 private const val TAG = "RelaisEngine"
-private const val MAX_NUM_TOKENS = 1024
+// 4096 (was 1024): the E-series models ship ekv4096 builds, and 1024 left no room for inlined
+// document attachments + history + a reply. KV-cache memory grows linearly with this; fine on
+// 12–16 GB devices. Prefill of near-full prompts is proportionally slower — that's inherent.
+private const val MAX_NUM_TOKENS = 4096
 
 // Default sampler params (used when a request omits them). topK has no OpenAI equivalent, so it is
 // fixed; temperature/top_p/seed mirror the OpenAI request fields. Previous behavior was the hardcoded

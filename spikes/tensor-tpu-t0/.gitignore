@@ -1,0 +1,8 @@
+# Fetched binaries stay out of git — run ./fetch-npu-libs.sh to (re)populate.
+app/src/main/jniLibs/
+# Staged models
+*.tflite
+# Gradle
+.gradle/
+build/
+local.properties

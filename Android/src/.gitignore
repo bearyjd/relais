@@ -29,3 +29,4 @@
 .externalNativeBuild
 .cxx
 local.properties
+libLiteRtDispatch_GoogleTensor.so

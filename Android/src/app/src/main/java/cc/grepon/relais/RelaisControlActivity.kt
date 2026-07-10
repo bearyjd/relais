@@ -282,6 +282,7 @@ class RelaisControlActivity : ComponentActivity() {
                 Text(caption, color = Muted, fontFamily = FontFamily.Monospace, fontSize = 11.sp)
               }
               ActionLink("CONFIGURE ›") { ctx.startActivity(Intent(ctx, RelaisConfigureActivity::class.java)) }
+              ActionLink("OPEN CHAT ›") { ctx.startActivity(Intent(ctx, RelaisChatActivity::class.java)) }
             }
 
             PrimaryButton(panel.primaryAction) {
