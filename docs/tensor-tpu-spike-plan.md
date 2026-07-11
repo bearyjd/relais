@@ -110,11 +110,24 @@ Implementation (all landed):
   name (e.g. `g5-1b.litertlm`) silently gets the GPU lane and fails `Input tensor not found`. Keep
   the upstream `…_Google_Tensor_G5.litertlm` names.
 
+**✅ E2B-G5 resident test (2026-07-10, same probe): the flagship model class runs on the TPU —
+MULTIMODAL.** `TensorTpuProbe` with `gemma-4-E2B-it_Google_Tensor_G5.litertlm` (3.95 GB) → OK:
+- `TPU lane selected … (maxNumTokens=4096)` — the E2B AOT build's KV cache is 4096, matching the
+  engine default (no ekv marker needed).
+- **`Resident multimodal engine ready: true`** — the vision/audio encoder rung initialized on the
+  TPU lane (`visionBackend=NPU`); this is NOT the text-only fallback. Multimodal-on-TPU is real.
+- **11.07 tok/s** decode via `RelaisEngine.generate`, `backend=TPU_LITERTLM`, init **5.8 s** for
+  3.95 GB. Rails: TPU active, GPU 0.0 mW — clean cross-control.
+- Context: the historical E-series GPU resident baseline is ~5.6 tok/s → **~2× the flagship
+  baseline**, with TTFT/init an order faster. This makes E2B-G5 the natural default resident on
+  Tensor G5 devices once the allowlist carries it. (Vision/audio *inference* through the TPU-lane
+  encoders not yet exercised — text decode proven; multimodal requests are the next probe.)
+
 **Remaining to make it operator-usable (post-spike backlog):** the allowlist has no G5-AOT entries
 yet (TPU models only load via probe/manual staging today — add `…_Google_Tensor_G5` variants gated
-to Tensor G5 devices); E2B-G5 (multimodal-class) resident on TPU is untested (model already staged
-on rango); production dispatcher packaging for release builds (T-1's Play Feature Delivery question)
-— the dispatcher currently ships in DEBUG builds only.
+to Tensor G5 devices); exercise vision/audio requests through the TPU-lane encoders; production
+dispatcher packaging for release builds (T-1's Play Feature Delivery question) — the dispatcher
+currently ships in DEBUG builds only.
 
 ---
 
