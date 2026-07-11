@@ -164,6 +164,27 @@ jobs:
             fi
           done
           [ "$MISSING" -eq 0 ] && echo "OK — the TPU dispatcher ships in all three release variants." || exit 1
+      - name: Verify the committed TPU dispatcher is the pinned, self-contained build
+        # Hardening (PR #142 security review): the dex-only GMS gate above is blind to native code,
+        # and nothing re-checks the committed .so's identity after fetch. Enforce, for the dispatcher
+        # specifically (scoped to it — not all libs — so it can't false-positive on litertlm/litert):
+        #   (a) SHA-256 == the pin in scripts/fetch-tensor-dispatcher.sh (no silent binary drift), and
+        #   (b) it links no non-platform lib and imports no networking symbol (the degoogled-safe
+        #       guarantee the manual review established, now enforced so a future bump can't erode it).
+        run: |
+          SO=app/src/main/jniLibs/arm64-v8a/libLiteRtDispatch_GoogleTensor.so
+          PIN=$(grep -oE 'SHA256="[0-9a-f]{64}"' scripts/fetch-tensor-dispatcher.sh | cut -d'"' -f2)
+          echo "$PIN  $SO" | sha256sum -c - || { echo "::error::committed dispatcher != pinned SHA-256 (drift)"; exit 1; }
+          NEEDED=$(readelf -dW "$SO" | awk -F'[][]' '/NEEDED/{print $2}')
+          BAD_LINK=$(echo "$NEEDED" | grep -Ev '^(libandroid|liblog|libc|libm|libdl)\.so$' || true)
+          if [ -n "$BAD_LINK" ]; then
+            echo "::error::dispatcher links a non-platform lib (degoogled-unsafe): $BAD_LINK"; exit 1
+          fi
+          NETSYM=$(readelf -sW "$SO" | awk '$7=="UND"{print $8}' | grep -E '^(socket|connect|__connect|getaddrinfo|gethostby|send|sendto|recv|recvfrom)$' || true)
+          if [ -n "$NETSYM" ]; then
+            echo "::error::dispatcher imports networking symbols (should be pure HW dispatch): $NETSYM"; exit 1
+          fi
+          echo "OK — dispatcher matches the pin, links only platform libs, imports no networking symbols."
 
   unit_tests:
     name: JVM unit tests
