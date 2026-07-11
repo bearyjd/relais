@@ -13,7 +13,6 @@
 package cc.grepon.relais.chat
 
 import android.content.Context
-import android.util.Base64
 import android.util.Log
 import cc.grepon.relais.RelaisBackend
 import cc.grepon.relais.RelaisConfig
@@ -29,7 +28,6 @@ import io.ktor.http.HttpMethod
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.contentType
 import kotlinx.coroutines.CancellationException
-import org.json.JSONArray
 import org.json.JSONObject
 
 private const val TAG = "RelaisHttpChatTransport"
@@ -48,7 +46,7 @@ private class ChatStreamStop : RuntimeException()
  * (`/v1/chat/completions`), matching the same path any external LAN client uses. Selected when the
  * server is [healthReachable] and the resident node is ready (see [chooseTransport]).
  *
- * [buildChatRequestBody] serializes `history` as text-only turns; the final user turn becomes an
+ * [buildChatRequestJson] serializes `history` as text-only turns; the final user turn becomes an
  * OpenAI content-parts array (`text` + `image_url`/`input_audio`) whenever
  * [ChatStreamRequest.imagePng]/[ChatStreamRequest.audioWav] are present, so multimodal requests are
  * dogfooded over this HTTP path rather than forced to [InProcessChatTransport].
@@ -61,7 +59,14 @@ class HttpChatTransport(private val context: Context, private val client: HttpCl
     shouldCancel: () -> Boolean,
   ): ChatStreamResult {
     val assembled = StringBuilder()
-    val body = buildChatRequestBody(request)
+    val body =
+      buildChatRequestJson(
+        history = request.history,
+        userText = request.userText,
+        imagePng = request.imagePng,
+        audioWav = request.audioWav,
+        stream = true,
+      )
     try {
       client.sse(
         urlString = CHAT_URL,
@@ -69,7 +74,7 @@ class HttpChatTransport(private val context: Context, private val client: HttpCl
           method = HttpMethod.Post
           contentType(ContentType.Application.Json)
           header(HttpHeaders.Authorization, "Bearer ${RelaisConfig.apiKey(context)}")
-          setBody(body.toString())
+          setBody(body)
         },
       ) {
         incoming.collect { event ->
@@ -109,49 +114,4 @@ class HttpChatTransport(private val context: Context, private val client: HttpCl
       Log.d(TAG, "health probe failed: ${e.message}")
       false
     }
-}
-
-/**
- * Builds the OpenAI `/v1/chat/completions` request body: prior [ChatStreamRequest.history] as
- * text-only turns, plus the new user turn. When the user turn carries
- * [ChatStreamRequest.imagePng]/[ChatStreamRequest.audioWav], its `content` is emitted as an array
- * of OpenAI content-parts (`text`, `image_url`, `input_audio`) per [RelaisOpenAiParser.extractParts];
- * otherwise `content` stays a plain string, matching the server's text-only fast path.
- */
-private fun buildChatRequestBody(request: ChatStreamRequest): JSONObject {
-  val messages = JSONArray()
-  request.history.forEach { turn ->
-    messages.put(JSONObject().put("role", turn.role).put("content", turn.text))
-  }
-  val hasMedia = request.imagePng != null || request.audioWav != null
-  val userContent: Any =
-    if (!hasMedia) {
-      request.userText
-    } else {
-      val parts = JSONArray()
-      parts.put(JSONObject().put("type", "text").put("text", request.userText))
-      request.imagePng?.let { png ->
-        val dataUri = "data:image/png;base64," + Base64.encodeToString(png, Base64.NO_WRAP)
-        parts.put(
-          JSONObject()
-            .put("type", "image_url")
-            .put("image_url", JSONObject().put("url", dataUri)),
-        )
-      }
-      request.audioWav?.let { wav ->
-        parts.put(
-          JSONObject()
-            .put("type", "input_audio")
-            .put(
-              "input_audio",
-              JSONObject()
-                .put("data", Base64.encodeToString(wav, Base64.NO_WRAP))
-                .put("format", "wav"),
-            ),
-        )
-      }
-      parts
-    }
-  messages.put(JSONObject().put("role", "user").put("content", userContent))
-  return JSONObject().put("messages", messages).put("stream", true)
 }
