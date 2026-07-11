@@ -45,6 +45,9 @@ interface ChatDao {
   @Query("UPDATE conversations SET title = :title, updatedAt = :updatedAt WHERE id = :id")
   suspend fun renameConversation(id: String, title: String, updatedAt: Long)
 
+  @Query("UPDATE conversations SET updatedAt = :updatedAt WHERE id = :id")
+  suspend fun touch(id: String, updatedAt: Long)
+
   @Query("DELETE FROM conversations WHERE id = :id")
   suspend fun deleteConversation(id: String)
 

@@ -17,6 +17,7 @@ import cc.grepon.relais.data.ChatDao
 import cc.grepon.relais.data.ChatTurn
 import cc.grepon.relais.data.Conversation
 import cc.grepon.relais.data.RelaisDatabase
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -72,5 +73,14 @@ class ChatDaoTest {
     dao.insertTurn(ChatTurn("t1", "c1", "user", "a", null, null, null, null, 10L))
     dao.deleteConversation("c1")
     assertEquals(emptyList<String>(), dao.turnsFor("c1").map { it.id })
+  }
+
+  @Test
+  fun `touch bumps updatedAt without changing title`() = runBlocking {
+    dao.upsertConversation(Conversation("c1", "Original", "m", 1L, 1L))
+    dao.touch("c1", 999L)
+    val c = dao.observeConversations().first().single { it.id == "c1" }
+    assertEquals("Original", c.title)
+    assertEquals(999L, c.updatedAt)
   }
 }

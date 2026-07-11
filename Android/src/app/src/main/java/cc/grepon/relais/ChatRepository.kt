@@ -25,13 +25,12 @@ import kotlinx.coroutines.flow.Flow
  * the mapping between a [ChatTurn.attachmentPath] and the actual bytes on disk, stored under
  * `context.filesDir/chat/`.
  *
- * Note on `Conversation.updatedAt`: [ChatDao] does not expose a way to read a conversation's
- * current title, so [appendUserTurn] and [appendAssistantTurn] cannot safely re-`upsertConversation`
- * with a fresh `updatedAt` without clobbering the title (upsert is `REPLACE`, i.e. a full-row
- * overwrite). Bumping `updatedAt` on every turn is therefore left to the caller (e.g. the
- * ViewModel, which already holds the conversation's title) by calling [rename] with the existing
- * title, or to a future DAO addition (an `updatedAt`-only touch query / `getConversation` read) if
- * this turns out to be needed for the conversation list's sort order.
+ * Note on `Conversation.updatedAt`: [appendUserTurn] and [appendAssistantTurn] cannot safely
+ * re-`upsertConversation` with a fresh `updatedAt` without clobbering the title (upsert is
+ * `REPLACE`, i.e. a full-row overwrite). Both methods instead call [ChatDao.touch], an
+ * `updatedAt`-only update, using the same timestamp stamped on the turn's `createdAt` — this
+ * keeps [ChatDao.observeConversations]'s `ORDER BY updatedAt DESC` resurfacing active
+ * conversations without touching the title.
  */
 class ChatRepository(private val context: Context, private val dao: ChatDao) {
 
@@ -63,6 +62,7 @@ class ChatRepository(private val context: Context, private val dao: ChatDao) {
       } else {
         null
       }
+    val now = System.currentTimeMillis()
     val turn =
       ChatTurn(
         id = turnId,
@@ -73,9 +73,10 @@ class ChatRepository(private val context: Context, private val dao: ChatDao) {
         attachmentPath = attachmentPath,
         answeredByModelId = null,
         answeredByBackend = null,
-        createdAt = System.currentTimeMillis(),
+        createdAt = now,
       )
     dao.insertTurn(turn)
+    dao.touch(conversationId, now)
     return turn
   }
 
@@ -85,6 +86,7 @@ class ChatRepository(private val context: Context, private val dao: ChatDao) {
     modelId: String,
     backend: String,
   ): ChatTurn {
+    val now = System.currentTimeMillis()
     val turn =
       ChatTurn(
         id = UUID.randomUUID().toString(),
@@ -95,9 +97,10 @@ class ChatRepository(private val context: Context, private val dao: ChatDao) {
         attachmentPath = null,
         answeredByModelId = modelId,
         answeredByBackend = backend,
-        createdAt = System.currentTimeMillis(),
+        createdAt = now,
       )
     dao.insertTurn(turn)
+    dao.touch(conversationId, now)
     return turn
   }
 
