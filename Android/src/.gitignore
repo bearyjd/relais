@@ -29,4 +29,7 @@
 .externalNativeBuild
 .cxx
 local.properties
-libLiteRtDispatch_GoogleTensor.so
+# NOTE: libLiteRtDispatch_GoogleTensor.so (the Tensor G5 TPU dispatcher) is now COMMITTED under
+# app/src/main/jniLibs/arm64-v8a/ — it must ship in RELEASE APKs (CI runs assembleRelease and does
+# NOT fetch it), so it is a tracked vendored binary, not a gitignored fetch artifact. Regenerate it
+# with scripts/fetch-tensor-dispatcher.sh (SHA-256-pinned) after a dispatcher version bump.

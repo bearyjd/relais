@@ -148,6 +148,22 @@ jobs:
             exit 1
           fi
           echo "OK — every arm64 .so in every release variant is 16 KB-aligned."
+      - name: Verify the Tensor G5 TPU dispatcher ships in every release variant
+        # The TPU lane (RelaisEngine → Backend.NPU) resolves libLiteRtDispatch_GoogleTensor.so by
+        # absolute path in nativeLibraryDir, so it MUST be bundled. It's a committed vendored binary
+        # (src/main/jniLibs), but a stray .gitignore/packaging change could silently drop it →
+        # release APKs that fall back to GPU with no error. Assert its presence in all three shipping
+        # variants (incl. degoogledOpen — a self-contained accel lib, no GMS, deliberately included).
+        run: |
+          MISSING=0
+          for variant in fullOpen/release fullPlaysafe/release degoogledOpen/release; do
+            APK=$(find "app/build/outputs/apk/$variant" -name "*.apk" 2>/dev/null | head -1)
+            if [ -z "$APK" ] || ! unzip -l "$APK" | grep -q "lib/arm64-v8a/libLiteRtDispatch_GoogleTensor.so"; then
+              echo "::error::$variant is missing the Tensor TPU dispatcher — the TPU lane will silently fall back to GPU"
+              MISSING=1
+            fi
+          done
+          [ "$MISSING" -eq 0 ] && echo "OK — the TPU dispatcher ships in all three release variants." || exit 1
 
   unit_tests:
     name: JVM unit tests

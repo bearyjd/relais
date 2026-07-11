@@ -127,8 +127,14 @@ MULTIMODAL.** `TensorTpuProbe` with `gemma-4-E2B-it_Google_Tensor_G5.litertlm` (
 **Remaining to make it operator-usable (post-spike backlog):** the allowlist has no G5-AOT entries
 yet (TPU models only load via probe/manual staging today — add `…_Google_Tensor_G5` variants gated
 to Tensor G5 devices); production
-dispatcher packaging for release builds (T-1's Play Feature Delivery question) — the dispatcher
-currently ships in DEBUG builds only.
+~~dispatcher packaging for release builds~~ ✅ DONE (2026-07-11): the dispatcher is committed
+at `app/src/main/jniLibs/arm64-v8a/` and ships in ALL THREE release variants (fullOpen,
+fullPlaysafe, **and degoogledOpen** — a self-contained accel lib, no GMS, verified 0 GMS/AICore
+class descriptors in the degoogled dex). `useLegacyPackaging=true` is module-wide so
+`Backend.NPU(nativeLibraryDir)` resolves it. A CI gate asserts the .so ships in every release
+variant. T-1's Play-Feature-Delivery route was NOT needed — the fused bundled lib is simpler and
+works on GrapheneOS. **The TPU spike is complete end-to-end for shipping builds.** Only E4B-on-TPU
+remains (needs the beta AOT compiler).
 
 ---
 
