@@ -132,6 +132,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
           repo.appendAssistantTurn(conversationId, result.text, result.modelId, result.backend.name)
         }
         .onFailure { error ->
+          if (error is kotlinx.coroutines.CancellationException) throw error
           repo.appendAssistantTurn(
             conversationId,
             content = "[error] ${error.message ?: error::class.simpleName}",
@@ -177,12 +178,13 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     val precedingTurn = ordered.getOrNull(userIndex - 1)
 
     viewModelScope.launch {
+      val bytes = userTurn.attachmentPath?.let { path -> readAttachment(path) } // read BEFORE truncation
       if (precedingTurn != null) {
         repo.truncateAfter(convId, precedingTurn)
       } else {
         repo.truncateAfter(convId, userTurn.copy(createdAt = userTurn.createdAt - 1))
       }
-      send(newText, userTurn.attachmentType, userTurn.attachmentPath?.let { path -> readAttachment(path) })
+      send(newText, userTurn.attachmentType, bytes)
     }
   }
 
