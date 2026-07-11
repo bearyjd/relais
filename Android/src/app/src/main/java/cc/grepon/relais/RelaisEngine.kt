@@ -92,6 +92,10 @@ internal fun isMissingEncoder(t: Throwable): Boolean {
 enum class RelaisBackend {
   GPU_LITERTLM, // resident litertlm Engine on the GPU — full multimodal (text+image+audio)
   NPU_AICORE, // AICore/Gemini Nano on the NPU — image+text only, Pixel 10+ only (UNVERIFIED here)
+  // Resident litertlm Engine on the Google Tensor TPU via libLiteRtDispatch_GoogleTensor.so —
+  // dispatcher-gated (NOT AICore-gated), G5-AOT-compiled models only. Proven on rango:
+  // T-2 (power-rail execution proof) + T-3 (8.51 tok/s vs 3.03 GPU). See docs/tensor-tpu-spike-plan.md.
+  TPU_LITERTLM,
 }
 
 /** Modalities present in an inbound request. */
@@ -257,6 +261,17 @@ object RelaisEngine {
     private set
 
   /**
+   * True iff the resident engine initialized on the Tensor TPU ([RelaisBackend.TPU_LITERTLM]):
+   * the model file is Google-Tensor AOT-compiled AND the dispatcher lib is bundled (debug builds,
+   * via scripts/fetch-tensor-dispatcher.sh). Set truthfully in [buildResidentEngine]. Requests then
+   * report TPU_LITERTLM and run the engine-default sampler (the NPU executor crashes under a custom
+   * [SamplerConfig] — see [RelaisTpuLane.requestUsesCustomSampler]).
+   */
+  @Volatile
+  var residentIsTpu: Boolean = false
+    private set
+
+  /**
    * Legacy hardcoded model location from the spike (manually side-loaded; see SPIKE-FINDINGS.md).
    * Now only a fallback — the node self-provisions to [Model.getPath]'s layout via
    * [RelaisModelProvisioner], and [ensureInitialized] defaults to that resolved path.
@@ -294,7 +309,7 @@ object RelaisEngine {
       // but MEASURED A REGRESSION on this E4B/GPU/Tensor-G4 config: ~2.56 tok/s with it on vs
       // ~5.63 tok/s off (draft overhead > gains, no draft model bundled). Left OFF deliberately.
       ExperimentalFlags.enableSpeculativeDecoding = false
-      engine = buildResidentEngine(modelPath, cacheDir)
+      engine = buildResidentEngine(modelPath, cacheDir, context.applicationInfo.nativeLibraryDir)
     }
   }
 
@@ -313,14 +328,33 @@ object RelaisEngine {
    * single-encoder model ever ships.
    */
   @OptIn(ExperimentalApi::class)
-  private fun buildResidentEngine(modelPath: String, cacheDir: String?): Engine {
+  private fun buildResidentEngine(modelPath: String, cacheDir: String?, nativeLibDir: String?): Engine {
+    // TPU lane (T-4): dispatcher-gated, NOT AICore-gated — a Google-Tensor AOT-compiled model plus
+    // libLiteRtDispatch_GoogleTensor.so in nativeLibraryDir. AOT models carry a FIXED KV size
+    // (ekv marker) that maxNumTokens must match. Anything else stays on the proven GPU lane.
+    val fileName = File(modelPath).name
+    val tpu =
+      RelaisTpuLane.isTpuCompiledModel(fileName) &&
+        nativeLibDir != null &&
+        File(nativeLibDir, RelaisTpuLane.DISPATCHER_LIB).exists()
+    if (RelaisTpuLane.isTpuCompiledModel(fileName) && !tpu) {
+      Log.w(TAG, "Model is Google-Tensor AOT-compiled but the TPU dispatcher lib is absent — GPU lane")
+    }
+    residentIsTpu = tpu
+    val backend = if (tpu) Backend.NPU(nativeLibraryDir = nativeLibDir!!) else Backend.GPU()
+    val maxTokens = if (tpu) RelaisTpuLane.tpuMaxNumTokens(fileName, MAX_NUM_TOKENS) else MAX_NUM_TOKENS
+    if (tpu) Log.i(TAG, "TPU lane selected for $fileName (maxNumTokens=$maxTokens)")
+    // TPU lane: visionBackend must be NPU too — an AOT model probed with visionBackend=GPU fails
+    // with "Input tensor not found" (NOT classified as a missing encoder, so the text-only rung
+    // never runs); with visionBackend=NPU a text-only AOT model fails correctly with
+    // "TF_LITE_VISION_ENCODER not found" and degrades (matches the official sample_app_tpu).
     val multimodal =
       EngineConfig(
         modelPath = modelPath,
-        backend = Backend.GPU(),
-        visionBackend = Backend.GPU(),
+        backend = backend,
+        visionBackend = if (tpu) Backend.NPU(nativeLibraryDir = nativeLibDir!!) else Backend.GPU(),
         audioBackend = Backend.CPU(),
-        maxNumTokens = MAX_NUM_TOKENS,
+        maxNumTokens = maxTokens,
         cacheDir = cacheDir,
       )
     buildIfModelAccepts(multimodal, "multimodal")?.let {
@@ -331,8 +365,8 @@ object RelaisEngine {
     val textOnly =
       EngineConfig(
         modelPath = modelPath,
-        backend = Backend.GPU(),
-        maxNumTokens = MAX_NUM_TOKENS,
+        backend = backend,
+        maxNumTokens = maxTokens,
         cacheDir = cacheDir,
       )
     isMultimodal = false // text-only fallback: model exposes no image/audio encoder
@@ -355,12 +389,10 @@ object RelaisEngine {
       // (0.13 — audio encoder), so wrap both. The probe runs NO inference, so it cannot trigger the
       // gemma-4-E4B/Tensor-G5 decode crash (gated separately in ensureInitialized).
       e.initialize()
-      // Sampler values are immaterial — the probe runs no decode; it only forces litertlm to resolve
+      // Default ConversationConfig: the probe runs no decode — it only forces litertlm to resolve
       // the requested encoders so a text-only model is detected before the config is committed.
-      e.createConversation(
-          ConversationConfig(samplerConfig = SamplerConfig(topK = 64, topP = 0.95, temperature = 1.0))
-        )
-        .close()
+      // (Deliberately no custom SamplerConfig: the NPU compiled-model executor rejects one, T-3.)
+      e.createConversation(ConversationConfig()).close()
       Log.i(TAG, "Resident $label engine ready: ${e.isInitialized()}")
       e
     } catch (t: Throwable) {
@@ -389,20 +421,23 @@ object RelaisEngine {
     RelaisMetrics.incInFlight() // counts both queued (waiting on lock) and running -> queue_depth
     val reqStartNs = System.nanoTime()
     try {
-      val backend = BackendSelector.select(request.modalities, BackendSelector.aicoreAvailable(context))
+      val requested = BackendSelector.select(request.modalities, BackendSelector.aicoreAvailable(context))
 
       // NPU path (Pixel 10+): Gemini Nano via AICore, image/text only. UNVERIFIED on Pixel 9 —
       // never selected here because aicoreAvailable() is false.
       // completionTokens = 0: AICore does not expose per-token callbacks; usage block will show
       // completion_tokens = 0 for this path until a token-counting API is available.
-      if (backend == RelaisBackend.NPU_AICORE) {
+      if (requested == RelaisBackend.NPU_AICORE) {
         val text = RelaisAicore.generate(request)
         onToken?.invoke(text)
-        return RelaisResult(text = text, backend = backend, decodeTokensPerSec = 0.0, completionTokens = 0)
+        return RelaisResult(text = text, backend = requested, decodeTokensPerSec = 0.0, completionTokens = 0)
       }
 
       ensureInitialized(context)
       val e = engine ?: error("Engine not initialized")
+      // The resident engine's TRUE lane: after init, a Google-Tensor AOT model on the bundled
+      // dispatcher reports TPU_LITERTLM (T-4) — the selector can't know this before init.
+      val backend = if (residentIsTpu) RelaisBackend.TPU_LITERTLM else requested
 
       // Tool path: a request advertising tools OR carrying tool results round-trips through the
       // BLOCKING sendMessage API (not streaming) so reply.toolCalls is populated. Same lock +
@@ -427,17 +462,29 @@ object RelaisEngine {
         // costs ONE generation, not one per history turn. (The prior replaySend path ran a full
         // generate-and-discard per turn — ~22 s/turn; a 2-exchange history hit the per-turn timeout
         // and 500'd. Validated on rango / Tensor-G5 / E2B: system honored, history recalled, one decode.)
-        val sampler = request.samplerConfig()
+        // TPU lane: NO custom SamplerConfig — the NPU compiled-model executor crashes mid-decode
+        // under one ("new_step must be <= TokenCount()", T-3). Engine-default sampling instead;
+        // warn when the request explicitly asked, rather than silently pretending it was honored.
+        val tpuLane = backend == RelaisBackend.TPU_LITERTLM
+        if (tpuLane && RelaisTpuLane.requestUsesCustomSampler(request.temperature, request.topP, request.seed)) {
+          Log.w(TAG, "TPU lane: explicit sampler params (temperature/top_p/seed) unsupported by the NPU executor — using engine defaults")
+        }
         val initialMessages = request.history.mapNotNull { it.toResidentMessage() }
         val conversationConfig =
-          if (request.systemPrompt != null) {
-            ConversationConfig(
-              systemInstruction = Contents.of(request.systemPrompt),
-              initialMessages = initialMessages,
-              samplerConfig = sampler,
-            )
-          } else {
-            ConversationConfig(initialMessages = initialMessages, samplerConfig = sampler)
+          when {
+            tpuLane && request.systemPrompt != null ->
+              ConversationConfig(
+                systemInstruction = Contents.of(request.systemPrompt),
+                initialMessages = initialMessages,
+              )
+            tpuLane -> ConversationConfig(initialMessages = initialMessages)
+            request.systemPrompt != null ->
+              ConversationConfig(
+                systemInstruction = Contents.of(request.systemPrompt),
+                initialMessages = initialMessages,
+                samplerConfig = request.samplerConfig(),
+              )
+            else -> ConversationConfig(initialMessages = initialMessages, samplerConfig = request.samplerConfig())
           }
         val conversation = e.createConversation(conversationConfig)
         return try {
@@ -572,25 +619,39 @@ object RelaisEngine {
   ): RelaisResult {
     synchronized(lock) {
       ThermalGovernor.cooldownMs().takeIf { it > 0 }?.let { runCatching { Thread.sleep(it) } }
-      val sampler = request.samplerConfig()
+      // TPU lane: same no-custom-sampler rule as the streaming path (NPU executor limitation, T-3).
+      val tpuLane = backend == RelaisBackend.TPU_LITERTLM
+      if (tpuLane && RelaisTpuLane.requestUsesCustomSampler(request.temperature, request.topP, request.seed)) {
+        Log.w(TAG, "TPU lane (tools): explicit sampler params unsupported by the NPU executor — using engine defaults")
+      }
       val providers = request.tools.map { tool(openApiToolOf(it.functionJson)) }
       val initialMessages = request.history.mapNotNull { it.toResidentMessage() }
       val config =
-        if (request.systemPrompt != null) {
-          ConversationConfig(
-            systemInstruction = Contents.of(request.systemPrompt),
-            initialMessages = initialMessages,
-            tools = providers,
-            automaticToolCalling = false,
-            samplerConfig = sampler,
-          )
-        } else {
-          ConversationConfig(
-            initialMessages = initialMessages,
-            tools = providers,
-            automaticToolCalling = false,
-            samplerConfig = sampler,
-          )
+        when {
+          tpuLane && request.systemPrompt != null ->
+            ConversationConfig(
+              systemInstruction = Contents.of(request.systemPrompt),
+              initialMessages = initialMessages,
+              tools = providers,
+              automaticToolCalling = false,
+            )
+          tpuLane ->
+            ConversationConfig(initialMessages = initialMessages, tools = providers, automaticToolCalling = false)
+          request.systemPrompt != null ->
+            ConversationConfig(
+              systemInstruction = Contents.of(request.systemPrompt),
+              initialMessages = initialMessages,
+              tools = providers,
+              automaticToolCalling = false,
+              samplerConfig = request.samplerConfig(),
+            )
+          else ->
+            ConversationConfig(
+              initialMessages = initialMessages,
+              tools = providers,
+              automaticToolCalling = false,
+              samplerConfig = request.samplerConfig(),
+            )
         }
       val conversation = e.createConversation(config)
       return try {
