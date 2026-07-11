@@ -62,7 +62,7 @@ class ChatRepository(private val context: Context, private val dao: ChatDao) {
       } else {
         null
       }
-    val now = System.currentTimeMillis()
+    val now = nextCreatedAt(conversationId)
     val turn =
       ChatTurn(
         id = turnId,
@@ -86,7 +86,7 @@ class ChatRepository(private val context: Context, private val dao: ChatDao) {
     modelId: String,
     backend: String,
   ): ChatTurn {
-    val now = System.currentTimeMillis()
+    val now = nextCreatedAt(conversationId)
     val turn =
       ChatTurn(
         id = UUID.randomUUID().toString(),
@@ -102,6 +102,18 @@ class ChatRepository(private val context: Context, private val dao: ChatDao) {
     dao.insertTurn(turn)
     dao.touch(conversationId, now)
     return turn
+  }
+
+  /**
+   * Returns `System.currentTimeMillis()`, bumped forward if necessary to stay strictly greater
+   * than the latest persisted turn's `createdAt` for [conversationId]. Guarantees monotonically
+   * increasing timestamps within a conversation so [truncateAfter]'s strict `createdAt >` deletion
+   * boundary is unambiguous even when turns are appended back-to-back within the same millisecond
+   * (e.g. a fast in-process reply).
+   */
+  private suspend fun nextCreatedAt(conversationId: String): Long {
+    val lastTurnCreatedAt = dao.turnsFor(conversationId).maxOfOrNull { turn -> turn.createdAt } ?: 0L
+    return maxOf(System.currentTimeMillis(), lastTurnCreatedAt + 1)
   }
 
   suspend fun rename(conversationId: String, title: String) {

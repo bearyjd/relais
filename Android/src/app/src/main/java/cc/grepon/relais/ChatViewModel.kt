@@ -17,6 +17,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import cc.grepon.relais.chat.ChatStreamRequest
 import cc.grepon.relais.chat.ChatTransportSelector
+import cc.grepon.relais.chat.historyForRequest
 import cc.grepon.relais.data.ChatTurn
 import cc.grepon.relais.data.Conversation
 import cc.grepon.relais.data.RelaisDatabase
@@ -112,8 +113,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     _streaming.value = true
     withContext(Dispatchers.IO) {
       runCatching {
-          val history =
-            repo.turnsFor(conversationId).map { turn -> ParsedTurn(role = turn.role, text = turn.content) }
+          val history = historyForRequest(repo.turnsFor(conversationId))
           val transport = ChatTransportSelector(ctx).select(requestHasMedia = attachmentBytes != null)
           transport.stream(
             request =
