@@ -84,6 +84,40 @@ ignore-with-warning until the executor supports samplers) + app-owned model stag
 
 ---
 
+## ✅ T-4 RESULT — Relais's own engine serves from the TPU (2026-07-10)
+
+`RelaisEngine` now has the TPU lane, and it is **proven on the production path**: `TensorTpuProbe`
+(new probe) drives the real `ensureInitialized` → `generate` chain and passed on rango —
+`backend=TPU_LITERTLM, 8.78 tok/s, coherent text`, TPU power rail active while the GPU rail stayed
+at 0. The engine log shows the full ladder working: `TPU lane selected … (maxNumTokens=1280)` →
+multimodal attempt degrades correctly → `Resident text-only engine ready: true`.
+
+Implementation (all landed):
+- **`RelaisTpuLane`** (pure, JVM-tested): AOT-model detection by the litert-community filename
+  convention (`…_Google_Tensor_…`), fixed-KV token budget from the `ekv` marker, custom-sampler
+  detection. The lane gate = AOT filename AND `libLiteRtDispatch_GoogleTensor.so` present in
+  nativeLibraryDir — **dispatcher-gated, NOT AICore-gated** (the old `NPU_AICORE` branch is
+  untouched and remains dead on GrapheneOS).
+- **`RelaisBackend.TPU_LITERTLM`**: requests served by a TPU-resident engine report it (metrics,
+  usage, mDNS unchanged otherwise). Selector semantics preserved — the label is derived post-init
+  from `RelaisEngine.residentIsTpu`.
+- **Sampler gating**: both generate paths (streaming + tools) drop to the engine-default sampler on
+  the TPU lane and log a warning when a request carried temperature/top_p/seed (blocker 3).
+- **Ladder fix**: on the TPU lane the multimodal probe must use `visionBackend = NPU` — probing an
+  AOT model with `visionBackend = GPU` fails as `Input tensor not found` (NOT classified as a
+  missing encoder) and aborts init instead of degrading to text-only.
+- **Gotcha for operators:** the lane keys on the FILENAME — a G5-AOT model staged under a neutral
+  name (e.g. `g5-1b.litertlm`) silently gets the GPU lane and fails `Input tensor not found`. Keep
+  the upstream `…_Google_Tensor_G5.litertlm` names.
+
+**Remaining to make it operator-usable (post-spike backlog):** the allowlist has no G5-AOT entries
+yet (TPU models only load via probe/manual staging today — add `…_Google_Tensor_G5` variants gated
+to Tensor G5 devices); E2B-G5 (multimodal-class) resident on TPU is untested (model already staged
+on rango); production dispatcher packaging for release builds (T-1's Play Feature Delivery question)
+— the dispatcher currently ships in DEBUG builds only.
+
+---
+
 This plan answers exactly one question: **does the Play-delivered Tensor TPU runtime actually
 execute a model on the Google Tensor G5 TPU under GrapheneOS's sandbox — or does it silently fall
 back to GPU/CPU, or route through privileged AICore that GrapheneOS blocks?** Every gate below
