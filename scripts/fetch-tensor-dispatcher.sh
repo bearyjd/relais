@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
-# Fetches libLiteRtDispatch_GoogleTensor.so (Tensor G5 TPU dispatcher) into the app's
-# debug-only jniLibs so Backend.NPU(nativeLibraryDir) can reach the TPU on Pixel 10.
+# (Re)generates the committed libLiteRtDispatch_GoogleTensor.so (Tensor G5 TPU dispatcher) under
+# app/src/main/jniLibs so Backend.NPU(nativeLibraryDir) can reach the TPU on Pixel 10. The .so is a
+# TRACKED vendored binary (it must ship in release APKs); run this only to refresh it after a
+# dispatcher version bump, then commit the result.
 #
 # SOURCE: the google-ai-edge/litert-samples sample_app_tpu tree (pinned commit), which ships the
 # dispatcher build that pairs with litertlm 0.12.x. Do NOT use the LiteRT v2.1.1 release zip's
@@ -13,7 +15,7 @@ cd "$(dirname "$0")/.."
 COMMIT="f500335f045414d174908544970126e80bdbc6b4"
 URL="https://raw.githubusercontent.com/google-ai-edge/litert-samples/$COMMIT/compiled_model_api/google/sample_app_tpu/app/src/main/jniLibs/arm64-v8a/libLiteRtDispatch_GoogleTensor.so"
 SHA256="95a0771c9b45f2e74dbf91a45a8ba89de2ce717916bbb5ba936efcedaf4abe68"
-DEST="Android/src/app/src/debug/jniLibs/arm64-v8a"
+DEST="Android/src/app/src/main/jniLibs/arm64-v8a"
 
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT

@@ -75,15 +75,16 @@ android {
     }
   }
 
+  // Backend.NPU(nativeLibraryDir) resolves the Tensor TPU dispatcher (libLiteRtDispatch_GoogleTensor.so,
+  // committed under src/main/jniLibs) by ABSOLUTE PATH in nativeLibraryDir — which only exists when
+  // native libs are extracted at install time. Modern in-APK packaging maps libs compressed and would
+  // NOT populate that path, so the TPU lane requires legacy packaging. Module-wide (all build types +
+  // all shipping flavors) because the dispatcher now ships in RELEASE too — the same setting the
+  // official LiteRT sample_app_tpu uses. Cost: native libs are extracted uncompressed (slightly larger
+  // install); accepted as the price of the TPU lane (proven ~2.8x GPU on Tensor G5).
+  packaging { jniLibs.useLegacyPackaging = true }
+
   buildTypes {
-    debug {
-      // Backend.NPU(nativeLibraryDir) resolves vendor dispatch libs (libLiteRtDispatch_GoogleTensor.so,
-      // fetched by scripts/fetch-tensor-dispatcher.sh into src/debug/jniLibs) by absolute path, which
-      // only exists when native libs are extracted at install time — the same setting the official
-      // LiteRT sample_app_tpu uses. DEBUG-ONLY: the dispatcher ships only in src/debug, so release
-      // keeps the modern uncompressed in-APK packaging (smaller installs, Play-recommended).
-      packaging { jniLibs.useLegacyPackaging = true }
-    }
     release {
       isMinifyEnabled = false
       proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")

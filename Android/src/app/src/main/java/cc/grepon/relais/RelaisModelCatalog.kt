@@ -77,8 +77,9 @@ object RelaisModelCatalog {
 
   /**
    * Whether this install can actually SERVE the pinned TPU models: Tensor G5 device AND the
-   * dispatcher lib bundled (debug builds today — see scripts/fetch-tensor-dispatcher.sh). Gating
-   * the OFFERING on this keeps a release build from listing models it would fail to initialize.
+   * dispatcher lib present in nativeLibraryDir. The dispatcher now ships in ALL builds (committed
+   * under src/main/jniLibs), so this is true on release too — the presence check stays as a
+   * belt-and-suspenders guard against a build/ABI where it's somehow absent (e.g. x86_64 emulator).
    */
   fun tpuLaneUsable(context: Context): Boolean =
     isPixel10() &&
