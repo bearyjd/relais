@@ -13,6 +13,7 @@
 package cc.grepon.relais.chat
 
 import android.content.Context
+import android.util.Base64
 import android.util.Log
 import cc.grepon.relais.RelaisBackend
 import cc.grepon.relais.RelaisConfig
@@ -47,10 +48,10 @@ private class ChatStreamStop : RuntimeException()
  * (`/v1/chat/completions`), matching the same path any external LAN client uses. Selected when the
  * server is [healthReachable] and the resident node is ready (see [chooseTransport]).
  *
- * Text-only: [buildChatRequestBody] serializes `history`/`userText` alone. Multimodal requests
- * ([ChatStreamRequest.imagePng]/[ChatStreamRequest.audioWav]) are routed to [InProcessChatTransport]
- * by [ChatTransportSelector.select] instead — this class does not yet emit OpenAI content-parts for
- * attachments (follow-up).
+ * [buildChatRequestBody] serializes `history` as text-only turns; the final user turn becomes an
+ * OpenAI content-parts array (`text` + `image_url`/`input_audio`) whenever
+ * [ChatStreamRequest.imagePng]/[ChatStreamRequest.audioWav] are present, so multimodal requests are
+ * dogfooded over this HTTP path rather than forced to [InProcessChatTransport].
  */
 class HttpChatTransport(private val context: Context, private val client: HttpClient) : ChatTransport {
   override suspend fun stream(
@@ -110,12 +111,47 @@ class HttpChatTransport(private val context: Context, private val client: HttpCl
     }
 }
 
-/** Builds the OpenAI `/v1/chat/completions` request body: prior [ChatStreamRequest.history] + the new user turn. */
+/**
+ * Builds the OpenAI `/v1/chat/completions` request body: prior [ChatStreamRequest.history] as
+ * text-only turns, plus the new user turn. When the user turn carries
+ * [ChatStreamRequest.imagePng]/[ChatStreamRequest.audioWav], its `content` is emitted as an array
+ * of OpenAI content-parts (`text`, `image_url`, `input_audio`) per [RelaisOpenAiParser.extractParts];
+ * otherwise `content` stays a plain string, matching the server's text-only fast path.
+ */
 private fun buildChatRequestBody(request: ChatStreamRequest): JSONObject {
   val messages = JSONArray()
   request.history.forEach { turn ->
     messages.put(JSONObject().put("role", turn.role).put("content", turn.text))
   }
-  messages.put(JSONObject().put("role", "user").put("content", request.userText))
+  val hasMedia = request.imagePng != null || request.audioWav != null
+  val userContent: Any =
+    if (!hasMedia) {
+      request.userText
+    } else {
+      val parts = JSONArray()
+      parts.put(JSONObject().put("type", "text").put("text", request.userText))
+      request.imagePng?.let { png ->
+        val dataUri = "data:image/png;base64," + Base64.encodeToString(png, Base64.NO_WRAP)
+        parts.put(
+          JSONObject()
+            .put("type", "image_url")
+            .put("image_url", JSONObject().put("url", dataUri)),
+        )
+      }
+      request.audioWav?.let { wav ->
+        parts.put(
+          JSONObject()
+            .put("type", "input_audio")
+            .put(
+              "input_audio",
+              JSONObject()
+                .put("data", Base64.encodeToString(wav, Base64.NO_WRAP))
+                .put("format", "wav"),
+            ),
+        )
+      }
+      parts
+    }
+  messages.put(JSONObject().put("role", "user").put("content", userContent))
   return JSONObject().put("messages", messages).put("stream", true)
 }

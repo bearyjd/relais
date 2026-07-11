@@ -114,7 +114,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     withContext(Dispatchers.IO) {
       runCatching {
           val history = historyForRequest(repo.turnsFor(conversationId))
-          val transport = ChatTransportSelector(ctx).select(requestHasMedia = attachmentBytes != null)
+          val transport = ChatTransportSelector(ctx).select()
           transport.stream(
             request =
               ChatStreamRequest(

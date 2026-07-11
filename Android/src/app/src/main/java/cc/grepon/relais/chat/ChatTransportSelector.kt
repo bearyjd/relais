@@ -25,14 +25,11 @@ class ChatTransportSelector(private val context: Context) {
   private val httpClient: HttpClient by lazy { HttpClient(Android) { install(SSE) } }
 
   /**
-   * Picks the transport for one chat turn. When [requestHasMedia] is true we always use the
-   * in-process engine: the HTTP `/v1/chat/completions` path does not yet serialize multimodal
-   * content parts (see [HttpChatTransport]), so routing an image/audio attachment over HTTP
-   * would silently drop it. Text-only requests prefer the HTTP path (dogfoods the real API) when
-   * the loopback node is live, else fall back to in-process.
+   * Picks the transport for one chat turn. [HttpChatTransport] now serializes image/audio
+   * attachments as OpenAI content-parts, so every request (text-only or multimodal) prefers the
+   * HTTP path when the loopback node is live, else falls back to in-process.
    */
-  suspend fun select(requestHasMedia: Boolean = false): ChatTransport {
-    if (requestHasMedia) return InProcessChatTransport(context)
+  suspend fun select(): ChatTransport {
     val httpTransport = HttpChatTransport(context, httpClient)
     // healthReachable() already checks `ready: true`, so both chooseTransport args collapse to it.
     val reachable = httpTransport.healthReachable()
