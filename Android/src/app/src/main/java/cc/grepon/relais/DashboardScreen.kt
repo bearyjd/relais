@@ -286,7 +286,7 @@ private fun HeroCopyableRow(label: String, value: String) {
   }
 }
 
-/** Read-only MODEL summary row: value + amber `›`, tap → [RelaisConfigureActivity] (never the sheet). */
+/** Read-only MODEL summary row: value + amber `›`, tap invokes the caller's onClick (the shell routes it to the model selection destination). */
 @Composable
 private fun ModelSummaryRow(value: String, enabled: Boolean, onClick: () -> Unit) {
   Box(
