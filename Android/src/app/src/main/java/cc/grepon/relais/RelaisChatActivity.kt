@@ -265,12 +265,18 @@ internal fun ChatScreen() {
         }
         if (reloadingModel) {
           Spacer(Modifier.height(4.dp))
-          Text("reloading model…", color = Amber, fontFamily = FontFamily.Monospace, fontSize = 11.sp)
+          Text(
+            "reloading model — ${RelaisConfig.modelId(ctx)}…",
+            color = Amber,
+            fontFamily = FontFamily.Monospace,
+            fontSize = 11.sp,
+          )
         }
       }
       Box(Modifier.fillMaxWidth().height(1.dp).background(Line))
 
-      // ChatMessageList owns its own LazyListState/autoscroll internally — no external listState needed.
+      // ChatMessageList owns its own LazyListState/autoscroll internally — no external listState
+      // is passed in here.
       ChatMessageList(
         turns = turns,
         streamingText = streamingText,
@@ -335,7 +341,7 @@ internal fun ChatScreen() {
         )
         Button(
           onClick = { if (streaming) vm.stop() else send() },
-          enabled = streaming || draft.isNotBlank() || pending != null,
+          enabled = streaming || (!reloadingModel && (draft.isNotBlank() || pending != null)),
           shape = RoundedCornerShape(6.dp),
           colors =
             ButtonDefaults.buttonColors(

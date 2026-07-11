@@ -19,9 +19,11 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -54,7 +56,9 @@ fun ChatMessageList(
   onEditResend: (ChatTurn, String) -> Unit,
   modifier: Modifier = Modifier,
 ) {
-  LazyColumn(modifier = modifier) {
+  val listState = rememberLazyListState()
+
+  LazyColumn(modifier = modifier, state = listState) {
     items(turns, key = { it.id }) { turn ->
       if (turn.role == "user") {
         UserTurnRow(turn = turn, onCopy = onCopy, onEditResend = onEditResend)
@@ -71,6 +75,11 @@ fun ChatMessageList(
         )
       }
     }
+  }
+
+  LaunchedEffect(turns.size, streamingText) {
+    val count = turns.size + (if (streaming) 1 else 0)
+    if (count > 0) listState.animateScrollToItem(count - 1)
   }
 }
 
