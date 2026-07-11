@@ -34,7 +34,7 @@ amber-on-charcoal signal-panel system.
 | # | Decision | Rationale |
 |---|----------|-----------|
 | D1 | **Home = node dashboard.** | The node is the product; chat is a built-in client. |
-| D2 | **One launcher icon.** `RelaisControlActivity` becomes the sole `MAIN`/`LAUNCHER` and hosts the shell `NavHost`. `MainActivity`'s launcher filter is removed. | Single unified entry point. |
+| D2 | **One launcher icon.** `MainActivity` (already `@AndroidEntryPoint` + NavHost + `ModelManagerViewModel` + the `com.ventouxlabs.relais://` deep-link filter + the "Relais" launcher) becomes the shell host; its NavHost start-destination flips to the node dashboard. `RelaisControlActivity`'s second LAUNCHER filter is removed. | Single unified entry point. **Refined during planning (2026-07-11):** host is `MainActivity`, not `RelaisControlActivity`, because the absorbed `BenchmarkScreen` needs `hiltViewModel()` + `ModelManagerViewModel`, which only the already-`@AndroidEntryPoint` `MainActivity` provides. Same user-visible outcome; lower DI risk. |
 | D3 | **Absorb the useful gallery parts; retire the rest.** | Cohesion + keep capability without dragging the whole gallery DI graph in. |
 | D4 | **Architecture A — one Compose NavHost, evolve existing screens.** | Reuses on-device-proven control/chat/selector code; least risky path to a unified feel. |
 | D5 | **Bottom-nav pattern, styled to DESIGN.md.** DASHBOARD / CHAT / MODELS. | Chat one tap from anywhere; unified-app feel. New design-system component — see §7. |
