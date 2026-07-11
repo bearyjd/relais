@@ -60,9 +60,14 @@ The one thing to remember: an amber relay light on a black panel.
   2dp amber hairline progress bar under the phase line. Nothing else moves.
 
 ## Application
-- **App label:** "Relais" (was "Edge Gallery"). Control tile: "Relais Node".
-- **Icon:** both launcher tiles share the amber-beacon mark.
-- **Control screen:** `RelaisControlActivity` — the canonical expression of this system.
+- **App label:** "Relais" (was "Edge Gallery"). **Single launcher icon** — the former separate
+  "Relais Node" launcher was retired when the node folded into the unified shell (2026-07-11).
+- **Icon:** the single launcher tile carries the amber-beacon mark.
+- **Shell:** one Compose `NavHost` hosted by `MainActivity`; a DESIGN.md-styled bottom nav switches
+  the three top-level destinations DASHBOARD / CHAT / MODELS. `RelaisControlActivity` is now only
+  the key-gated adb trampoline (no UI, no launcher).
+- **Control screen:** the node **dashboard** destination (`DashboardScreen`) — the canonical
+  expression of this system.
 - **Surfaces:** the control screen shows status, connection, model summary, and the single
   state-appropriate action (START / CANCEL / STOP — never more than one). Setup-time and rare
   controls live on the CONFIGURE screen (`RelaisConfigureActivity`), one tap away, in the same
@@ -76,3 +81,4 @@ The one thing to remember: an amber relay light on a black panel.
 |------|----------|-----------|
 | 2026-05-25 | Initial brand identity: amber signal-relay on near-black, monospace, broadcast-beacon mark | Created via /design-consultation. Amber-on-black breaks from the blue/purple AI-SaaS norm and says "live, transmitting, sovereign" — the relay thesis. Verified on-device (Pixel 9 Pro Fold). |
 | 2026-07-07 | Control-panel buttonology pass: frequency-ranked layout, single state-appropriate primary action, Configure split, hero endpoint on LIVE, phase-line STARTING, thermal sub-state | AUDIT.md redesign audit |
+| 2026-07-11 | Unified app shell: single launcher, one Compose NavHost hosted by MainActivity, node dashboard as home; new DESIGN.md-conformant bottom nav (DASHBOARD/CHAT/MODELS, charcoal Panel surface, Line hairline divider, amber-active monospace labels, no ripple/elevation); Configure + Benchmark reachable off the shell | docs/superpowers/specs/2026-07-11-unified-app-shell-design.md |

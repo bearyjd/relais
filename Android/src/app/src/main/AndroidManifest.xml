@@ -135,9 +135,9 @@
             tools:node="merge">
         </service>
 
-        <!-- Relais node control trampoline: key-gated adb `--es cmd start|stop` entry point only.
-             No launcher icon — MainActivity (unified shell) is the single launcher; this activity
-             forwards to it and finishes. -->
+        <!-- Relais node control trampoline: key-gated adb "am start ... es cmd start|stop" entry
+             point only. No launcher icon — MainActivity (unified shell) is the single launcher;
+             this activity forwards to it and finishes. -->
         <activity
             android:name=".RelaisControlActivity"
             android:exported="true"
