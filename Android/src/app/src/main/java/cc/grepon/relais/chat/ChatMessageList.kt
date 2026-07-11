@@ -129,21 +129,8 @@ private fun UserTurnRow(
       ActionLabel(text = "CANCEL", onClick = { editing = false })
     }
   } else {
-    var copied by remember { mutableStateOf(false) }
-    LaunchedEffect(copied) {
-      if (copied) {
-        delay(1500)
-        copied = false
-      }
-    }
     Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-      ActionLabel(
-        text = if (copied) "COPIED" else "COPY",
-        onClick = {
-          onCopy(turn.content)
-          copied = true
-        },
-      )
+      CopyLabel(text = turn.content, onCopy = onCopy)
       ActionLabel(
         text = "EDIT",
         onClick = {
@@ -178,21 +165,8 @@ private fun AssistantTurnRow(
     )
   }
 
-  var copied by remember { mutableStateOf(false) }
-  LaunchedEffect(copied) {
-    if (copied) {
-      delay(1500)
-      copied = false
-    }
-  }
   Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-    ActionLabel(
-      text = if (copied) "COPIED" else "COPY",
-      onClick = {
-        onCopy(turn.content)
-        copied = true
-      },
-    )
+    CopyLabel(text = turn.content, onCopy = onCopy)
     ActionLabel(text = "REGEN", onClick = { onRegenerate(turn) })
   }
 }
@@ -206,5 +180,24 @@ private fun ActionLabel(text: String, onClick: () -> Unit) {
     fontSize = 11.sp,
     fontWeight = FontWeight.Bold,
     modifier = Modifier.clickable(onClick = onClick).padding(vertical = 4.dp),
+  )
+}
+
+/** Shared COPY/COPIED action label: shows "COPIED" for ~1.5s after a copy, then reverts. */
+@Composable
+private fun CopyLabel(text: String, onCopy: (String) -> Unit) {
+  var copied by remember { mutableStateOf(false) }
+  LaunchedEffect(copied) {
+    if (copied) {
+      delay(1500)
+      copied = false
+    }
+  }
+  ActionLabel(
+    text = if (copied) "COPIED" else "COPY",
+    onClick = {
+      onCopy(text)
+      copied = true
+    },
   )
 }

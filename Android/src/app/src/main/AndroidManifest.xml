@@ -160,27 +160,27 @@
         </activity>
 
         <!-- In-app prompt-template editor (#12). Internal screen launched only from the control
-             panel — not exported, no launcher icon. Up-navigates to RelaisControlActivity. -->
+             panel — not exported, no launcher icon. Up-navigates to MainActivity (the unified shell host). -->
         <activity
             android:name="cc.grepon.relais.templates.PromptTemplateEditorActivity"
             android:exported="false"
             android:label="Prompt Templates"
-            android:parentActivityName=".RelaisControlActivity">
+            android:parentActivityName=".MainActivity">
             <meta-data
                 android:name="android.support.PARENT_ACTIVITY"
-                android:value="cc.grepon.relais.RelaisControlActivity" />
+                android:value="cc.grepon.relais.MainActivity" />
         </activity>
 
         <!-- Notification-triage control panel (#7). Internal screen launched only from the control
-             panel — not exported, no launcher icon. Up-navigates to RelaisControlActivity. -->
+             panel — not exported, no launcher icon. Up-navigates to MainActivity (the unified shell host). -->
         <activity
             android:name="cc.grepon.relais.triage.TriageControlActivity"
             android:exported="false"
             android:label="@string/triage_title"
-            android:parentActivityName=".RelaisControlActivity">
+            android:parentActivityName=".MainActivity">
             <meta-data
                 android:name="android.support.PARENT_ACTIVITY"
-                android:value="cc.grepon.relais.RelaisControlActivity" />
+                android:value="cc.grepon.relais.MainActivity" />
         </activity>
 
         <!-- On-device notification triage listener (#7). The user-facing grant is Android's
@@ -263,10 +263,10 @@
             android:name=".nfc.NfcWriteActivity"
             android:exported="false"
             android:label="Write NFC Tag"
-            android:parentActivityName=".RelaisControlActivity">
+            android:parentActivityName=".MainActivity">
             <meta-data
                 android:name="android.support.PARENT_ACTIVITY"
-                android:value="cc.grepon.relais.RelaisControlActivity" />
+                android:value="cc.grepon.relais.MainActivity" />
         </activity>
 
         <!-- Tasker/Automate intent ABI (#8). Exported transparent trampoline: an automation app (or
