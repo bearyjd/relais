@@ -135,19 +135,14 @@
             tools:node="merge">
         </service>
 
-        <!-- Relais node control screen (start/stop); exported for launch + automation.
-             Has its own LAUNCHER icon ("Relais Node") alongside the stock Gallery icon. The
-             start/stop `cmd` intent extra is API-key gated (see RelaisControlActivity). -->
+        <!-- Relais node control trampoline: key-gated adb "am start ... es cmd start|stop" entry
+             point only. No launcher icon — MainActivity (unified shell) is the single launcher;
+             this activity forwards to it and finishes. -->
         <activity
             android:name=".RelaisControlActivity"
             android:exported="true"
             android:launchMode="singleTop"
-            android:excludeFromRecents="true"
-            android:label="Relais Node">
-            <intent-filter>
-                <action android:name="android.intent.action.MAIN" />
-                <category android:name="android.intent.category.LAUNCHER" />
-            </intent-filter>
+            android:excludeFromRecents="true">
         </activity>
 
         <!-- Configure surface (control-panel redesign): model picker, HF token, power exemption,
@@ -158,16 +153,6 @@
             android:name=".RelaisConfigureActivity"
             android:exported="false"
             android:label="Configure"
-            android:parentActivityName=".RelaisControlActivity">
-            <meta-data
-                android:name="android.support.PARENT_ACTIVITY"
-                android:value="cc.grepon.relais.RelaisControlActivity" />
-        </activity>
-        <activity
-            android:name=".RelaisChatActivity"
-            android:exported="false"
-            android:label="Chat"
-            android:windowSoftInputMode="adjustResize"
             android:parentActivityName=".RelaisControlActivity">
             <meta-data
                 android:name="android.support.PARENT_ACTIVITY"

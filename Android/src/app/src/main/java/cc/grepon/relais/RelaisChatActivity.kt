@@ -142,7 +142,7 @@ private const val CHAT_TAG = "RelaisChat"
 private const val MAX_ATTACH_BYTES = 32 * 1024 * 1024
 
 @Composable
-private fun ChatScreen() {
+internal fun ChatScreen() {
   val ctx = LocalActivityContext()
   val scope = rememberCoroutineScope()
   val messages = remember { mutableStateListOf<ChatMsg>() }
