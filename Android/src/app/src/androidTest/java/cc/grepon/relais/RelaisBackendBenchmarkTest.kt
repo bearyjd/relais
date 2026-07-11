@@ -152,6 +152,118 @@ class RelaisBackendBenchmarkTest {
   @Test
   fun cpuBenchmark() = logBench("CPU", benchmark(modelPath, Backend.CPU(), cacheDir = cacheDir))
 
+  /**
+   * TPU leg (Tensor G5, spike plan T-3). Requires (a) the app under test to bundle
+   * libLiteRtDispatch_GoogleTensor.so (debug builds do, via scripts/fetch-tensor-dispatcher.sh) and
+   * (b) a Google-Tensor-AOT-compiled `.litertlm` (e.g. Gemma3-1B-IT_q8_ekv1280_Google_Tensor_G5).
+   * A non-compiled model fails engine init here — that is the expected negative, not a probe bug.
+   *
+   *   adb shell am instrument -w \
+   *     -e class cc.grepon.relais.RelaisBackendBenchmarkTest#npuBenchmark \
+   *     -e model /data/data/<appId>/files/bench/<g5-compiled>.litertlm \
+   *     <appId>.test/androidx.test.runner.AndroidJUnitRunner
+   */
+  @OptIn(ExperimentalApi::class)
+  @Test
+  fun npuBenchmark() {
+    val nativeLibDir = context.applicationInfo.nativeLibraryDir
+    assumeTrue(
+      "TPU dispatcher not bundled in this build (debug-only)",
+      java.io.File(nativeLibDir, "libLiteRtDispatch_GoogleTensor.so").exists(),
+    )
+    logBench("NPU", benchmark(modelPath, Backend.NPU(nativeLibraryDir = nativeLibDir), cacheDir = cacheDir))
+  }
+
+  /**
+   * T-3 wall-clock throughput leg — works on ALL backends. The library's `benchmark()` entry point
+   * SIGABRTs inside liblitertlm_jni on `Backend.NPU` (observed rango 2026-07-10, same signature as
+   * LiteRT#7787), so this measures via Engine + streaming Conversation — the path production uses —
+   * timing TTFT and decode tok/s by wall clock exactly like `RelaisEngine.generate`.
+   *
+   *   adb shell am instrument -w \
+   *     -e class cc.grepon.relais.RelaisBackendBenchmarkTest#throughputBenchmark \
+   *     -e model /data/data/<appId>/files/bench/<model>.litertlm -e backend npu|gpu|cpu \
+   *     <appId>.test/androidx.test.runner.AndroidJUnitRunner
+   */
+  @OptIn(ExperimentalApi::class)
+  @Test
+  fun throughputBenchmark() {
+    val backendArg = args.getString("backend") ?: "gpu"
+    val nativeLibDir = context.applicationInfo.nativeLibraryDir
+    if (backendArg == "npu") {
+      assumeTrue(
+        "TPU dispatcher not bundled in this build (debug-only)",
+        java.io.File(nativeLibDir, "libLiteRtDispatch_GoogleTensor.so").exists(),
+      )
+    }
+    val backend =
+      when (backendArg) {
+        "npu" -> Backend.NPU(nativeLibraryDir = nativeLibDir)
+        "cpu" -> Backend.CPU()
+        else -> Backend.GPU()
+      }
+    // AOT-compiled (NPU) models have FIXED KV-cache shapes — maxNumTokens must match the compile
+    // (e.g. ekv1280 -> 1280); a mismatch shows as "new_step must be <= TokenCount()" mid-decode.
+    val maxTokens = args.getString("maxTokens")?.toIntOrNull() ?: 1024
+    val initStart = System.nanoTime()
+    val engine = Engine(EngineConfig(modelPath = modelPath, backend = backend, maxNumTokens = maxTokens, cacheDir = cacheDir))
+    engine.initialize()
+    val initSec = (System.nanoTime() - initStart) / 1e9
+    try {
+      // Default ConversationConfig unless overridden: the NPU compiled-model executor fails its
+      // decode-step bookkeeping ("new_step must be <= TokenCount()") under a custom SamplerConfig
+      // (observed rango 2026-07-10); the default path is what the working sample app uses.
+      val conversation =
+        engine.createConversation(
+          if (args.getString("sampler") == "custom")
+            ConversationConfig(samplerConfig = SamplerConfig(topK = 64, topP = 0.95, temperature = 1.0))
+          else ConversationConfig()
+        )
+      try {
+        var tokens = 0
+        var firstNs = 0L
+        var lastNs = 0L
+        val latch = java.util.concurrent.CountDownLatch(1)
+        val err = arrayOfNulls<Throwable>(1)
+        val sendNs = System.nanoTime()
+        conversation.sendMessageAsync(
+          Contents.of(listOf(Content.Text("Write a detailed 300-word essay about relay stations in communication networks."))),
+          object : com.google.ai.edge.litertlm.MessageCallback {
+            override fun onMessage(message: com.google.ai.edge.litertlm.Message) {
+              val now = System.nanoTime()
+              if (firstNs == 0L) firstNs = now
+              lastNs = now
+              tokens++
+            }
+
+            override fun onDone() = latch.countDown()
+
+            override fun onError(throwable: Throwable) {
+              err[0] = throwable
+              latch.countDown()
+            }
+          },
+          emptyMap(),
+        )
+        assertTrue("decode timed out", latch.await(300, java.util.concurrent.TimeUnit.SECONDS))
+        err[0]?.let { throw it }
+        val ttft = (firstNs - sendNs) / 1e9
+        val decodeSec = (lastNs - firstNs) / 1e9
+        val tokS = if (decodeSec > 0 && tokens > 1) (tokens - 1) / decodeSec else 0.0
+        Log.i(
+          TAG,
+          "T3 backend=$backendArg decode=${"%.2f".format(tokS)}tok/s tokens=$tokens " +
+            "ttft=${"%.3f".format(ttft)}s init=${"%.2f".format(initSec)}s model=${modelPath.substringAfterLast('/')}",
+        )
+        assertTrue("no tokens decoded", tokens > 1)
+      } finally {
+        conversation.close()
+      }
+    } finally {
+      engine.close()
+    }
+  }
+
   private fun logBench(label: String, info: BenchmarkInfo) {
     Log.i(
       TAG,

@@ -44,6 +44,46 @@ so production packaging is the only open question there. **Next: T-3 perf table,
 
 ---
 
+## ✅ T-3 RESULT — perf table, measured INSIDE Relais's stack (2026-07-10)
+
+Harness: `RelaisBackendBenchmarkTest#throughputBenchmark` (new probe leg) — wall-clock TTFT +
+decode tok/s over a streaming Conversation, run via `am instrument` in the izzy debug app on rango,
+with perfetto power-rail traces per leg. 1B-class model on each backend (best-available litertlm
+per backend: the G5-AOT q8 file cannot run on GPU, and no q4 TPU build exists — quant differs, so
+treat the comparison as lane-vs-lane, not quant-controlled):
+
+| leg | model | decode | TTFT | engine init | active rails (avg mW, 90 s window) |
+|---|---|---|---|---|---|
+| **TPU** | Gemma3-1B q8 ekv1280 G5-AOT | **8.51 tok/s** (431 tok) | **0.247 s** | **1.15 s** | tpu 177, ddr 142, cpu 45, **gpu 0** |
+| **GPU** | gemma3-1b-it-int4 (q4) | 3.03 tok/s (330 tok) | 0.570 s | 7.26 s | gpu 91, ddr 60, cpu 91, **tpu 1** |
+
+**Verdict: the TPU lane wins decisively — ~2.8× decode, ~2.3× faster TTFT, ~6× faster engine init,
+at roughly comparable energy-per-token** (~75–80 mJ/tok both lanes, window-normalized). The rail
+cross-controls are clean in both directions (TPU rail dark during the GPU run and vice versa).
+GPU-lane numbers are the same litertlm 0.12.0 runtime; note 1B-q4-on-GPU here (3 tok/s) is a
+cold-cache single-shot, not a tuned resident baseline.
+
+**Three MORE integration blockers found (now the definitive T-4 recipe, each isolated on-device):**
+1. **litertlm 0.11.0 SIGABRTs on `Backend.NPU`** at engine init (same liblitertlm_jni abort as the
+   `benchmark()` path) — the TPU lane REQUIRES **litertlm 0.12.0** (bumped; compiles clean against
+   all Relais code).
+2. **The LiteRT v2.1.1 release-zip dispatcher (409,920 B) also SIGABRTs** with 0.12.0 — the working
+   dispatcher is the **litert-samples build (330,960 B)**, now fetched SHA-256-pinned by
+   `scripts/fetch-tensor-dispatcher.sh`. (Supersedes the "pin the v2.1.1 zip" guidance for litertlm
+   use; the T-2 run in the sample app had been using this newer dispatcher all along.)
+3. **Custom `SamplerConfig` breaks the NPU compiled-model executor** mid-decode
+   (`new_step must be <= TokenCount(), got 27 vs 26`, deterministic at the same token) — the TPU
+   lane must use the default conversation sampler until upstream fixes it. `maxNumTokens` was NOT
+   the cause (custom sampler fails at 1024 and 1280 alike; default sampler works).
+4. The library's **`benchmark()` API SIGABRTs on `Backend.NPU`** regardless — measure TPU throughput
+   via streaming wall-clock (as production does), never `benchmark()`.
+
+**T-4 consequences:** dispatcher-gated `Backend.NPU` lane in `RelaisEngine` + litertlm 0.12.0 +
+default-sampler-only on the TPU path (requests carrying temperature/top_p/seed must fall to GPU or
+ignore-with-warning until the executor supports samplers) + app-owned model staging.
+
+---
+
 This plan answers exactly one question: **does the Play-delivered Tensor TPU runtime actually
 execute a model on the Google Tensor G5 TPU under GrapheneOS's sandbox — or does it silently fall
 back to GPU/CPU, or route through privileged AICore that GrapheneOS blocks?** Every gate below
