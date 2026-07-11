@@ -28,7 +28,6 @@ import io.ktor.http.HttpMethod
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.contentType
 import kotlinx.coroutines.CancellationException
-import org.json.JSONArray
 import org.json.JSONObject
 
 private const val TAG = "RelaisHttpChatTransport"
@@ -47,10 +46,10 @@ private class ChatStreamStop : RuntimeException()
  * (`/v1/chat/completions`), matching the same path any external LAN client uses. Selected when the
  * server is [healthReachable] and the resident node is ready (see [chooseTransport]).
  *
- * Text-only: [buildChatRequestBody] serializes `history`/`userText` alone. Multimodal requests
- * ([ChatStreamRequest.imagePng]/[ChatStreamRequest.audioWav]) are routed to [InProcessChatTransport]
- * by [ChatTransportSelector.select] instead — this class does not yet emit OpenAI content-parts for
- * attachments (follow-up).
+ * [buildChatRequestJson] serializes `history` as text-only turns; the final user turn becomes an
+ * OpenAI content-parts array (`text` + `image_url`/`input_audio`) whenever
+ * [ChatStreamRequest.imagePng]/[ChatStreamRequest.audioWav] are present, so multimodal requests are
+ * dogfooded over this HTTP path rather than forced to [InProcessChatTransport].
  */
 class HttpChatTransport(private val context: Context, private val client: HttpClient) : ChatTransport {
   override suspend fun stream(
@@ -60,7 +59,14 @@ class HttpChatTransport(private val context: Context, private val client: HttpCl
     shouldCancel: () -> Boolean,
   ): ChatStreamResult {
     val assembled = StringBuilder()
-    val body = buildChatRequestBody(request)
+    val body =
+      buildChatRequestJson(
+        history = request.history,
+        userText = request.userText,
+        imagePng = request.imagePng,
+        audioWav = request.audioWav,
+        stream = true,
+      )
     try {
       client.sse(
         urlString = CHAT_URL,
@@ -68,7 +74,7 @@ class HttpChatTransport(private val context: Context, private val client: HttpCl
           method = HttpMethod.Post
           contentType(ContentType.Application.Json)
           header(HttpHeaders.Authorization, "Bearer ${RelaisConfig.apiKey(context)}")
-          setBody(body.toString())
+          setBody(body)
         },
       ) {
         incoming.collect { event ->
@@ -108,14 +114,4 @@ class HttpChatTransport(private val context: Context, private val client: HttpCl
       Log.d(TAG, "health probe failed: ${e.message}")
       false
     }
-}
-
-/** Builds the OpenAI `/v1/chat/completions` request body: prior [ChatStreamRequest.history] + the new user turn. */
-private fun buildChatRequestBody(request: ChatStreamRequest): JSONObject {
-  val messages = JSONArray()
-  request.history.forEach { turn ->
-    messages.put(JSONObject().put("role", turn.role).put("content", turn.text))
-  }
-  messages.put(JSONObject().put("role", "user").put("content", request.userText))
-  return JSONObject().put("messages", messages).put("stream", true)
 }
