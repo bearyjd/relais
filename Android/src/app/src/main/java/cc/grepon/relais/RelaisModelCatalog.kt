@@ -18,8 +18,11 @@
 
 package cc.grepon.relais
 
+import android.content.Context
 import android.util.Log
 import cc.grepon.relais.common.getJsonResponse
+import cc.grepon.relais.common.isPixel10
+import java.io.File
 import kotlinx.coroutines.CancellationException
 import cc.grepon.relais.data.AllowedModel
 import cc.grepon.relais.data.BuiltInTaskId
@@ -40,6 +43,47 @@ private const val CURATED_TTL_MS = 5 * 60 * 1_000L // 5-minute TTL for the allow
  */
 object RelaisModelCatalog {
 
+  /**
+   * Pinned Google-Tensor-G5 AOT model refs (spike plan T-4 backlog): the upstream allowlist carries
+   * no TPU-compiled entries, so these are Relais-curated, offered ONLY when [tpuLaneUsable]. They
+   * provision via the ref fast path ([RelaisModelProvisioner.resolveModel]) — no allowlist entry
+   * needed. Values pinned from the HF API (commit + LFS byte size) like
+   * [RelaisModelProvisioner.G5_DEFAULT_REF], so selection needs no network.
+   *
+   * Filenames intentionally keep the upstream `…_Google_Tensor_G5` convention —
+   * [RelaisTpuLane.isTpuCompiledModel] keys the engine's TPU lane on it.
+   * NOTE: `Gemma3-1B-IT` is a Gemma-license-GATED repo — downloading it needs the operator's HF
+   * token (same as the existing int4 entry); the E2B repo is ungated (Apache-2.0).
+   */
+  internal val G5_TPU_REFS =
+    listOf(
+      RelaisModelRef(
+        modelId = "litert-community/gemma-4-E2B-it-litert-lm",
+        modelFile = "gemma-4-E2B-it_Google_Tensor_G5.litertlm",
+        commitHash = "9262660a1676eed6d0c477ab1a86344430854664",
+        sizeInBytes = 3_953_110_901L,
+        displayName = "Gemma 4 E2B (TPU · Tensor G5)",
+        source = RelaisModelRef.SOURCE_HUGGINGFACE,
+      ),
+      RelaisModelRef(
+        modelId = "litert-community/Gemma3-1B-IT",
+        modelFile = "Gemma3-1B-IT_q8_ekv1280_Google_Tensor_G5.litertlm",
+        commitHash = "6d54daa71cfbffba6b2843c08eeb1a27e7430bf0",
+        sizeInBytes = 1_678_542_365L,
+        displayName = "Gemma 3 1B (TPU · Tensor G5)",
+        source = RelaisModelRef.SOURCE_HUGGINGFACE,
+      ),
+    )
+
+  /**
+   * Whether this install can actually SERVE the pinned TPU models: Tensor G5 device AND the
+   * dispatcher lib bundled (debug builds today — see scripts/fetch-tensor-dispatcher.sh). Gating
+   * the OFFERING on this keeps a release build from listing models it would fail to initialize.
+   */
+  fun tpuLaneUsable(context: Context): Boolean =
+    isPixel10() &&
+      File(context.applicationInfo.nativeLibraryDir, RelaisTpuLane.DISPATCHER_LIB).exists()
+
   // TTL cache for the last successful (non-empty) allowlist fetch. Avoids a blocking network round-
   // trip on every GET /v1/models call. Only a successful non-empty result is cached: an offline/
   // unreachable result leaves cachedRefs null so the next call retries rather than serving stale
@@ -59,7 +103,19 @@ object RelaisModelCatalog {
    * getJsonResponse sets connect/read timeouts, so a wedged network fails fast rather than hanging;
    * the selector additionally bounds its own fetch with withTimeoutOrNull for a snappier spinner.
    */
-  fun curatedModels(): List<RelaisModelRef> {
+  fun curatedModels(): List<RelaisModelRef> = curatedModels(includeTpuModels = false)
+
+  /**
+   * As [curatedModels], with the Relais-pinned [G5_TPU_REFS] appended when [includeTpuModels]
+   * (callers pass [tpuLaneUsable]). The TPU refs need no network, so they are offered even when
+   * the upstream allowlist is unreachable — an offline node on a G5 still lists its TPU models.
+   */
+  fun curatedModels(includeTpuModels: Boolean): List<RelaisModelRef> {
+    val base = allowlistModels()
+    return if (includeTpuModels) base + G5_TPU_REFS else base
+  }
+
+  private fun allowlistModels(): List<RelaisModelRef> {
     val now = System.currentTimeMillis()
     cachedRefs?.let { cached ->
       if (now - cacheTimeMs < CURATED_TTL_MS) return cached
