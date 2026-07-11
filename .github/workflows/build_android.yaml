@@ -173,7 +173,8 @@ jobs:
         #       guarantee the manual review established, now enforced so a future bump can't erode it).
         run: |
           SO=app/src/main/jniLibs/arm64-v8a/libLiteRtDispatch_GoogleTensor.so
-          PIN=$(grep -oE 'SHA256="[0-9a-f]{64}"' scripts/fetch-tensor-dispatcher.sh | cut -d'"' -f2)
+          # This step runs under the job's working-directory (Android/src); the pin script lives at repo root.
+          PIN=$(grep -oE 'SHA256="[0-9a-f]{64}"' ../../scripts/fetch-tensor-dispatcher.sh | cut -d'"' -f2)
           echo "$PIN  $SO" | sha256sum -c - || { echo "::error::committed dispatcher != pinned SHA-256 (drift)"; exit 1; }
           NEEDED=$(readelf -dW "$SO" | awk -F'[][]' '/NEEDED/{print $2}')
           BAD_LINK=$(echo "$NEEDED" | grep -Ev '^(libandroid|liblog|libc|libm|libdl)\.so$' || true)
