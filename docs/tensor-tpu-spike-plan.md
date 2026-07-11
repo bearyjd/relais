@@ -120,12 +120,13 @@ MULTIMODAL.** `TensorTpuProbe` with `gemma-4-E2B-it_Google_Tensor_G5.litertlm` (
   3.95 GB. Rails: TPU active, GPU 0.0 mW — clean cross-control.
 - Context: the historical E-series GPU resident baseline is ~5.6 tok/s → **~2× the flagship
   baseline**, with TTFT/init an order faster. This makes E2B-G5 the natural default resident on
-  Tensor G5 devices once the allowlist carries it. (Vision/audio *inference* through the TPU-lane
-  encoders not yet exercised — text decode proven; multimodal requests are the next probe.)
+  Tensor G5 devices once the allowlist carries it. **Vision + audio through the TPU-lane encoders
+  VERIFIED (2026-07-10, `TensorTpuProbe#tpuLaneServesMultimodal`): a red image → "Red", a
+  sine-tone WAV → text response, both `backend=TPU_LITERTLM`.**
 
 **Remaining to make it operator-usable (post-spike backlog):** the allowlist has no G5-AOT entries
 yet (TPU models only load via probe/manual staging today — add `…_Google_Tensor_G5` variants gated
-to Tensor G5 devices); exercise vision/audio requests through the TPU-lane encoders; production
+to Tensor G5 devices); production
 dispatcher packaging for release builds (T-1's Play Feature Delivery question) — the dispatcher
 currently ships in DEBUG builds only.
 
