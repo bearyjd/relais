@@ -62,7 +62,9 @@ fun RelaisAppShell(
     val navController = rememberNavController()
     // One-shot: honor an incoming deep link once, on first composition / whenever the URI changes.
     LaunchedEffect(deepLinkUri) {
-      resolveShellDeepLink(deepLinkUri?.scheme, deepLinkUri?.host)?.let { navController.navigate(it) }
+      resolveShellDeepLink(deepLinkUri?.scheme, deepLinkUri?.host)?.let { route ->
+        navController.navigate(route) { launchSingleTop = true }
+      }
     }
     Scaffold(
       containerColor = Charcoal,

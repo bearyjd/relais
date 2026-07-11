@@ -49,4 +49,8 @@ class RelaisShellDestinationsTest {
   @Test fun deepLink_unknownScheme_returnsNull() {
     assertNull(resolveShellDeepLink("https", "example.com"))
   }
+
+  @Test fun deepLink_relaisSchemeNullHost_mapsToChat() {
+    assertEquals(RelaisRoutes.CHAT, resolveShellDeepLink("com.ventouxlabs.relais", null))
+  }
 }
