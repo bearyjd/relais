@@ -17,6 +17,7 @@
 package cc.grepon.relais
 
 import android.content.Context
+import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.pdf.PdfRenderer
@@ -45,6 +46,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalDrawerSheet
@@ -75,6 +78,7 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import cc.grepon.relais.chat.ChatConversationList
 import cc.grepon.relais.chat.ChatMessageList
+import cc.grepon.relais.chat.conversationToMarkdown
 import java.io.ByteArrayOutputStream
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -160,7 +164,28 @@ internal fun ChatScreen() {
   var draft by remember { mutableStateOf("") }
   var pending by remember { mutableStateOf<Attachment?>(null) }
   var showModelSheet by remember { mutableStateOf(false) }
+  var showOverflowMenu by remember { mutableStateOf(false) }
   val drawerState = rememberDrawerState(DrawerValue.Closed)
+
+  // Active conversation's title, for the Markdown share/export payload — falls back to "Chat" if
+  // no conversation is active yet (e.g. a brand-new, unsent session).
+  val activeConversationTitle =
+    conversations.firstOrNull { it.id == activeConversationId }?.title ?: "Chat"
+
+  val exportMarkdown =
+    rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("text/markdown")) { uri: Uri? ->
+      if (uri != null) {
+        val md = conversationToMarkdown(activeConversationTitle, turns)
+        scope.launch {
+          withContext(Dispatchers.IO) {
+            runCatching {
+                ctx.contentResolver.openOutputStream(uri)?.use { it.write(md.toByteArray()) }
+              }
+              .onFailure { t -> android.util.Log.e(CHAT_TAG, "export .md failed", t) }
+          }
+        }
+      }
+    }
 
   val pickFile =
     rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
@@ -261,6 +286,42 @@ internal fun ChatScreen() {
               .padding(horizontal = 4.dp, vertical = 2.dp)
           ) {
             Text("＋", color = Amber, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold, fontSize = 18.sp)
+          }
+          Spacer(Modifier.size(8.dp))
+          Box {
+            Box(
+              Modifier.clip(RoundedCornerShape(6.dp))
+                .clickable { showOverflowMenu = true }
+                .padding(horizontal = 4.dp, vertical = 2.dp)
+            ) {
+              Text("⋮", color = Amber, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold, fontSize = 18.sp)
+            }
+            DropdownMenu(
+              expanded = showOverflowMenu,
+              onDismissRequest = { showOverflowMenu = false },
+              containerColor = Panel,
+            ) {
+              DropdownMenuItem(
+                text = { Text("SHARE", color = Amber, fontFamily = FontFamily.Monospace, fontSize = 13.sp) },
+                onClick = {
+                  showOverflowMenu = false
+                  val md = conversationToMarkdown(activeConversationTitle, turns)
+                  val send =
+                    Intent(Intent.ACTION_SEND).apply {
+                      type = "text/plain"
+                      putExtra(Intent.EXTRA_TEXT, md)
+                    }
+                  ctx.startActivity(Intent.createChooser(send, "Share conversation"))
+                },
+              )
+              DropdownMenuItem(
+                text = { Text("EXPORT .MD", color = Amber, fontFamily = FontFamily.Monospace, fontSize = 13.sp) },
+                onClick = {
+                  showOverflowMenu = false
+                  exportMarkdown.launch("$activeConversationTitle.md")
+                },
+              )
+            }
           }
         }
         if (reloadingModel) {
