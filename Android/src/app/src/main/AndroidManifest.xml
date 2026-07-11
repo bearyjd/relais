@@ -153,10 +153,10 @@
             android:name=".RelaisConfigureActivity"
             android:exported="false"
             android:label="Configure"
-            android:parentActivityName=".RelaisControlActivity">
+            android:parentActivityName=".MainActivity">
             <meta-data
                 android:name="android.support.PARENT_ACTIVITY"
-                android:value="cc.grepon.relais.RelaisControlActivity" />
+                android:value="cc.grepon.relais.MainActivity" />
         </activity>
 
         <!-- In-app prompt-template editor (#12). Internal screen launched only from the control

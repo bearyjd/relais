@@ -19,12 +19,20 @@ package cc.grepon.relais
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.isActive
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
+
+/** One polling tick's worth of node-status state, snapshotted together so both derived
+ * [RelaisShellViewModel.panelState] and [RelaisShellViewModel.modelDisplay] StateFlows come from
+ * the same read rather than racing across two separate polling loops. */
+private data class RelaisShellSnapshot(
+  val panelState: RelaisControlPanelState,
+  val modelDisplay: String,
+)
 
 /**
  * Hoists the node-status polling loop that used to live as a `LaunchedEffect` inside
@@ -32,30 +40,40 @@ import kotlinx.coroutines.delay
  * (dashboard, and any future entry point) observes one shared, single-poll state source instead of
  * each composable running its own independent 1s timer.
  *
- * [panelState] and [modelDisplay] are seeded synchronously in `init` (before the polling coroutine's
- * first tick) so the first composed frame isn't empty/default.
+ * The polling loop is a cold `flow` shared via `stateIn(..., SharingStarted.WhileSubscribed(5000))`
+ * rather than a `viewModelScope`-tied `while` loop: it only runs while at least one composable is
+ * collecting, and pauses 5s after the last collector goes away (e.g. app backgrounded), resuming on
+ * re-subscribe. [panelState] and [modelDisplay] are seeded synchronously with an initial snapshot so
+ * the first composed frame isn't empty/default.
  */
 class RelaisShellViewModel(app: Application) : AndroidViewModel(app) {
-  private val _panelState = MutableStateFlow(snapshotPanelState())
-  val panelState: StateFlow<RelaisControlPanelState> = _panelState.asStateFlow()
+  private val snapshots =
+      flow {
+            while (true) {
+              emit(RelaisShellSnapshot(panelState = snapshotPanelState(), modelDisplay = currentModelDisplay()))
+              delay(1000)
+            }
+          }
+          .stateIn(
+              viewModelScope,
+              SharingStarted.WhileSubscribed(5000),
+              RelaisShellSnapshot(panelState = snapshotPanelState(), modelDisplay = currentModelDisplay()),
+          )
 
-  private val _modelDisplay = MutableStateFlow(currentModelDisplay())
-  val modelDisplay: StateFlow<String> = _modelDisplay.asStateFlow()
+  val panelState: StateFlow<RelaisControlPanelState> =
+      snapshots
+          .map { it.panelState }
+          .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), snapshots.value.panelState)
 
-  init {
-    viewModelScope.launch {
-      while (isActive) {
-        _modelDisplay.value = currentModelDisplay()
-        _panelState.value = snapshotPanelState()
-        delay(1000)
-      }
-    }
-  }
+  val modelDisplay: StateFlow<String> =
+      snapshots
+          .map { it.modelDisplay }
+          .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), snapshots.value.modelDisplay)
 
   /** Dispatches the single state-appropriate primary action (START / CANCEL / STOP). */
   fun onPrimaryAction() {
     val ctx = getApplication<Application>()
-    when (_panelState.value.primaryAction) {
+    when (panelState.value.primaryAction) {
       PrimaryAction.START -> RelaisNodeService.start(ctx)
       PrimaryAction.CANCEL,
       PrimaryAction.STOP -> RelaisNodeService.stop(ctx)
