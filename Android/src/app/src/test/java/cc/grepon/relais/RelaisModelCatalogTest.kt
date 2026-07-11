@@ -96,4 +96,30 @@ class RelaisModelCatalogTest {
   fun emptyAllowlistYieldsEmptyList() {
     assertTrue(RelaisModelCatalog.curatedModelsFrom(ModelAllowlist(emptyList())).isEmpty())
   }
+
+  // --- Pinned G5-TPU refs (spike plan T-4 backlog: Relais-curated, upstream allowlist has none) ---
+
+  @Test
+  fun tpuRefsCarryTheAotFilenameMarkerTheEngineLaneKeysOn() {
+    assertEquals(2, RelaisModelCatalog.G5_TPU_REFS.size)
+    for (ref in RelaisModelCatalog.G5_TPU_REFS) {
+      assertTrue(
+        "${ref.modelFile} must trip RelaisTpuLane.isTpuCompiledModel or the engine serves it on GPU",
+        RelaisTpuLane.isTpuCompiledModel(ref.modelFile),
+      )
+      assertTrue("pinned commit missing for ${ref.modelId}", ref.commitHash.isNotBlank())
+      assertTrue("pinned size missing for ${ref.modelId}", ref.sizeInBytes > 0L)
+      assertEquals("TPU refs are HF-sourced", RelaisModelRef.SOURCE_HUGGINGFACE, ref.source)
+    }
+  }
+
+  @Test
+  fun tpuRefTokenBudgetsMatchTheAotKvSizes() {
+    val oneB = RelaisModelCatalog.G5_TPU_REFS.first { it.modelId.contains("Gemma3-1B") }
+    val e2b = RelaisModelCatalog.G5_TPU_REFS.first { it.modelId.contains("gemma-4-E2B") }
+    // 1B is an ekv1280 build; E2B carries no marker and its AOT KV is 4096 = the engine default
+    // (verified on-device 2026-07-10).
+    assertEquals(1280, RelaisTpuLane.tpuMaxNumTokens(oneB.modelFile, 4096))
+    assertEquals(4096, RelaisTpuLane.tpuMaxNumTokens(e2b.modelFile, 4096))
+  }
 }

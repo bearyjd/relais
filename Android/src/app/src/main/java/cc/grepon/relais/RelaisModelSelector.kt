@@ -86,6 +86,7 @@ fun RelaisModelSelectorSheet(
 ) {
   val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
   val scope = rememberCoroutineScope()
+  val ctx = androidx.compose.ui.platform.LocalContext.current
   var loading by remember { mutableStateOf(true) }
   var curated by remember { mutableStateOf<List<RelaisModelRef>>(emptyList()) }
   var manualId by remember { mutableStateOf("") }
@@ -148,8 +149,11 @@ fun RelaisModelSelectorSheet(
     // the spinner sooner. (withTimeoutOrNull cancels the coroutine but can't interrupt the blocking
     // socket — the connection timeouts are what ultimately free the IO thread.)
     curated =
-      withTimeoutOrNull(8_000) { withContext(Dispatchers.IO) { RelaisModelCatalog.curatedModels() } }
-        ?: emptyList()
+      withTimeoutOrNull(8_000) {
+        withContext(Dispatchers.IO) {
+          RelaisModelCatalog.curatedModels(RelaisModelCatalog.tpuLaneUsable(ctx))
+        }
+      } ?: emptyList()
     loading = false
   }
 
