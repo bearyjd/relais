@@ -24,15 +24,10 @@ import androidx.activity.ComponentActivity
 private const val TAG = "RelaisControl"
 
 /**
- * Relais node control panel — home screen. Shows whether the node is actually serving (LIVE /
- * STARTING / OFFLINE), the real LAN endpoint + API key, and the one state-appropriate primary
- * action (START / CANCEL / STOP). Setup-time and rare controls (model picker, HF token, power
- * exemption, share/NFC toggles, prompt templates, notification triage) live one tap away on
- * [RelaisConfigureActivity] (AUDIT.md §3-§4.5).
- *
- * Also honors `--es cmd start|stop` for adb automation. The activity is exported (launchable), so
- * the `cmd` extra is gated behind the node's API key; the in-app buttons call [RelaisNodeService]
- * directly. Optional `--es modelId <id>` / `--es hfToken <t>` (also key-gated) switch the model.
+ * Key-gated adb trampoline for the Relais node — no UI, no launcher icon. Honors
+ * `--es cmd start|stop` (and optional `--es modelId <id>` / `--es hfToken <t>`) gated behind the
+ * node's API key, then forwards to [MainActivity], which hosts the unified shell (the control
+ * panel now lives in the shell's dashboard destination, not here).
  *
  *   adb shell am start -n <appId>/cc.grepon.relais.RelaisControlActivity \
  *     --es cmd start --es token <apiKey> [--es modelId <allowlistId>] [--es hfToken <hfToken>]
