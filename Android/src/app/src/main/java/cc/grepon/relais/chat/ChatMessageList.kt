@@ -22,6 +22,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -34,11 +35,14 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import cc.grepon.relais.Amber
+import cc.grepon.relais.Line
 import cc.grepon.relais.Muted
+import cc.grepon.relais.Panel
 import cc.grepon.relais.Paper
 import cc.grepon.relais.data.ChatTurn
 import cc.grepon.relais.ui.common.BufferedFadingMarkdownText
 import cc.grepon.relais.ui.common.MarkdownText
+import kotlinx.coroutines.delay
 
 /**
  * Stateless, presentational chat message list (Relais Chat Depth, Task 7a). Renders stored
@@ -105,6 +109,14 @@ private fun UserTurnRow(
       value = editedText,
       onValueChange = { editedText = it },
       modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+      colors =
+        TextFieldDefaults.colors(
+          focusedContainerColor = Panel,
+          unfocusedContainerColor = Panel,
+          focusedIndicatorColor = Amber.copy(alpha = 0.5f),
+          unfocusedIndicatorColor = Line,
+          cursorColor = Amber,
+        ),
     )
     Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
       ActionLabel(
@@ -117,8 +129,21 @@ private fun UserTurnRow(
       ActionLabel(text = "CANCEL", onClick = { editing = false })
     }
   } else {
+    var copied by remember { mutableStateOf(false) }
+    LaunchedEffect(copied) {
+      if (copied) {
+        delay(1500)
+        copied = false
+      }
+    }
     Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-      ActionLabel(text = "COPY", onClick = { onCopy(turn.content) })
+      ActionLabel(
+        text = if (copied) "COPIED" else "COPY",
+        onClick = {
+          onCopy(turn.content)
+          copied = true
+        },
+      )
       ActionLabel(
         text = "EDIT",
         onClick = {
@@ -153,8 +178,21 @@ private fun AssistantTurnRow(
     )
   }
 
+  var copied by remember { mutableStateOf(false) }
+  LaunchedEffect(copied) {
+    if (copied) {
+      delay(1500)
+      copied = false
+    }
+  }
   Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-    ActionLabel(text = "COPY", onClick = { onCopy(turn.content) })
+    ActionLabel(
+      text = if (copied) "COPIED" else "COPY",
+      onClick = {
+        onCopy(turn.content)
+        copied = true
+      },
+    )
     ActionLabel(text = "REGEN", onClick = { onRegenerate(turn) })
   }
 }

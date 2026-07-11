@@ -28,6 +28,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -122,6 +123,14 @@ private fun ConversationRow(
         value = renameText,
         onValueChange = { renameText = it },
         modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+        colors =
+          TextFieldDefaults.colors(
+            focusedContainerColor = Panel,
+            unfocusedContainerColor = Panel,
+            focusedIndicatorColor = Amber.copy(alpha = 0.5f),
+            unfocusedIndicatorColor = Line,
+            cursorColor = Amber,
+          ),
       )
       Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
         RowActionLabel(
