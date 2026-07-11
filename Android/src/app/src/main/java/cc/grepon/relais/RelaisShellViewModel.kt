@@ -42,9 +42,10 @@ private data class RelaisShellSnapshot(
  *
  * The polling loop is a cold `flow` shared via `stateIn(..., SharingStarted.WhileSubscribed(5000))`
  * rather than a `viewModelScope`-tied `while` loop: it only runs while at least one composable is
- * collecting, and pauses 5s after the last collector goes away (e.g. app backgrounded), resuming on
- * re-subscribe. [panelState] and [modelDisplay] are seeded synchronously with an initial snapshot so
- * the first composed frame isn't empty/default.
+ * collecting, and pauses ~5–10s after the last collector goes away (e.g. app backgrounded) — the
+ * derived flows and the shared `snapshots` flow each carry an independent 5s `WhileSubscribed`
+ * grace — resuming immediately on re-subscribe. [panelState] and [modelDisplay] are seeded
+ * synchronously with an initial snapshot so the first composed frame isn't empty/default.
  */
 class RelaisShellViewModel(app: Application) : AndroidViewModel(app) {
   private val snapshots =
