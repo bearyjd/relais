@@ -46,6 +46,11 @@ private class ChatStreamStop : RuntimeException()
  * Streams one chat turn over the loopback OpenAI-compatible HTTP server
  * (`/v1/chat/completions`), matching the same path any external LAN client uses. Selected when the
  * server is [healthReachable] and the resident node is ready (see [chooseTransport]).
+ *
+ * Text-only: [buildChatRequestBody] serializes `history`/`userText` alone. Multimodal requests
+ * ([ChatStreamRequest.imagePng]/[ChatStreamRequest.audioWav]) are routed to [InProcessChatTransport]
+ * by [ChatTransportSelector.select] instead — this class does not yet emit OpenAI content-parts for
+ * attachments (follow-up).
  */
 class HttpChatTransport(private val context: Context, private val client: HttpClient) : ChatTransport {
   override suspend fun stream(
