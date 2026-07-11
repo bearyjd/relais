@@ -32,8 +32,17 @@ import androidx.sqlite.db.SupportSQLiteDatabase
  * changes.
  */
 @Database(
-  entities = [SchemaMeta::class, SessionTurn::class, RagDocument::class, RagChunk::class, BatchJob::class],
-  version = 4,
+  entities =
+    [
+      SchemaMeta::class,
+      SessionTurn::class,
+      RagDocument::class,
+      RagChunk::class,
+      BatchJob::class,
+      Conversation::class,
+      ChatTurn::class,
+    ],
+  version = 5,
   exportSchema = true,
 )
 abstract class RelaisDatabase : RoomDatabase() {
@@ -45,6 +54,8 @@ abstract class RelaisDatabase : RoomDatabase() {
   abstract fun ragDao(): RagDao
 
   abstract fun batchDao(): BatchDao
+
+  abstract fun chatDao(): ChatDao
 
   companion object {
     private const val DB_NAME = "relais.db"
@@ -149,8 +160,43 @@ abstract class RelaisDatabase : RoomDatabase() {
         }
       }
 
+    /**
+     * v4 -> v5 (Chat Depth): adds the `conversations` + `chat_turns` tables (+ their indices) backing
+     * the in-app chat's persisted conversation history. CREATE statements mirror [Conversation]/
+     * [ChatTurn] exactly (column order, affinities, nullability, FK, Room's generated index names) —
+     * Room validates the schema identity on open. Additive only. `@VisibleForTesting` so
+     * `RelaisDatabaseMigrationTest` can force-run + validate it vs `5.json`.
+     */
+    @VisibleForTesting
+    internal val MIGRATION_4_5 =
+      object : Migration(4, 5) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+          db.execSQL(
+            "CREATE TABLE IF NOT EXISTS `conversations` (" +
+              "`id` TEXT NOT NULL, `title` TEXT NOT NULL, `modelId` TEXT NOT NULL, " +
+              "`createdAt` INTEGER NOT NULL, `updatedAt` INTEGER NOT NULL, PRIMARY KEY(`id`))"
+          )
+          db.execSQL(
+            "CREATE TABLE IF NOT EXISTS `chat_turns` (" +
+              "`id` TEXT NOT NULL, `conversationId` TEXT NOT NULL, `role` TEXT NOT NULL, " +
+              "`content` TEXT NOT NULL, `attachmentType` TEXT, `attachmentPath` TEXT, " +
+              "`answeredByModelId` TEXT, `answeredByBackend` TEXT, `createdAt` INTEGER NOT NULL, " +
+              "PRIMARY KEY(`id`), FOREIGN KEY(`conversationId`) REFERENCES `conversations`(`id`) " +
+              "ON UPDATE NO ACTION ON DELETE CASCADE)"
+          )
+          db.execSQL(
+            "CREATE INDEX IF NOT EXISTS `index_chat_turns_conversationId` ON `chat_turns` (`conversationId`)"
+          )
+          db.execSQL(
+            "CREATE INDEX IF NOT EXISTS `index_chat_turns_conversationId_createdAt` " +
+              "ON `chat_turns` (`conversationId`, `createdAt`)"
+          )
+        }
+      }
+
     /** Migrations appended by consumers when they add tables + bump [version]. */
-    val MIGRATIONS: List<Migration> = listOf(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
+    val MIGRATIONS: List<Migration> =
+      listOf(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
 
     /** Process-wide singleton (single process — see backlog §3). */
     fun get(context: Context): RelaisDatabase =

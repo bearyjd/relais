@@ -108,7 +108,12 @@ class RelaisDatabaseMigrationTest {
     // and the assertions below confirm `session_turns` exists + survives the later v2->v3 migration.
     val db =
       Room.databaseBuilder(context, RelaisDatabase::class.java, TEST_DB)
-        .addMigrations(RelaisDatabase.MIGRATION_1_2, RelaisDatabase.MIGRATION_2_3, RelaisDatabase.MIGRATION_3_4)
+        .addMigrations(
+          RelaisDatabase.MIGRATION_1_2,
+          RelaisDatabase.MIGRATION_2_3,
+          RelaisDatabase.MIGRATION_3_4,
+          RelaisDatabase.MIGRATION_4_5,
+        )
         .allowMainThreadQueries()
         .build()
 
@@ -147,7 +152,12 @@ class RelaisDatabaseMigrationTest {
 
     val db =
       Room.databaseBuilder(context, RelaisDatabase::class.java, TEST_DB)
-        .addMigrations(RelaisDatabase.MIGRATION_1_2, RelaisDatabase.MIGRATION_2_3, RelaisDatabase.MIGRATION_3_4)
+        .addMigrations(
+          RelaisDatabase.MIGRATION_1_2,
+          RelaisDatabase.MIGRATION_2_3,
+          RelaisDatabase.MIGRATION_3_4,
+          RelaisDatabase.MIGRATION_4_5,
+        )
         .allowMainThreadQueries()
         .build()
     val supportDb = db.openHelper.writableDatabase
@@ -189,7 +199,12 @@ class RelaisDatabaseMigrationTest {
 
     val db =
       Room.databaseBuilder(context, RelaisDatabase::class.java, TEST_DB)
-        .addMigrations(RelaisDatabase.MIGRATION_1_2, RelaisDatabase.MIGRATION_2_3, RelaisDatabase.MIGRATION_3_4)
+        .addMigrations(
+          RelaisDatabase.MIGRATION_1_2,
+          RelaisDatabase.MIGRATION_2_3,
+          RelaisDatabase.MIGRATION_3_4,
+          RelaisDatabase.MIGRATION_4_5,
+        )
         .allowMainThreadQueries()
         .build()
     val supportDb = db.openHelper.writableDatabase
@@ -211,6 +226,62 @@ class RelaisDatabaseMigrationTest {
     }
     assertTrue(idxNames.contains("index_batch_jobs_status_createdAt"))
     assertTrue(idxNames.contains("index_batch_jobs_jobId"))
+
+    db.close()
+  }
+
+  @Test
+  fun `v4 to v5 migration runs and validates against the compiled v5 schema`() {
+    // Full chain v1->2->3->4->5; Room validates the final identity hash against compiled 5.json. Drift
+    // between MIGRATION_4_5's SQL and the Conversation/ChatTurn entities throws on open (Chat Depth).
+    createV1Database()
+
+    val db =
+      Room.databaseBuilder(context, RelaisDatabase::class.java, TEST_DB)
+        .addMigrations(
+          RelaisDatabase.MIGRATION_1_2,
+          RelaisDatabase.MIGRATION_2_3,
+          RelaisDatabase.MIGRATION_3_4,
+          RelaisDatabase.MIGRATION_4_5,
+        )
+        .allowMainThreadQueries()
+        .build()
+    val supportDb = db.openHelper.writableDatabase
+
+    val conversationCols = mutableListOf<String>()
+    supportDb.query("PRAGMA table_info(`conversations`)").use { c ->
+      val nameCol = c.getColumnIndexOrThrow("name")
+      while (c.moveToNext()) conversationCols.add(c.getString(nameCol))
+    }
+    assertEquals(listOf("id", "title", "modelId", "createdAt", "updatedAt"), conversationCols)
+
+    val chatTurnCols = mutableListOf<String>()
+    supportDb.query("PRAGMA table_info(`chat_turns`)").use { c ->
+      val nameCol = c.getColumnIndexOrThrow("name")
+      while (c.moveToNext()) chatTurnCols.add(c.getString(nameCol))
+    }
+    assertEquals(
+      listOf(
+        "id",
+        "conversationId",
+        "role",
+        "content",
+        "attachmentType",
+        "attachmentPath",
+        "answeredByModelId",
+        "answeredByBackend",
+        "createdAt",
+      ),
+      chatTurnCols,
+    )
+
+    val idxNames = mutableListOf<String>()
+    supportDb.query("PRAGMA index_list(`chat_turns`)").use { c ->
+      val nameCol = c.getColumnIndexOrThrow("name")
+      while (c.moveToNext()) idxNames.add(c.getString(nameCol))
+    }
+    assertTrue(idxNames.contains("index_chat_turns_conversationId"))
+    assertTrue(idxNames.contains("index_chat_turns_conversationId_createdAt"))
 
     db.close()
   }

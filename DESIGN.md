@@ -39,7 +39,7 @@ The one thing to remember: an amber relay light on a black panel.
 
 ## Typography
 - **Wordmark / labels / readouts / buttons:** Monospace (`FontFamily.Monospace`, bundled — no font download). The machine voice; also keeps endpoints/keys/model ids aligned.
-- **Body / prose:** same monospace for now (control-panel consistency). If a prose surface is added later, pair with a clean grotesk for body.
+- **Body / prose:** same monospace for now (control-panel consistency). If a prose surface is added later, pair with a clean grotesk for body. **Chat assistant prose** is that surface (2026-07-11): assistant markdown renders in the platform `FontFamily.SansSerif` (readable, zero-bundle); user turns, code blocks, readouts, and all other chrome stay monospace.
 - **Scale (control screen):** display 22sp (wordmark) / hero 17sp (the state's single most-copied
   value — LIVE LAN endpoint only) / status 13sp / value 13sp / label 11sp @ +1.5sp tracking /
   caption 11sp / action link 12sp bold / button 14sp bold @ +2sp tracking. At most ONE hero element
@@ -82,3 +82,4 @@ The one thing to remember: an amber relay light on a black panel.
 | 2026-05-25 | Initial brand identity: amber signal-relay on near-black, monospace, broadcast-beacon mark | Created via /design-consultation. Amber-on-black breaks from the blue/purple AI-SaaS norm and says "live, transmitting, sovereign" — the relay thesis. Verified on-device (Pixel 9 Pro Fold). |
 | 2026-07-07 | Control-panel buttonology pass: frequency-ranked layout, single state-appropriate primary action, Configure split, hero endpoint on LIVE, phase-line STARTING, thermal sub-state | AUDIT.md redesign audit |
 | 2026-07-11 | Unified app shell: single launcher, one Compose NavHost hosted by MainActivity, node dashboard as home; new DESIGN.md-conformant bottom nav (DASHBOARD/CHAT/MODELS, charcoal Panel surface, Line hairline divider, amber-active monospace labels, no ripple/elevation); Configure + Benchmark reachable off the shell | docs/superpowers/specs/2026-07-11-unified-app-shell-design.md |
+| 2026-07-11 | Chat depth: persistent Room-backed conversations, hybrid HTTP/in-process transport, generation controls (stop/regenerate/edit/copy), reused compose-richtext markdown, in-chat model switch with reload state, Markdown share/export. Assistant prose renders in platform `FontFamily.SansSerif` (the prose pairing anticipated in §Typography); monospace elsewhere | docs/superpowers/specs/2026-07-11-chat-depth-design.md |

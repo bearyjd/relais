@@ -17,6 +17,7 @@
 package cc.grepon.relais
 
 import android.content.Context
+import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.pdf.PdfRenderer
@@ -28,7 +29,6 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -42,24 +42,25 @@ import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.systemBarsPadding
-import androidx.compose.foundation.layout.widthIn
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalDrawerSheet
+import androidx.compose.material3.ModalNavigationDrawer
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.material3.darkColorScheme
+import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -67,10 +68,17 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.viewmodel.compose.viewModel
+import cc.grepon.relais.chat.ChatConversationList
+import cc.grepon.relais.chat.ChatMessageList
+import cc.grepon.relais.chat.conversationToMarkdown
 import java.io.ByteArrayOutputStream
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -116,8 +124,6 @@ class RelaisChatActivity : ComponentActivity() {
   }
 }
 
-private data class ChatMsg(val role: String, val text: String)
-
 /** One staged attachment, already converted to an engine-ingestible form. */
 private sealed interface Attachment {
   val label: String
@@ -143,20 +149,43 @@ private const val MAX_ATTACH_BYTES = 32 * 1024 * 1024
 
 @Composable
 internal fun ChatScreen() {
-  val ctx = LocalActivityContext()
+  val ctx = LocalContext.current
+  val vm: ChatViewModel = viewModel()
+  val clipboard = LocalClipboardManager.current
   val scope = rememberCoroutineScope()
-  val messages = remember { mutableStateListOf<ChatMsg>() }
+
+  val turns by vm.turns.collectAsState()
+  val streaming by vm.streaming.collectAsState()
+  val streamingText by vm.streamingText.collectAsState()
+  val reloadingModel by vm.reloadingModel.collectAsState()
+  val conversations by vm.conversations.collectAsState()
+  val activeConversationId by vm.activeConversationId.collectAsState()
+
   var draft by remember { mutableStateOf("") }
-  var streaming by remember { mutableStateOf(false) }
-  var readout by remember { mutableStateOf("") }
   var pending by remember { mutableStateOf<Attachment?>(null) }
-  val listState = rememberLazyListState()
-  // Stops the native decode loop when the screen goes away — without this, closing chat mid-reply
-  // keeps decoding to maxNumTokens (battery/thermal) and mutating a disposed screen's state.
-  val cancelled = remember { java.util.concurrent.atomic.AtomicBoolean(false) }
-  androidx.compose.runtime.DisposableEffect(Unit) {
-    onDispose { cancelled.set(true) }
-  }
+  var showModelSheet by remember { mutableStateOf(false) }
+  var showOverflowMenu by remember { mutableStateOf(false) }
+  val drawerState = rememberDrawerState(DrawerValue.Closed)
+
+  // Active conversation's title, for the Markdown share/export payload — falls back to "Chat" if
+  // no conversation is active yet (e.g. a brand-new, unsent session).
+  val activeConversationTitle =
+    conversations.firstOrNull { it.id == activeConversationId }?.title ?: "Chat"
+
+  val exportMarkdown =
+    rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("text/markdown")) { uri: Uri? ->
+      if (uri != null) {
+        val md = conversationToMarkdown(activeConversationTitle, turns)
+        scope.launch {
+          withContext(Dispatchers.IO) {
+            runCatching {
+                ctx.contentResolver.openOutputStream(uri)?.use { it.write(md.toByteArray()) }
+              }
+              .onFailure { t -> android.util.Log.e(CHAT_TAG, "export .md failed", t) }
+          }
+        }
+      }
+    }
 
   val pickFile =
     rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
@@ -182,183 +211,235 @@ internal fun ChatScreen() {
           )
           when (result) {
             is StageResult.Ok -> pending = result.attachment
-            is StageResult.Err -> readout = "⚠ attach failed: ${result.message}"
+            is StageResult.Err -> android.util.Log.w(CHAT_TAG, "attach failed: ${result.message}")
           }
         }
       }
     }
 
-  // Keep the newest message in view as tokens stream in.
-  LaunchedEffect(messages.size, messages.lastOrNull()?.text) {
-    if (messages.isNotEmpty()) listState.animateScrollToItem(messages.lastIndex)
-  }
-
+  // Dispatches the staged prompt: media attachments go through vm.send's attachment slots; docs
+  // (and no attachment) are inlined into the prompt text via composeUserText.
   fun send() {
     val prompt = draft.trim()
     val attachment = pending
     if ((prompt.isEmpty() && attachment == null) || streaming) return
     draft = ""
     pending = null
-    // Prior turns become history; the live prompt is the only one that decodes. Failed ("⚠ …")
-    // and empty assistant turns are display-only — replaying them as context confuses the model.
-    val history =
-      messages
-        .filterNot { it.role == "assistant" && (it.text.isBlank() || it.text.startsWith("⚠")) }
-        .map { ParsedTurn(role = it.role, text = it.text) }
-    val (requestText, shownText) = composeUserText(prompt, attachment)
-    messages.add(ChatMsg("user", shownText))
-    messages.add(ChatMsg("assistant", ""))
-    val replyIndex = messages.lastIndex
-    streaming = true
-    readout = "generating…"
-    scope.launch {
-      val result =
-        withContext(Dispatchers.IO) {
-          runCatching {
-              RelaisEngine.generate(
-                context = ctx,
-                request =
-                  RelaisRequest(
-                    text = requestText,
-                    imagePng = (attachment as? Attachment.Image)?.png,
-                    audioWav = (attachment as? Attachment.Audio)?.wav,
-                    history = history,
-                  ),
-                onToken = { tok ->
-                  val cur = messages[replyIndex]
-                  messages[replyIndex] = cur.copy(text = cur.text + tok)
+    when (attachment) {
+      is Attachment.Image -> vm.send(prompt, "image", attachment.png)
+      is Attachment.Audio -> vm.send(prompt, "audio", attachment.wav)
+      else -> vm.send(composeUserText(prompt, attachment).first, null, null)
+    }
+  }
+
+  ModalNavigationDrawer(
+    drawerState = drawerState,
+    drawerContent = {
+      ModalDrawerSheet(drawerContainerColor = Panel) {
+        ChatConversationList(
+          conversations = conversations,
+          activeId = activeConversationId,
+          onOpen = { id ->
+            vm.openConversation(id)
+            scope.launch { drawerState.close() }
+          },
+          onNew = {
+            vm.newConversation()
+            scope.launch { drawerState.close() }
+          },
+          onRename = vm::rename,
+          onDelete = vm::delete,
+        )
+      }
+    },
+  ) {
+    // imePadding() is load-bearing: on targetSdk 35 the app is edge-to-edge, so the manifest's
+    // adjustResize no longer shrinks the window for the keyboard. Without this, the input row sits
+    // behind the IME. systemBarsPadding keeps content clear of the status/nav bars.
+    Column(Modifier.fillMaxSize().systemBarsPadding().imePadding()) {
+      // Header — drawer toggle, wordmark, tappable model name, new-chat.
+      Column(Modifier.padding(horizontal = 20.dp, vertical = 14.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+          Box(
+            Modifier.clip(RoundedCornerShape(6.dp))
+              .clickable { scope.launch { drawerState.open() } }
+              .padding(horizontal = 4.dp, vertical = 2.dp)
+          ) {
+            Text("☰", color = Amber, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+          }
+          Spacer(Modifier.size(10.dp))
+          Box(Modifier.size(9.dp).background(Amber, RoundedCornerShape(5.dp)))
+          Spacer(Modifier.size(10.dp))
+          Text("RELAIS", color = Amber, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold, fontSize = 18.sp, letterSpacing = 4.sp)
+          Spacer(Modifier.weight(1f))
+          Text(
+            RelaisConfig.modelId(ctx),
+            color = Amber,
+            fontFamily = FontFamily.Monospace,
+            fontSize = 12.sp,
+            modifier = Modifier.clickable { showModelSheet = true },
+          )
+          Spacer(Modifier.size(12.dp))
+          Box(
+            Modifier.clip(RoundedCornerShape(6.dp))
+              .clickable { vm.newConversation() }
+              .padding(horizontal = 4.dp, vertical = 2.dp)
+          ) {
+            Text("＋", color = Amber, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold, fontSize = 18.sp)
+          }
+          Spacer(Modifier.size(8.dp))
+          Box {
+            Box(
+              Modifier.clip(RoundedCornerShape(6.dp))
+                .clickable { showOverflowMenu = true }
+                .padding(horizontal = 4.dp, vertical = 2.dp)
+            ) {
+              Text("⋮", color = Amber, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold, fontSize = 18.sp)
+            }
+            DropdownMenu(
+              expanded = showOverflowMenu,
+              onDismissRequest = { showOverflowMenu = false },
+              containerColor = Panel,
+            ) {
+              DropdownMenuItem(
+                text = { Text("SHARE", color = Amber, fontFamily = FontFamily.Monospace, fontSize = 13.sp) },
+                onClick = {
+                  showOverflowMenu = false
+                  val md = conversationToMarkdown(activeConversationTitle, turns)
+                  val send =
+                    Intent(Intent.ACTION_SEND).apply {
+                      type = "text/plain"
+                      putExtra(Intent.EXTRA_TEXT, md)
+                    }
+                  ctx.startActivity(Intent.createChooser(send, "Share conversation"))
                 },
-                shouldCancel = { cancelled.get() },
+              )
+              DropdownMenuItem(
+                text = { Text("EXPORT .MD", color = Amber, fontFamily = FontFamily.Monospace, fontSize = 13.sp) },
+                onClick = {
+                  showOverflowMenu = false
+                  exportMarkdown.launch("$activeConversationTitle.md")
+                },
               )
             }
-            .getOrElse { err ->
-              messages[replyIndex] =
-                messages[replyIndex].copy(text = "⚠ ${err.message ?: err.javaClass.simpleName}")
-              null
-            }
+          }
         }
-      readout =
-        result?.let { "${it.backend.name.lowercase()} · ${"%.1f".format(it.decodeTokensPerSec)} tok/s" }
-          ?: "error"
-      streaming = false
-    }
-  }
-
-  // imePadding() is load-bearing: on targetSdk 35 the app is edge-to-edge, so the manifest's
-  // adjustResize no longer shrinks the window for the keyboard. Without this, the input row sits
-  // behind the IME. systemBarsPadding keeps content clear of the status/nav bars.
-  Column(Modifier.fillMaxSize().systemBarsPadding().imePadding()) {
-    // Header — wordmark + CHAT label + streaming/backend readout.
-    Column(Modifier.padding(horizontal = 20.dp, vertical = 14.dp)) {
-      Row(verticalAlignment = Alignment.CenterVertically) {
-        Box(Modifier.size(9.dp).background(Amber, RoundedCornerShape(5.dp)))
-        Spacer(Modifier.size(10.dp))
-        Text("RELAIS", color = Amber, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold, fontSize = 18.sp, letterSpacing = 4.sp)
-        Spacer(Modifier.weight(1f))
-        Text("CHAT", color = Muted, fontFamily = FontFamily.Monospace, fontSize = 12.sp, letterSpacing = 2.sp)
+        if (reloadingModel) {
+          Spacer(Modifier.height(4.dp))
+          Text(
+            "reloading model — ${RelaisConfig.modelId(ctx)}…",
+            color = Amber,
+            fontFamily = FontFamily.Monospace,
+            fontSize = 11.sp,
+          )
+        }
       }
-      if (readout.isNotEmpty()) {
-        Spacer(Modifier.height(4.dp))
-        Text(readout, color = Muted, fontFamily = FontFamily.Monospace, fontSize = 11.sp)
+      Box(Modifier.fillMaxWidth().height(1.dp).background(Line))
+
+      // ChatMessageList owns its own LazyListState/autoscroll internally — no external listState
+      // is passed in here.
+      ChatMessageList(
+        turns = turns,
+        streamingText = streamingText,
+        streaming = streaming,
+        onCopy = { clipboard.setText(AnnotatedString(it)) },
+        onRegenerate = { vm.regenerate(it) },
+        onEditResend = { t, s -> vm.editAndResend(t, s) },
+        modifier = Modifier.weight(1f).fillMaxWidth().padding(horizontal = 16.dp),
+      )
+
+      Box(Modifier.fillMaxWidth().height(1.dp).background(Line))
+      // Attachment preview chip — shows what is staged for the next send.
+      pending?.let { att ->
+        Row(
+          Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
+          verticalAlignment = Alignment.CenterVertically,
+        ) {
+          val glyph = when (att) {
+            is Attachment.Image -> "🖼"
+            is Attachment.Audio -> "🎙"
+            is Attachment.Doc -> "📄"
+          }
+          Text("$glyph ${att.label}", color = Amber, fontFamily = FontFamily.Monospace, fontSize = 12.sp)
+          Spacer(Modifier.weight(1f))
+          Box(Modifier.clip(RoundedCornerShape(6.dp)).clickable { pending = null }.padding(4.dp)) {
+            Text("REMOVE", color = StopRed, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold, fontSize = 11.sp)
+          }
+        }
       }
-    }
-    Box(Modifier.fillMaxWidth().height(1.dp).background(Line))
-
-    LazyColumn(
-      state = listState,
-      modifier = Modifier.weight(1f).fillMaxWidth().padding(horizontal = 16.dp),
-      verticalArrangement = Arrangement.spacedBy(10.dp),
-      contentPadding = androidx.compose.foundation.layout.PaddingValues(vertical = 16.dp),
-    ) {
-      items(messages) { msg -> Bubble(msg) }
-    }
-
-    Box(Modifier.fillMaxWidth().height(1.dp).background(Line))
-    // Attachment preview chip — shows what is staged for the next send.
-    pending?.let { att ->
       Row(
-        Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
+        Modifier.fillMaxWidth().padding(12.dp),
         verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
       ) {
-        val glyph = when (att) {
-          is Attachment.Image -> "🖼"
-          is Attachment.Audio -> "🎙"
-          is Attachment.Doc -> "📄"
+        // Attach affordance. Text docs work on any model; image/PDF/audio additionally need the
+        // multimodal encoders — stageAttachment() rejects those with a clear message when text-only.
+        Box(
+          Modifier.clip(RoundedCornerShape(6.dp))
+            .clickable(enabled = !streaming) { pickFile.launch(ATTACH_MIME_TYPES) }
+            .padding(horizontal = 8.dp, vertical = 12.dp)
+        ) {
+          Text("＋", color = if (streaming) Muted else Amber, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold, fontSize = 20.sp)
         }
-        Text("$glyph ${att.label}", color = Amber, fontFamily = FontFamily.Monospace, fontSize = 12.sp)
-        Spacer(Modifier.weight(1f))
-        Box(Modifier.clip(RoundedCornerShape(6.dp)).clickable { pending = null }.padding(4.dp)) {
-          Text("REMOVE", color = StopRed, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold, fontSize = 11.sp)
+        OutlinedTextField(
+          value = draft,
+          onValueChange = { draft = it },
+          modifier = Modifier.weight(1f),
+          placeholder = { Text("Message…", color = Muted, fontFamily = FontFamily.Monospace, fontSize = 14.sp) },
+          textStyle = androidx.compose.ui.text.TextStyle(fontFamily = FontFamily.Monospace, fontSize = 14.sp, color = Paper),
+          singleLine = false,
+          maxLines = 4,
+          shape = RoundedCornerShape(6.dp),
+          colors =
+            TextFieldDefaults.colors(
+              focusedContainerColor = Panel,
+              unfocusedContainerColor = Panel,
+              focusedIndicatorColor = Amber.copy(alpha = 0.5f),
+              unfocusedIndicatorColor = Line,
+              cursorColor = Amber,
+            ),
+          keyboardActions = KeyboardActions(onSend = { send() }),
+        )
+        Button(
+          onClick = { if (streaming) vm.stop() else send() },
+          enabled = streaming || (!reloadingModel && (draft.isNotBlank() || pending != null)),
+          shape = RoundedCornerShape(6.dp),
+          colors =
+            ButtonDefaults.buttonColors(
+              containerColor = if (streaming) StopRed else Amber,
+              contentColor = Charcoal,
+              disabledContainerColor = Line,
+              disabledContentColor = Muted,
+            ),
+        ) {
+          Text(
+            if (streaming) "STOP" else "SEND",
+            fontFamily = FontFamily.Monospace,
+            fontWeight = FontWeight.Bold,
+            fontSize = 13.sp,
+            letterSpacing = 1.sp,
+          )
         }
-      }
-    }
-    Row(
-      Modifier.fillMaxWidth().padding(12.dp),
-      verticalAlignment = Alignment.CenterVertically,
-      horizontalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-      // Attach affordance. Text docs work on any model; image/PDF/audio additionally need the
-      // multimodal encoders — stageAttachment() rejects those with a clear message when text-only.
-      Box(
-        Modifier.clip(RoundedCornerShape(6.dp))
-          .clickable(enabled = !streaming) { pickFile.launch(ATTACH_MIME_TYPES) }
-          .padding(horizontal = 8.dp, vertical = 12.dp)
-      ) {
-        Text("＋", color = if (streaming) Muted else Amber, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold, fontSize = 20.sp)
-      }
-      OutlinedTextField(
-        value = draft,
-        onValueChange = { draft = it },
-        modifier = Modifier.weight(1f),
-        placeholder = { Text("Message…", color = Muted, fontFamily = FontFamily.Monospace, fontSize = 14.sp) },
-        textStyle = androidx.compose.ui.text.TextStyle(fontFamily = FontFamily.Monospace, fontSize = 14.sp, color = Paper),
-        singleLine = false,
-        maxLines = 4,
-        shape = RoundedCornerShape(6.dp),
-        colors =
-          TextFieldDefaults.colors(
-            focusedContainerColor = Panel,
-            unfocusedContainerColor = Panel,
-            focusedIndicatorColor = Amber.copy(alpha = 0.5f),
-            unfocusedIndicatorColor = Line,
-            cursorColor = Amber,
-          ),
-        keyboardActions = KeyboardActions(onSend = { send() }),
-      )
-      Button(
-        onClick = { send() },
-        enabled = (draft.isNotBlank() || pending != null) && !streaming,
-        shape = RoundedCornerShape(6.dp),
-        colors = ButtonDefaults.buttonColors(containerColor = Amber, contentColor = Charcoal, disabledContainerColor = Line, disabledContentColor = Muted),
-      ) {
-        Text("SEND", fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold, fontSize = 13.sp, letterSpacing = 1.sp)
       }
     }
   }
-}
 
-@Composable
-private fun Bubble(msg: ChatMsg) {
-  val isUser = msg.role == "user"
-  Row(Modifier.fillMaxWidth(), horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start) {
-    Box(
-      Modifier.widthIn(max = 320.dp)
-        .background(if (isUser) Amber.copy(alpha = 0.14f) else Panel, RoundedCornerShape(12.dp))
-        .then(if (isUser) Modifier else Modifier.border(1.dp, Line, RoundedCornerShape(12.dp)))
-        .padding(horizontal = 14.dp, vertical = 10.dp)
-    ) {
-      Text(
-        msg.text.ifEmpty { "…" },
-        color = Paper,
-        fontFamily = FontFamily.Monospace,
-        fontSize = 14.sp,
-      )
-    }
+  if (showModelSheet) {
+    RelaisModelSelectorSheet(
+      currentModelId = RelaisConfig.modelId(ctx),
+      hfToken = RelaisConfig.hfToken(ctx),
+      onPickRef = {
+        vm.switchModel(it.modelId)
+        showModelSheet = false
+      },
+      onPickManualId = {
+        vm.switchModel(it)
+        showModelSheet = false
+      },
+      onDismiss = { showModelSheet = false },
+    )
   }
 }
-
-/** The hosting activity's Context, for the in-process engine call. */
-@Composable private fun LocalActivityContext() = androidx.compose.ui.platform.LocalContext.current
 
 // ---------------------------------------------------------------------------------------------
 // Attachment staging — pure-ish helpers, all run on Dispatchers.IO.
