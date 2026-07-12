@@ -157,6 +157,7 @@ internal fun ChatScreen() {
   val turns by vm.turns.collectAsState()
   val streaming by vm.streaming.collectAsState()
   val streamingText by vm.streamingText.collectAsState()
+  val pendingPersistedTurnId by vm.pendingPersistedTurnId.collectAsState()
   val reloadingModel by vm.reloadingModel.collectAsState()
   val conversations by vm.conversations.collectAsState()
   val activeConversationId by vm.activeConversationId.collectAsState()
@@ -342,6 +343,7 @@ internal fun ChatScreen() {
         turns = turns,
         streamingText = streamingText,
         streaming = streaming,
+        pendingPersistedTurnId = pendingPersistedTurnId,
         onCopy = { clipboard.setText(AnnotatedString(it)) },
         onRegenerate = { vm.regenerate(it) },
         onEditResend = { t, s -> vm.editAndResend(t, s) },

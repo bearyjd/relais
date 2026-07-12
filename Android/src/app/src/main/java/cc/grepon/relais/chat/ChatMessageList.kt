@@ -55,12 +55,21 @@ fun ChatMessageList(
   turns: List<ChatTurn>,
   streamingText: String,
   streaming: Boolean,
+  pendingPersistedTurnId: String?,
   onCopy: (String) -> Unit,
   onRegenerate: (ChatTurn) -> Unit,
   onEditResend: (ChatTurn, String) -> Unit,
   modifier: Modifier = Modifier,
 ) {
   val listState = rememberLazyListState()
+
+  // ChatViewModel holds the streaming bubble up briefly after persisting the assistant turn, until
+  // that turn is reflected in [turns] (avoids a flicker frame with neither visible). That leaves a
+  // narrow window where both `turns` and `streaming` could be true for the *same* content — guard
+  // against rendering the bubble a second time once the persisted turn already covers it. Matched
+  // by turn id (not content) so identical consecutive assistant replies can't mis-suppress.
+  val showStreamingBubble =
+    shouldShowStreamingBubble(streaming, streamingText, turns.lastOrNull()?.id, pendingPersistedTurnId)
 
   LazyColumn(modifier = modifier, state = listState) {
     items(turns, key = { it.id }) { turn ->
@@ -70,7 +79,7 @@ fun ChatMessageList(
         AssistantTurnRow(turn = turn, onCopy = onCopy, onRegenerate = onRegenerate)
       }
     }
-    if (streaming) {
+    if (showStreamingBubble) {
       item(key = "streaming-in-progress") {
         BufferedFadingMarkdownText(
           text = streamingText,
@@ -82,7 +91,7 @@ fun ChatMessageList(
   }
 
   LaunchedEffect(turns.size, streamingText) {
-    val count = turns.size + (if (streaming) 1 else 0)
+    val count = turns.size + (if (showStreamingBubble) 1 else 0)
     if (count > 0) listState.animateScrollToItem(count - 1)
   }
 }

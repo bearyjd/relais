@@ -30,11 +30,13 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * Persistence-backed streaming chat view model for the "Chat Depth" in-app chat feature. Owns
@@ -67,6 +69,12 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
   private val _streaming = MutableStateFlow(false)
   val streaming: StateFlow<Boolean> = _streaming.asStateFlow()
+
+  // Set to the just-persisted assistant turn's id for the brief hand-off window (see
+  // streamAndPersist), so the UI can suppress the streaming bubble by id rather than by content —
+  // content equality misfires when two consecutive assistant turns happen to match.
+  private val _pendingPersistedTurnId = MutableStateFlow<String?>(null)
+  val pendingPersistedTurnId: StateFlow<String?> = _pendingPersistedTurnId.asStateFlow()
 
   private val _reloadingModel = MutableStateFlow(false)
   val reloadingModel: StateFlow<Boolean> = _reloadingModel.asStateFlow()
@@ -111,38 +119,49 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     cancelled.set(false)
     _streamingText.value = ""
     _streaming.value = true
-    withContext(Dispatchers.IO) {
-      runCatching {
-          val history = historyForRequest(repo.turnsFor(conversationId))
-          val transport = ChatTransportSelector(ctx).select()
-          transport.stream(
-            request =
-              ChatStreamRequest(
-                history = history,
-                userText = text,
-                imagePng = if (attachmentType == "image") attachmentBytes else null,
-                audioWav = if (attachmentType == "audio") attachmentBytes else null,
-              ),
-            onToken = { token -> _streamingText.value += token },
-            onReasoning = {},
-            shouldCancel = { cancelled.get() },
+    val persisted =
+      withContext(Dispatchers.IO) {
+        runCatching {
+            val history = historyForRequest(repo.turnsFor(conversationId))
+            val transport = ChatTransportSelector(ctx).select()
+            transport.stream(
+              request =
+                ChatStreamRequest(
+                  history = history,
+                  userText = text,
+                  imagePng = if (attachmentType == "image") attachmentBytes else null,
+                  audioWav = if (attachmentType == "audio") attachmentBytes else null,
+                ),
+              onToken = { token -> _streamingText.value += token },
+              onReasoning = {},
+              shouldCancel = { cancelled.get() },
+            )
+          }
+          .fold(
+            onSuccess = { result ->
+              repo.appendAssistantTurn(conversationId, result.text, result.modelId, result.backend.name)
+            },
+            onFailure = { error ->
+              if (error is kotlinx.coroutines.CancellationException) throw error
+              repo.appendAssistantTurn(
+                conversationId,
+                content = "[error] ${error.message ?: error::class.simpleName}",
+                modelId = RelaisConfig.modelId(ctx),
+                backend = "ERROR",
+              )
+            },
           )
-        }
-        .onSuccess { result ->
-          repo.appendAssistantTurn(conversationId, result.text, result.modelId, result.backend.name)
-        }
-        .onFailure { error ->
-          if (error is kotlinx.coroutines.CancellationException) throw error
-          repo.appendAssistantTurn(
-            conversationId,
-            content = "[error] ${error.message ?: error::class.simpleName}",
-            modelId = RelaisConfig.modelId(ctx),
-            backend = "ERROR",
-          )
-        }
+      }
+    // Keep the streaming bubble up until the just-persisted turn is actually reflected in [turns],
+    // so there's never a frame with neither the bubble nor the persisted turn visible. Bounded by a
+    // timeout so a missed/delayed Flow emission can't hang the UI in the streaming state forever.
+    _pendingPersistedTurnId.value = persisted.id
+    withTimeoutOrNull(TURN_PERSIST_AWAIT_TIMEOUT_MS) {
+      turns.first { list -> list.any { it.id == persisted.id } }
     }
     _streaming.value = false
     _streamingText.value = ""
+    _pendingPersistedTurnId.value = null
   }
 
   /** Flips the cancellation flag read by the in-flight transport's `shouldCancel`. */
@@ -224,5 +243,6 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
   private companion object {
     const val RELOAD_POLL_INTERVAL_MS = 500L
     const val MAX_RELOAD_POLL_ITERATIONS = 120 // 60s cap
+    const val TURN_PERSIST_AWAIT_TIMEOUT_MS = 3_000L
   }
 }
