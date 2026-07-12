@@ -49,104 +49,137 @@ class RelaisImagesEndpointTest {
     return (result as ImageRequestResult.Invalid).message
   }
 
+  // modelSteps used by most tests below: distinct from limits.defaultSteps (20) so a test that
+  // silently regressed to the old flat-default would fail loudly instead of coincidentally passing.
+  private val sdTurboSteps = 4
+
   // --- parseImageRequest: prompt ---
 
   @Test fun `minimal body applies all defaults`() {
-    val req = valid(parseImageRequest(JSONObject().put("prompt", "a red bicycle"), limits))
+    val req = valid(parseImageRequest(JSONObject().put("prompt", "a red bicycle"), limits, sdTurboSteps))
     assertEquals("a red bicycle", req.prompt)
     assertEquals(1, req.n)
     assertEquals("512x512", req.size)
-    assertEquals(20, req.steps)
+    assertEquals(4, req.steps) // #135: default steps come from the selected model (SD-Turbo=4), not a flat 20
     assertNull(req.seed)
   }
 
   @Test fun `missing prompt is invalid`() {
-    assertTrue(invalidMessage(parseImageRequest(JSONObject().put("n", 1), limits)).contains("prompt"))
+    assertTrue(invalidMessage(parseImageRequest(JSONObject().put("n", 1), limits, sdTurboSteps)).contains("prompt"))
   }
 
   @Test fun `blank prompt is invalid`() {
-    assertTrue(invalidMessage(parseImageRequest(JSONObject().put("prompt", "   "), limits)).contains("prompt"))
+    assertTrue(invalidMessage(parseImageRequest(JSONObject().put("prompt", "   "), limits, sdTurboSteps)).contains("prompt"))
   }
 
   @Test fun `non-string prompt is invalid`() {
     // optString would coerce 42 -> "42"; the raw-type check rejects it like OpenAI does.
-    assertTrue(invalidMessage(parseImageRequest(JSONObject(/* language=JSON */ """{"prompt":42}"""), limits)).contains("prompt"))
+    assertTrue(invalidMessage(parseImageRequest(JSONObject(/* language=JSON */ """{"prompt":42}"""), limits, sdTurboSteps)).contains("prompt"))
   }
 
   // --- parseImageRequest: response_format ---
 
   @Test fun `explicit b64_json is accepted`() {
-    val req = valid(parseImageRequest(JSONObject().put("prompt", "x").put("response_format", "b64_json"), limits))
+    val req = valid(parseImageRequest(JSONObject().put("prompt", "x").put("response_format", "b64_json"), limits, sdTurboSteps))
     assertEquals("x", req.prompt)
   }
 
   @Test fun `response_format url is rejected`() {
-    val msg = invalidMessage(parseImageRequest(JSONObject().put("prompt", "x").put("response_format", "url"), limits))
+    val msg = invalidMessage(parseImageRequest(JSONObject().put("prompt", "x").put("response_format", "url"), limits, sdTurboSteps))
     assertTrue(msg.contains("response_format"))
   }
 
   // --- parseImageRequest: size ---
 
   @Test fun `unsupported size is rejected`() {
-    val msg = invalidMessage(parseImageRequest(JSONObject().put("prompt", "x").put("size", "1024x1024"), limits))
+    val msg = invalidMessage(parseImageRequest(JSONObject().put("prompt", "x").put("size", "1024x1024"), limits, sdTurboSteps))
     assertTrue(msg.contains("size"))
     assertTrue("error lists the supported size", msg.contains("512x512"))
   }
 
   @Test fun `supported size is accepted`() {
-    val req = valid(parseImageRequest(JSONObject().put("prompt", "x").put("size", "512x512"), limits))
+    val req = valid(parseImageRequest(JSONObject().put("prompt", "x").put("size", "512x512"), limits, sdTurboSteps))
     assertEquals("512x512", req.size)
   }
 
   // --- parseImageRequest: n ---
 
   @Test fun `n within bounds is honored`() {
-    assertEquals(3, valid(parseImageRequest(JSONObject().put("prompt", "x").put("n", 3), limits)).n)
+    assertEquals(3, valid(parseImageRequest(JSONObject().put("prompt", "x").put("n", 3), limits, sdTurboSteps)).n)
   }
 
   @Test fun `n at the cap is honored`() {
-    assertEquals(4, valid(parseImageRequest(JSONObject().put("prompt", "x").put("n", 4), limits)).n)
+    assertEquals(4, valid(parseImageRequest(JSONObject().put("prompt", "x").put("n", 4), limits, sdTurboSteps)).n)
   }
 
   @Test fun `n above the cap is rejected (not silently clamped)`() {
-    val msg = invalidMessage(parseImageRequest(JSONObject().put("prompt", "x").put("n", 5), limits))
+    val msg = invalidMessage(parseImageRequest(JSONObject().put("prompt", "x").put("n", 5), limits, sdTurboSteps))
     assertTrue(msg.contains("n"))
   }
 
   @Test fun `n below one is rejected`() {
-    assertTrue(invalidMessage(parseImageRequest(JSONObject().put("prompt", "x").put("n", 0), limits)).contains("n"))
+    assertTrue(invalidMessage(parseImageRequest(JSONObject().put("prompt", "x").put("n", 0), limits, sdTurboSteps)).contains("n"))
   }
 
   @Test fun `non-integer n is rejected`() {
-    assertTrue(invalidMessage(parseImageRequest(JSONObject(/* language=JSON */ """{"prompt":"x","n":"two"}"""), limits)).contains("n"))
+    assertTrue(invalidMessage(parseImageRequest(JSONObject(/* language=JSON */ """{"prompt":"x","n":"two"}"""), limits, sdTurboSteps)).contains("n"))
   }
 
-  // --- parseImageRequest: x_relais_steps (clamped, not rejected) ---
+  // --- parseImageRequest: x_relais_steps (issue #135: defaults from the selected model, override clamped) ---
+
+  @Test fun `no override falls back to the selected model's own steps`() {
+    assertEquals(4, valid(parseImageRequest(JSONObject().put("prompt", "x"), limits, modelSteps = 4)).steps)
+    assertEquals(20, valid(parseImageRequest(JSONObject().put("prompt", "x"), limits, modelSteps = 20)).steps)
+  }
+
+  @Test fun `override wins over the model's steps`() {
+    assertEquals(30, valid(parseImageRequest(JSONObject().put("prompt", "x").put("x_relais_steps", 30), limits, sdTurboSteps)).steps)
+  }
 
   @Test fun `steps above max are clamped`() {
-    assertEquals(50, valid(parseImageRequest(JSONObject().put("prompt", "x").put("x_relais_steps", 100), limits)).steps)
+    assertEquals(50, valid(parseImageRequest(JSONObject().put("prompt", "x").put("x_relais_steps", 100), limits, sdTurboSteps)).steps)
   }
 
-  @Test fun `steps below min are clamped`() {
-    assertEquals(1, valid(parseImageRequest(JSONObject().put("prompt", "x").put("x_relais_steps", 0), limits)).steps)
+  @Test fun `zero requested steps falls back to the model's steps (not clamped to min)`() {
+    assertEquals(4, valid(parseImageRequest(JSONObject().put("prompt", "x").put("x_relais_steps", 0), limits, sdTurboSteps)).steps)
+  }
+
+  @Test fun `negative requested steps falls back to the model's steps`() {
+    assertEquals(4, valid(parseImageRequest(JSONObject().put("prompt", "x").put("x_relais_steps", -5), limits, sdTurboSteps)).steps)
   }
 
   @Test fun `steps within range are honored`() {
-    assertEquals(30, valid(parseImageRequest(JSONObject().put("prompt", "x").put("x_relais_steps", 30), limits)).steps)
+    assertEquals(30, valid(parseImageRequest(JSONObject().put("prompt", "x").put("x_relais_steps", 30), limits, sdTurboSteps)).steps)
   }
 
   @Test fun `non-integer steps are rejected`() {
-    assertTrue(invalidMessage(parseImageRequest(JSONObject(/* language=JSON */ """{"prompt":"x","x_relais_steps":"hi"}"""), limits)).contains("x_relais_steps"))
+    assertTrue(invalidMessage(parseImageRequest(JSONObject(/* language=JSON */ """{"prompt":"x","x_relais_steps":"hi"}"""), limits, sdTurboSteps)).contains("x_relais_steps"))
+  }
+
+  // --- resolveImageSteps (pure) ---
+
+  @Test fun `resolveImageSteps - null request uses model steps`() {
+    assertEquals(4, resolveImageSteps(null, modelSteps = 4, limits))
+  }
+
+  @Test fun `resolveImageSteps - positive request overrides model steps, clamped to bounds`() {
+    assertEquals(30, resolveImageSteps(30, modelSteps = 4, limits))
+    assertEquals(50, resolveImageSteps(999, modelSteps = 4, limits))
+  }
+
+  @Test fun `resolveImageSteps - non-positive request falls back to model steps`() {
+    assertEquals(20, resolveImageSteps(0, modelSteps = 20, limits))
+    assertEquals(20, resolveImageSteps(-1, modelSteps = 20, limits))
   }
 
   // --- parseImageRequest: seed ---
 
   @Test fun `seed is parsed when present`() {
-    assertEquals(42L, valid(parseImageRequest(JSONObject().put("prompt", "x").put("seed", 42), limits)).seed)
+    assertEquals(42L, valid(parseImageRequest(JSONObject().put("prompt", "x").put("seed", 42), limits, sdTurboSteps)).seed)
   }
 
   @Test fun `non-integer seed is rejected`() {
-    assertTrue(invalidMessage(parseImageRequest(JSONObject(/* language=JSON */ """{"prompt":"x","seed":"abc"}"""), limits)).contains("seed"))
+    assertTrue(invalidMessage(parseImageRequest(JSONObject(/* language=JSON */ """{"prompt":"x","seed":"abc"}"""), limits, sdTurboSteps)).contains("seed"))
   }
 
   // --- buildImagesResponse ---

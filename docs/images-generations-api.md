@@ -25,7 +25,7 @@ POST /v1/images/generations          Authorization: Bearer <node key>
 | `n`               | integer             | optional; default `1`. Range `[1, 2]` — each image is a fresh ~90 s process, so the batch is capped to bound time/heat. |
 | `size`            | string              | optional; default `"512x512"`. **Only `512x512`** is supported (SD 1.5/Turbo at 512²) — any other value → `400`. |
 | `response_format` | `"b64_json"`        | optional; default `"b64_json"`, the only supported value. A LAN node serves no hosted URLs, so `"url"` → `400`. |
-| `x_relais_steps`  | integer             | optional; defaults to the **selected model's** step count (turbo `4`, sd15 `20`), **clamped** to `[1, 50]`. |
+| `x_relais_steps`  | integer             | optional; a **positive** value is **clamped** to `[1, 50]`; **absent or non-positive** (`0`/negative) falls back to the **selected model's** step count (turbo `4`, sd15 `20`). |
 | `seed`            | integer             | optional; reproducible output. Absent → the backend picks one.        |
 
 ```json

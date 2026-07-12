@@ -77,12 +77,16 @@ internal sealed interface ImageRequestResult {
  * - `n`: integer in `[1, maxImages]`; out of range → 400 (mirrors how `/v1/embeddings` rejects an
  *   over-cap batch rather than silently clamping).
  * - `x_relais_steps`: integer; **clamped** to `[minSteps, maxSteps]` (a quality/time knob, so clamping
- *   is friendlier than rejecting). Default [ImageGenLimits.defaultSteps] when absent.
+ *   is friendlier than rejecting). Absent (or `<= 0`, which is not a meaningful step count) falls back
+ *   to [modelSteps] — the *selected model's own* step default (e.g. SD-Turbo=4, SD-1.5=20) — rather than
+ *   a flat constant, so a default request doesn't run 5x the model's intended work (issue #135: a flat
+ *   20-step default on SD-Turbo, a 4-step model, blew the node's 720s watchdog). See [resolveImageSteps].
  * - `seed`: optional integer.
  *
- * Pure — no Context, no Android types.
+ * Pure — no Context, no Android types. [modelSteps] is resolved by the caller (the route reads the
+ * currently-selected [cc.grepon.relais.imagegen.ImageModel.steps]), keeping this function Context-free.
  */
-internal fun parseImageRequest(body: JSONObject, limits: ImageGenLimits): ImageRequestResult {
+internal fun parseImageRequest(body: JSONObject, limits: ImageGenLimits, modelSteps: Int): ImageRequestResult {
   // prompt: required non-blank string (optString would coerce a bare number/bool, so check the raw type)
   if (!body.has("prompt") || body.isNull("prompt")) return ImageRequestResult.Invalid("missing 'prompt'")
   val rawPrompt = body.get("prompt")
@@ -118,13 +122,14 @@ internal fun parseImageRequest(body: JSONObject, limits: ImageGenLimits): ImageR
       }
     } else 1
 
-  // x_relais_steps: integer, clamped to [minSteps, maxSteps]
-  val steps: Int =
+  // x_relais_steps: integer; absent/non-positive falls back to modelSteps (see resolveImageSteps)
+  val requestedSteps: Int? =
     if (body.has("x_relais_steps") && !body.isNull("x_relais_steps")) {
       val raw = body.get("x_relais_steps")
       if (raw !is Number) return ImageRequestResult.Invalid("'x_relais_steps' must be an integer")
-      raw.toInt().coerceIn(limits.minSteps, limits.maxSteps)
-    } else limits.defaultSteps
+      raw.toInt()
+    } else null
+  val steps = resolveImageSteps(requestedSteps, modelSteps, limits)
 
   // seed: optional integer
   val seed: Long? =
@@ -135,6 +140,23 @@ internal fun parseImageRequest(body: JSONObject, limits: ImageGenLimits): ImageR
     } else null
 
   return ImageRequestResult.Valid(ImageGenRequest(rawPrompt, n, size, steps, seed))
+}
+
+/**
+ * Resolves the effective step count for an image-gen request (issue #135): the requester's
+ * [requestedSteps] wins when it's a meaningful positive value (clamped to [ImageGenLimits.minSteps]..
+ * [ImageGenLimits.maxSteps]); otherwise falls back to [modelSteps] — the *selected model's own* step
+ * default (e.g. SD-Turbo=4, SD-1.5=20) rather than one flat constant shared by every model. A flat
+ * 20-step default on SD-Turbo (a 4-step model) ran 5x the intended work, which on G5-CPU exceeded the
+ * 720s node watchdog and surfaced as an HTTP 500 for a plain default-args request.
+ *
+ * `null` (absent `x_relais_steps`) and non-positive values (`<= 0`, not a meaningful step count) both
+ * fall back to [modelSteps]; a positive override is still clamped to the configured bounds. Pure — no
+ * Context, no Android types.
+ */
+internal fun resolveImageSteps(requestedSteps: Int?, modelSteps: Int, limits: ImageGenLimits): Int {
+  val base = if (requestedSteps != null && requestedSteps > 0) requestedSteps else modelSteps
+  return base.coerceIn(limits.minSteps, limits.maxSteps)
 }
 
 /**
