@@ -58,7 +58,9 @@ glance = "1.1.1"  # Glance app-widget (#3); pinned to the cached version so --of
 # end — see docs/images-generations-api.md). Transitively pulls com.google.mlkit + play-services (would
 # break the degoogled GMS=0 dex gate), so it is `fullImplementation` with onnxruntime/ktor transitives
 # excluded (unused image-gen-irrelevant llmedge features). JitPack-hosted (scoped repo in settings).
-llmedge = "0.4.2beta1"
+# Pinned to the stable 0.4.2 tag (Aatricks/llmedge V0.4.2) — was 0.4.2beta1; stabilized for the
+# Play/full release per #134 (same feature version as the beta, just the released tag).
+llmedge = "0.4.2"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
