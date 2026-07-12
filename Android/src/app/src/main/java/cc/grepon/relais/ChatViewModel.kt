@@ -17,6 +17,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import cc.grepon.relais.chat.ChatStreamRequest
 import cc.grepon.relais.chat.ChatTransportSelector
+import cc.grepon.relais.chat.ERROR_BACKEND
 import cc.grepon.relais.chat.historyForRequest
 import cc.grepon.relais.data.ChatTurn
 import cc.grepon.relais.data.Conversation
@@ -49,7 +50,18 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
   private val repo = ChatRepository(app, RelaisDatabase.get(app).chatDao())
 
+  /** One selector (and one owned [HttpClient]) for the ViewModel's lifetime; closed in [onCleared]. */
+  private val transportSelector = ChatTransportSelector(app)
+
   private val cancelled = AtomicBoolean(false)
+
+  /**
+   * Guards against overlapping streams: [send]/[regenerate]/[editAndResend] all mutate the same
+   * `_streamingText` and append assistant turns, so a second trigger while one is in flight would
+   * interleave tokens and corrupt history. Acquired synchronously before launching; released in the
+   * launched coroutine's `finally`.
+   */
+  private val inFlight = AtomicBoolean(false)
 
   val conversations: StateFlow<List<Conversation>> =
     repo
@@ -93,20 +105,35 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
    * completion. Creates a conversation first (title = first ~40 chars of [text]) if none is active.
    */
   fun send(text: String, attachmentType: String?, attachmentBytes: ByteArray?) {
+    if (!inFlight.compareAndSet(false, true)) return
     val ctx = getApplication<Application>()
     viewModelScope.launch {
-      val convId =
-        _activeConversationId.value
-          ?: repo
-            .createConversation(
-              title = text.take(40).ifBlank { "New chat" },
-              modelId = RelaisConfig.modelId(ctx),
-            )
-            .also { _activeConversationId.value = it }
+      try {
+        val convId =
+          _activeConversationId.value
+            ?: repo
+              .createConversation(
+                title = text.take(40).ifBlank { "New chat" },
+                modelId = RelaisConfig.modelId(ctx),
+              )
+              .also { _activeConversationId.value = it }
 
-      repo.appendUserTurn(convId, text, attachmentType, attachmentBytes)
-      streamAndPersist(convId, text, attachmentType, attachmentBytes)
+        appendUserAndStream(convId, text, attachmentType, attachmentBytes)
+      } finally {
+        inFlight.set(false)
+      }
     }
+  }
+
+  /** Persists a new user turn, then streams and persists the assistant reply. */
+  private suspend fun appendUserAndStream(
+    conversationId: String,
+    text: String,
+    attachmentType: String?,
+    attachmentBytes: ByteArray?,
+  ) {
+    repo.appendUserTurn(conversationId, text, attachmentType, attachmentBytes)
+    streamAndPersist(conversationId, text, attachmentType, attachmentBytes)
   }
 
   private suspend fun streamAndPersist(
@@ -119,49 +146,54 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     cancelled.set(false)
     _streamingText.value = ""
     _streaming.value = true
-    val persisted =
-      withContext(Dispatchers.IO) {
-        runCatching {
-            val history = historyForRequest(repo.turnsFor(conversationId))
-            val transport = ChatTransportSelector(ctx).select()
-            transport.stream(
-              request =
-                ChatStreamRequest(
-                  history = history,
-                  userText = text,
-                  imagePng = if (attachmentType == "image") attachmentBytes else null,
-                  audioWav = if (attachmentType == "audio") attachmentBytes else null,
-                ),
-              onToken = { token -> _streamingText.value += token },
-              onReasoning = {},
-              shouldCancel = { cancelled.get() },
-            )
-          }
-          .fold(
-            onSuccess = { result ->
-              repo.appendAssistantTurn(conversationId, result.text, result.modelId, result.backend.name)
-            },
-            onFailure = { error ->
-              if (error is kotlinx.coroutines.CancellationException) throw error
-              repo.appendAssistantTurn(
-                conversationId,
-                content = "[error] ${error.message ?: error::class.simpleName}",
-                modelId = RelaisConfig.modelId(ctx),
-                backend = "ERROR",
+    try {
+      val persisted =
+        withContext(Dispatchers.IO) {
+          runCatching {
+              val history = historyForRequest(repo.turnsFor(conversationId))
+              val transport = transportSelector.select()
+              transport.stream(
+                request =
+                  ChatStreamRequest(
+                    history = history,
+                    userText = text,
+                    imagePng = if (attachmentType == "image") attachmentBytes else null,
+                    audioWav = if (attachmentType == "audio") attachmentBytes else null,
+                  ),
+                onToken = { token -> _streamingText.value += token },
+                onReasoning = {},
+                shouldCancel = { cancelled.get() },
               )
-            },
-          )
+            }
+            .fold(
+              onSuccess = { result ->
+                repo.appendAssistantTurn(conversationId, result.text, result.modelId, result.backend.name)
+              },
+              onFailure = { error ->
+                if (error is kotlinx.coroutines.CancellationException) throw error
+                repo.appendAssistantTurn(
+                  conversationId,
+                  content = "[error] ${error.message ?: error::class.simpleName}",
+                  modelId = RelaisConfig.modelId(ctx),
+                  backend = ERROR_BACKEND,
+                )
+              },
+            )
+        }
+      // Keep the streaming bubble up until the just-persisted turn is actually reflected in [turns],
+      // so there's never a frame with neither the bubble nor the persisted turn visible. Bounded by a
+      // timeout so a missed/delayed Flow emission can't hang the UI in the streaming state forever.
+      _pendingPersistedTurnId.value = persisted.id
+      withTimeoutOrNull(TURN_PERSIST_AWAIT_TIMEOUT_MS) {
+        turns.first { list -> list.any { it.id == persisted.id } }
       }
-    // Keep the streaming bubble up until the just-persisted turn is actually reflected in [turns],
-    // so there's never a frame with neither the bubble nor the persisted turn visible. Bounded by a
-    // timeout so a missed/delayed Flow emission can't hang the UI in the streaming state forever.
-    _pendingPersistedTurnId.value = persisted.id
-    withTimeoutOrNull(TURN_PERSIST_AWAIT_TIMEOUT_MS) {
-      turns.first { list -> list.any { it.id == persisted.id } }
+    } finally {
+      // Reset in `finally` so a scope/coroutine cancel (e.g. ViewModel cleared mid-stream) still
+      // clears the streaming flags rather than leaving the UI stuck in the "streaming" state.
+      _streaming.value = false
+      _streamingText.value = ""
+      _pendingPersistedTurnId.value = null
     }
-    _streaming.value = false
-    _streamingText.value = ""
-    _pendingPersistedTurnId.value = null
   }
 
   /** Flips the cancellation flag read by the in-flight transport's `shouldCancel`. */
@@ -181,10 +213,16 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     val precedingUserTurn =
       ordered.subList(0, assistantIndex).lastOrNull { it.role == "user" } ?: return
 
+    if (!inFlight.compareAndSet(false, true)) return
     viewModelScope.launch {
-      repo.truncateAfter(convId, precedingUserTurn)
-      val bytes = precedingUserTurn.attachmentPath?.let { path -> readAttachment(path) }
-      streamAndPersist(convId, precedingUserTurn.content, precedingUserTurn.attachmentType, bytes)
+      try {
+        repo.truncateAfter(convId, precedingUserTurn)
+        val bytes = precedingUserTurn.attachmentPath?.let { path -> readAttachment(path) }
+        val type = if (bytes != null) precedingUserTurn.attachmentType else null
+        streamAndPersist(convId, precedingUserTurn.content, type, bytes)
+      } finally {
+        inFlight.set(false)
+      }
     }
   }
 
@@ -196,14 +234,22 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     if (userIndex < 0) return
     val precedingTurn = ordered.getOrNull(userIndex - 1)
 
+    if (!inFlight.compareAndSet(false, true)) return
     viewModelScope.launch {
-      val bytes = userTurn.attachmentPath?.let { path -> readAttachment(path) } // read BEFORE truncation
-      if (precedingTurn != null) {
-        repo.truncateAfter(convId, precedingTurn)
-      } else {
-        repo.truncateAfter(convId, userTurn.copy(createdAt = userTurn.createdAt - 1))
+      try {
+        val bytes = userTurn.attachmentPath?.let { path -> readAttachment(path) } // read BEFORE truncation
+        // Only carry the attachment type if the bytes are actually still on disk — otherwise the
+        // resent turn would persist a type with no data (a "phantom attachment").
+        val type = if (bytes != null) userTurn.attachmentType else null
+        if (precedingTurn != null) {
+          repo.truncateAfter(convId, precedingTurn)
+        } else {
+          repo.truncateAfter(convId, userTurn.copy(createdAt = userTurn.createdAt - 1))
+        }
+        appendUserAndStream(convId, newText, type, bytes)
+      } finally {
+        inFlight.set(false)
       }
-      send(newText, userTurn.attachmentType, bytes)
     }
   }
 
@@ -238,6 +284,11 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         _activeConversationId.value = null
       }
     }
+  }
+
+  override fun onCleared() {
+    super.onCleared()
+    transportSelector.close()
   }
 
   private companion object {

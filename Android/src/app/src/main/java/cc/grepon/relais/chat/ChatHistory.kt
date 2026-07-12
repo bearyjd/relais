@@ -16,12 +16,26 @@ import cc.grepon.relais.ParsedTurn
 import cc.grepon.relais.data.ChatTurn
 
 /**
- * Maps persisted turns to request history, EXCLUDING the final (live) user turn.
+ * Marker stored in [ChatTurn.answeredByBackend] for a synthetic `[error] …` assistant turn (a
+ * failed stream). These are shown in the UI but must never be fed back into the model as if the
+ * assistant really said them — see [historyForRequest].
+ */
+const val ERROR_BACKEND = "ERROR"
+
+/**
+ * Maps persisted turns to request history, EXCLUDING the final (live) user turn and any synthetic
+ * error turns.
  *
  * [allTurns] is expected ordered oldest-first (as returned by `ChatDao.turnsFor` /
  * `ChatRepository.turnsFor`, `ORDER BY createdAt ASC, id ASC`), with the current live turn always
  * last. Callers (`ChatViewModel.streamAndPersist`) pass that live turn separately as `userText`, so
  * it must not also appear in `history` or the engine/HTTP-server would see it twice.
+ *
+ * Synthetic `[error]` assistant turns ([ERROR_BACKEND]) are dropped so a prior failure never
+ * pollutes the model's context (it would otherwise see `[error] …` as a genuine assistant reply).
  */
 fun historyForRequest(allTurns: List<ChatTurn>): List<ParsedTurn> =
-  allTurns.dropLast(1).map { turn -> ParsedTurn(role = turn.role, text = turn.content) }
+  allTurns
+    .dropLast(1)
+    .filterNot { turn -> turn.role == "assistant" && turn.answeredByBackend == ERROR_BACKEND }
+    .map { turn -> ParsedTurn(role = turn.role, text = turn.content) }
