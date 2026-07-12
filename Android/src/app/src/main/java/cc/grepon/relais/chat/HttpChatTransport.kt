@@ -67,6 +67,13 @@ class HttpChatTransport(private val context: Context, private val client: HttpCl
         audioWav = request.audioWav,
         stream = true,
       )
+    // Wall-clock token-rate proxy: one "token" per content delta received, timed from the first
+    // delta to the last. Approximate (a delta may carry more than one model token), but real —
+    // far better than a hardcoded value.
+    var deltaCount = 0
+    var firstDeltaNanos = 0L
+    var lastDeltaNanos = 0L
+    var finishReason: String? = null
     try {
       client.sse(
         urlString = CHAT_URL,
@@ -81,20 +88,33 @@ class HttpChatTransport(private val context: Context, private val client: HttpCl
           if (shouldCancel()) throw ChatStreamStop()
           val raw = event.data ?: return@collect
           if (raw == SSE_DONE_SENTINEL) throw ChatStreamStop()
-          parseSseContentDelta("data: $raw")?.let { delta ->
+          val line = "data: $raw"
+          parseSseContentDelta(line)?.let { delta ->
+            val now = System.nanoTime()
+            if (deltaCount == 0) firstDeltaNanos = now
+            lastDeltaNanos = now
+            deltaCount++
             onToken(delta)
             assembled.append(delta)
           }
+          parseSseFinishReason(line)?.let { finishReason = it }
         }
       }
     } catch (e: ChatStreamStop) {
       // Expected early exit: [DONE] sentinel or a cooperative cancel.
     }
+    val elapsedSeconds = (lastDeltaNanos - firstDeltaNanos) / 1_000_000_000.0
+    // Rate over the (n-1) inter-delta intervals, not the raw count — delta #1 anchors t=0, so
+    // dividing the whole count by the first→last window would inflate the rate on short streams.
+    val tokensPerSec = if (deltaCount > 1 && elapsedSeconds > 0.0) (deltaCount - 1) / elapsedSeconds else 0.0
     return ChatStreamResult(
       text = assembled.toString(),
+      // The loopback HTTP path has no way to learn which accelerator served the request — neither
+      // the SSE stream nor `/health` expose a backend field. GPU_LITERTLM is a placeholder, not a
+      // verified value; a real fix needs a `backend`/enum change (see task follow-up note).
       backend = RelaisBackend.GPU_LITERTLM,
-      tokensPerSec = 0.0,
-      finishReason = "stop",
+      tokensPerSec = tokensPerSec,
+      finishReason = finishReason ?: "stop",
       modelId = RelaisConfig.modelId(context),
     )
   }

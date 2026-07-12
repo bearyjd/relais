@@ -40,3 +40,26 @@ fun parseSseContentDelta(line: String): String? {
     null
   }
 }
+
+/**
+ * Parses one line of an OpenAI-compatible `/v1/chat/completions` SSE stream and returns
+ * `choices[0].finish_reason` (e.g. `"stop"`, `"length"`), if present and non-null.
+ *
+ * Returns null for: non-`data:` lines, the `[DONE]` sentinel, chunks with no (or a null)
+ * `finish_reason` (e.g. an in-progress content delta), and any line that fails to parse as JSON.
+ */
+fun parseSseFinishReason(line: String): String? {
+  if (!line.startsWith(SSE_DATA_PREFIX)) return null
+  val remainder = line.removePrefix(SSE_DATA_PREFIX)
+  if (remainder == SSE_DONE_SENTINEL) return null
+  return try {
+    val choice = JSONObject(remainder).optJSONArray("choices")?.optJSONObject(0)
+    if (choice != null && choice.has("finish_reason") && !choice.isNull("finish_reason")) {
+      choice.optString("finish_reason")
+    } else {
+      null
+    }
+  } catch (e: Exception) {
+    null
+  }
+}
