@@ -38,6 +38,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 
 /**
@@ -56,13 +57,16 @@ fun ModelsScreen() {
   var modelRef by remember { mutableStateOf(RelaisConfig.modelRef(ctx)) }
   var showSheet by remember { mutableStateOf(false) }
   var reloading by remember { mutableStateOf(false) }
+  var reloadJob by remember { mutableStateOf<Job?>(null) }
 
   // Mirror the in-chat selector's reload feedback (both routes persist through [ModelSwitch]): after
   // a pick, show "reloading model…" until the engine settles, so this screen and the chat sheet
-  // behave identically instead of ModelsScreen switching silently.
+  // behave identically instead of ModelsScreen switching silently. Cancel any in-flight poll first
+  // so a rapid re-pick doesn't leave overlapping pollers flickering the flag.
   fun observeReload() {
+    reloadJob?.cancel()
     reloading = true
-    scope.launch { reloading = !ModelSwitch.awaitReload() }
+    reloadJob = scope.launch { reloading = !ModelSwitch.awaitReload() }
   }
 
   Column(

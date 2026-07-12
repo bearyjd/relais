@@ -90,6 +90,9 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
   private val _reloadingModel = MutableStateFlow(false)
   val reloadingModel: StateFlow<Boolean> = _reloadingModel.asStateFlow()
 
+  /** The in-flight reload-observation poll, cancelled and replaced on each model switch. */
+  private var reloadJob: kotlinx.coroutines.Job? = null
+
   /** Clears the active conversation; a new one is created lazily on the next [send]. */
   fun newConversation() {
     _activeConversationId.value = null
@@ -271,10 +274,14 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
   /** Reflects [RelaisEngine]'s lazy model reload into [reloadingModel] (see [ModelSwitch.awaitReload]). */
   private fun observeReload() {
-    viewModelScope.launch {
-      _reloadingModel.value = true
-      _reloadingModel.value = !ModelSwitch.awaitReload()
-    }
+    // Cancel any in-flight poll first so a rapid re-pick doesn't leave overlapping pollers racing to
+    // write _reloadingModel (harmless final value, but avoids flicker and wasted coroutines).
+    reloadJob?.cancel()
+    reloadJob =
+      viewModelScope.launch {
+        _reloadingModel.value = true
+        _reloadingModel.value = !ModelSwitch.awaitReload()
+      }
   }
 
   fun rename(id: String, title: String) {
