@@ -59,6 +59,7 @@ import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -81,6 +82,7 @@ import cc.grepon.relais.chat.ChatMessageList
 import cc.grepon.relais.chat.conversationToMarkdown
 import java.io.ByteArrayOutputStream
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -164,6 +166,9 @@ internal fun ChatScreen() {
 
   var draft by remember { mutableStateOf("") }
   var pending by remember { mutableStateOf<Attachment?>(null) }
+  // Transient reason an attach was rejected (e.g. text-only model, undecodable file). Surfaced to
+  // the user near the input and auto-cleared — otherwise a failed attach silently does nothing.
+  var attachError by remember { mutableStateOf<String?>(null) }
   var showModelSheet by remember { mutableStateOf(false) }
   var showOverflowMenu by remember { mutableStateOf(false) }
   val drawerState = rememberDrawerState(DrawerValue.Closed)
@@ -211,8 +216,14 @@ internal fun ChatScreen() {
               " multimodal=$multimodal",
           )
           when (result) {
-            is StageResult.Ok -> pending = result.attachment
-            is StageResult.Err -> android.util.Log.w(CHAT_TAG, "attach failed: ${result.message}")
+            is StageResult.Ok -> {
+              pending = result.attachment
+              attachError = null
+            }
+            is StageResult.Err -> {
+              android.util.Log.w(CHAT_TAG, "attach failed: ${result.message}")
+              attachError = result.message
+            }
           }
         }
       }
@@ -351,6 +362,21 @@ internal fun ChatScreen() {
       )
 
       Box(Modifier.fillMaxWidth().height(1.dp).background(Line))
+      // Attach-rejection notice: why the last pick didn't stage (text-only model, bad file, …).
+      // Auto-clears so it doesn't linger. Without this the failure is invisible and attach looks broken.
+      attachError?.let { msg ->
+        LaunchedEffect(msg) {
+          delay(5000)
+          attachError = null
+        }
+        Text(
+          msg,
+          color = StopRed,
+          fontFamily = FontFamily.Monospace,
+          fontSize = 12.sp,
+          modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
+        )
+      }
       // Attachment preview chip — shows what is staged for the next send.
       pending?.let { att ->
         Row(
