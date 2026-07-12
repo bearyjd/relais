@@ -65,6 +65,11 @@ class MainActivity : ComponentActivity() {
   private var splashScreenAboutToExit: Boolean = false
   private var contentSet: Boolean = false
 
+  // Compose-observable deep link: MainActivity is singleTop, so a deep link arriving while the
+  // app is already running is redelivered via onNewIntent rather than a fresh onCreate. Updating
+  // this field re-fires RelaisAppShell's LaunchedEffect(deepLinkUri) so the warm app navigates.
+  private var deepLinkUri by mutableStateOf<android.net.Uri?>(null)
+
   override fun onCreate(savedInstanceState: Bundle?) {
     // We intentionally pass null to discard the saved instance state bundle.
     // This prevents Jetpack Compose from automatically restoring the previous screen
@@ -89,6 +94,8 @@ class MainActivity : ComponentActivity() {
       }
     }
 
+    deepLinkUri = intent?.data
+
     fun setContent() {
       if (contentSet) {
         return
@@ -98,7 +105,7 @@ class MainActivity : ComponentActivity() {
         GalleryTheme {
           Surface(modifier = Modifier.fillMaxSize()) {
             // (RelaisAppShell is same package cc.grepon.relais — no import needed)
-            RelaisAppShell(modelManagerViewModel = modelManagerViewModel, deepLinkUri = intent?.data)
+            RelaisAppShell(modelManagerViewModel = modelManagerViewModel, deepLinkUri = deepLinkUri)
 
             // Fade out a "mask" that has the same color as the background of the splash screen
             // to reveal the actual app content.
@@ -202,6 +209,11 @@ class MainActivity : ComponentActivity() {
         intent.data = link.toUri()
       }
     }
+
+    // Redeliver the (possibly just-updated) deep link to the running shell. RelaisAppShell's
+    // LaunchedEffect(deepLinkUri) re-fires on this change and navigates via launchSingleTop, so a
+    // warm re-delivery of the same link is a no-op rather than a duplicate destination.
+    deepLinkUri = intent.data
   }
 
   override fun onResume() {

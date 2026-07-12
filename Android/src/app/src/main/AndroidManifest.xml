@@ -83,6 +83,7 @@
         <activity
             android:name="cc.grepon.relais.MainActivity"
             android:exported="true"
+            android:launchMode="singleTop"
             android:theme="@style/Theme.Relais.SplashScreen"
             android:screenOrientation="portrait"
             android:windowSoftInputMode="adjustResize"
