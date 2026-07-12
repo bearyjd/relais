@@ -26,7 +26,6 @@ import java.io.File
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -258,18 +257,23 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     return if (file.exists()) file.readBytes() else null
   }
 
-  /** Switches the served model and reflects [RelaisEngine]'s reload into [reloadingModel]. */
-  fun switchModel(modelId: String) {
-    val ctx = getApplication<Application>()
-    RelaisConfig.setModelId(ctx, modelId)
+  /** Switches to a curated ref (persisting the full ref, not just its id) and reflects the reload. */
+  fun switchToRef(ref: cc.grepon.relais.data.RelaisModelRef) {
+    ModelSwitch.applyRef(getApplication(), ref)
+    observeReload()
+  }
+
+  /** Switches to a raw manual id (dropping any curated ref) and reflects the reload. */
+  fun switchToManualId(modelId: String) {
+    ModelSwitch.applyManualId(getApplication(), modelId)
+    observeReload()
+  }
+
+  /** Reflects [RelaisEngine]'s lazy model reload into [reloadingModel] (see [ModelSwitch.awaitReload]). */
+  private fun observeReload() {
     viewModelScope.launch {
       _reloadingModel.value = true
-      var iterations = 0
-      while (RelaisEngine.startupInProgress && iterations < MAX_RELOAD_POLL_ITERATIONS) {
-        delay(RELOAD_POLL_INTERVAL_MS)
-        iterations++
-      }
-      _reloadingModel.value = !RelaisEngine.isReady
+      _reloadingModel.value = !ModelSwitch.awaitReload()
     }
   }
 
@@ -292,8 +296,6 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
   }
 
   private companion object {
-    const val RELOAD_POLL_INTERVAL_MS = 500L
-    const val MAX_RELOAD_POLL_ITERATIONS = 120 // 60s cap
     const val TURN_PERSIST_AWAIT_TIMEOUT_MS = 3_000L
   }
 }

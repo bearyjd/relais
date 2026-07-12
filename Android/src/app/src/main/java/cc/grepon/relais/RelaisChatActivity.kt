@@ -431,11 +431,11 @@ internal fun ChatScreen() {
       currentModelId = RelaisConfig.modelId(ctx),
       hfToken = RelaisConfig.hfToken(ctx),
       onPickRef = {
-        vm.switchModel(it.modelId)
+        vm.switchToRef(it)
         showModelSheet = false
       },
       onPickManualId = {
-        vm.switchModel(it)
+        vm.switchToManualId(it)
         showModelSheet = false
       },
       onDismiss = { showModelSheet = false },
