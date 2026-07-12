@@ -73,9 +73,10 @@ private const val ALLOWLIST_BASE_URL =
 object RelaisModelProvisioner {
 
   /**
-   * Pinned G5-compatible default for a fresh Pixel 10. Gemma 4 E2B-it is verified to provision
-   * and serve (HTTP 200) on Tensor G5 (rango). Substituted BEFORE the G5 gate fires so the gate
-   * never sees E4B on a fresh Pixel 10.
+   * Preferred default for a fresh Pixel 10 (Tensor G5): the TPU-native Gemma 4 E2B-it. Kept even
+   * after the E4B `isG5Incompatible` load-gate was removed (E4B now serves on G5) — E2B-G5 runs on
+   * the Tensor TPU at ~2× the throughput and better power efficiency of E4B on the GPU, which is the
+   * right out-of-box default for an always-on node. E4B remains freely selectable.
    *
    * Values resolved via the HF API (commit 361a4010, LFS size 2 588 147 712 bytes) and pinned here
    * so no network is needed to select the default on first boot.
@@ -200,10 +201,10 @@ object RelaisModelProvisioner {
     // RESOLVING — the offline fast paths below finish before ever reaching DOWNLOADING, so a node
     // that boots from a persisted/pre-staged model never shows a stale phase from a prior attempt.
     RelaisNodeProgress.phase = ProvisionPhase.RESOLVING
-    // Fresh Pixel 10 (Tensor G5): substitute the G5-compatible default before ANY provisioning,
-    // so the E4B default never reaches the G5 gate — even via a persisted path or a pre-staged
-    // E4B file. setModelRef clears the stale modelPath and sets modelId=E2B, so the fast-paths
-    // below skip and the ref fast-path in resolveModel provisions E2B. Self-healing if apply() races.
+    // Fresh Pixel 10 (Tensor G5): default to the faster TPU-native E2B-G5 (see [G5_DEFAULT_REF])
+    // before ANY provisioning. setModelRef clears the stale modelPath and sets modelId=E2B, so the
+    // fast-paths below skip and the ref fast-path in resolveModel provisions E2B. Self-healing if
+    // apply() races. (E4B is no longer blocked on G5 — this is a perf-preference default, not a gate.)
     deviceDefaultRef(isPixel10(), RelaisConfig.modelRef(context) != null, RelaisConfig.modelId(context))?.let { ref ->
       Log.i(TAG, "Fresh Pixel 10: defaulting to G5-compatible ${ref.modelId}")
       RelaisConfig.setModelRef(context, ref)

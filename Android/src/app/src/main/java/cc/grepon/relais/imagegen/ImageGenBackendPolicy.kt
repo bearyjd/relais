@@ -32,7 +32,8 @@ package cc.grepon.relais.imagegen
  * to the Vulkan-cold path on Mali, and it actually produces an image instead of wedging.
  *
  * Pure so it is JVM-testable; the caller supplies [isPixel10] from
- * [cc.grepon.relais.common.isPixel10]. Mirrors the SoC-gating precedent of
- * `RelaisEngine.isG5Incompatible`.
+ * [cc.grepon.relais.common.isPixel10]. This is a distinct, still-needed SoC gate: the PowerVR/Vulkan
+ * image-gen deadlock on Pixel 10 is unrelated to (and outlived) the former LLM `isG5Incompatible`
+ * gate, which was removed once gemma-4-E4B was verified to serve on Tensor G5.
  */
 fun imageGenForcesCpuBackend(isPixel10: Boolean): Boolean = isPixel10

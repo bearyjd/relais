@@ -18,7 +18,6 @@ package cc.grepon.relais
 
 import android.content.Context
 import android.util.Log
-import cc.grepon.relais.common.isPixel10
 import com.google.ai.edge.litertlm.Backend
 import com.google.ai.edge.litertlm.Content
 import com.google.ai.edge.litertlm.Contents
@@ -52,25 +51,6 @@ private const val DEFAULT_TOP_K = 64
 private const val DEFAULT_TOP_P = 0.95
 private const val DEFAULT_TEMPERATURE = 1.0
 private const val DEFAULT_SEED = 0
-
-/**
- * Models that initialize cleanly but then SIGSEGV natively on the FIRST inference on Tensor G5
- * (Pixel 10) — a LiteRT-LM model×SoC bug reproduced on litertlm 0.11.0 AND 0.13.1, on both CPU and
- * GPU and with a text-only engine config, using a byte-identical model that serves fine on Tensor
- * G4. A native SIGSEGV can't be caught, so these are refused pre-flight on Pixel 10 instead of
- * crash-looping. Text-only models (e.g. Qwen3-0.6B) run fine on G5. See SPIKE-FINDINGS.md.
- *
- * The id set references the canonical [RelaisConfig.DEFAULT_MODEL_ID] so a model rename can't
- * silently make the gate inert; the file set is the defense-in-depth twin so the gate still fires if
- * the selected id and the on-disk file ever diverge (e.g. an interrupted re-provision).
- */
-private val G5_INCOMPATIBLE_MODEL_IDS = setOf(RelaisConfig.DEFAULT_MODEL_ID)
-private val G5_INCOMPATIBLE_FILES = setOf("gemma-4-E4B-it.litertlm")
-
-/** True when the model about to load is known to crash natively on this SoC (Tensor G5 / Pixel 10). */
-internal fun isG5Incompatible(modelId: String, modelPath: String, isPixel10: Boolean): Boolean =
-  isPixel10 &&
-    (modelId in G5_INCOMPATIBLE_MODEL_IDS || modelPath.substringAfterLast('/') in G5_INCOMPATIBLE_FILES)
 
 private val MISSING_ENCODER_REGEX = Regex("\\bTF_LITE_[A-Z0-9_]*ENCODER", RegexOption.IGNORE_CASE)
 
@@ -298,15 +278,9 @@ object RelaisEngine {
     synchronized(lock) {
       if (isReady) return
       require(File(modelPath).exists()) { "Model not found: $modelPath" }
-      // Pixel-10 / Tensor-G5 pre-flight gate: gemma-4-E4B initializes but SIGSEGVs natively on the
-      // first inference on G5 (a LiteRT-LM bug). A native crash can't be caught, so refuse before
-      // loading rather than crash-loop; the operator can pick a G5-compatible model (e.g. Qwen3).
-      val modelId = RelaisConfig.modelId(context)
-      check(!isG5Incompatible(modelId, modelPath, isPixel10())) {
-        "Model '$modelId' isn't supported on this device's Tensor G5 — LiteRT-LM crashes natively " +
-          "during inference. Open the Relais control panel and select a G5-compatible model " +
-          "(e.g. search \"Qwen3\" in the model picker)."
-      }
+      // NOTE: the former Pixel-10/Tensor-G5 pre-flight gate that refused gemma-4-E4B is gone —
+      // E4B was verified to init + serve (text, sustained decode, and vision) on G5 with no SIGSEGV
+      // on litertlm 0.12.0 (2026-07-12, on rango), so the model×SoC crash it guarded is resolved.
       val cacheDir = context.getExternalFilesDir(null)?.absolutePath
       // Speculative decoding is SUPPORTED by E4B (Capabilities.hasSpeculativeDecodingSupport()=true)
       // but MEASURED A REGRESSION on this E4B/GPU/Tensor-G4 config: ~2.56 tok/s with it on vs
