@@ -15,7 +15,6 @@ package cc.grepon.relais.chat
 import android.content.Context
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.android.Android
-import io.ktor.client.plugins.HttpTimeout
 import io.ktor.client.plugins.sse.SSE
 import java.io.Closeable
 
@@ -31,18 +30,21 @@ class ChatTransportSelector(private val context: Context) : Closeable {
     lazy {
       HttpClient(Android) {
         install(SSE)
-        // A wedged loopback server (accepts the socket, never answers) would otherwise hang the
-        // chat forever. connectTimeout catches a dead listener; socketTimeout caps the gap between
-        // reads so a stalled stream fails into an error turn. requestTimeout is left infinite —
-        // a healthy on-device stream can legitimately run for minutes.
+        // Timeouts are set on the Android ENGINE, not via the `HttpTimeout` plugin: that plugin is
+        // incompatible with the SSE client on this engine and makes every streamed turn fail with
+        // `SSEClientException` (verified on-device — the raw HTTP/SSE endpoint streams fine, only the
+        // plugin-wrapped client throws). Engine-level connect/socket timeouts give the same
+        // wedged-server protection without touching the SSE path.
         //
-        // The server flushes the SSE headers on admission but emits no body bytes during prefill,
-        // so socketTimeout also bounds time-to-first-token. It's set generously (5 min) so a slow
-        // on-device prefill (large model / long context / thermal throttling) is never mistaken for
-        // a wedged server — the point is only to turn an *infinite* hang into a bounded failure.
-        install(HttpTimeout) {
-          connectTimeoutMillis = CONNECT_TIMEOUT_MS
-          socketTimeoutMillis = SOCKET_TIMEOUT_MS
+        // A wedged loopback server (accepts the socket, never answers) would otherwise hang the chat
+        // forever. connectTimeout catches a dead listener; socketTimeout caps the gap between reads
+        // so a stalled stream fails into an error turn. The server flushes SSE headers on admission
+        // but emits no body bytes during prefill, so socketTimeout also bounds time-to-first-token —
+        // set generously (5 min) so a slow on-device prefill isn't mistaken for a wedged server; the
+        // point is only to turn an *infinite* hang into a bounded failure.
+        engine {
+          connectTimeout = CONNECT_TIMEOUT_MS
+          socketTimeout = SOCKET_TIMEOUT_MS
         }
       }
     }
@@ -69,7 +71,7 @@ class ChatTransportSelector(private val context: Context) : Closeable {
   }
 
   private companion object {
-    const val CONNECT_TIMEOUT_MS = 5_000L
-    const val SOCKET_TIMEOUT_MS = 300_000L
+    const val CONNECT_TIMEOUT_MS = 5_000 // Android engine connectTimeout (ms)
+    const val SOCKET_TIMEOUT_MS = 300_000 // Android engine socketTimeout / read timeout (ms)
   }
 }
