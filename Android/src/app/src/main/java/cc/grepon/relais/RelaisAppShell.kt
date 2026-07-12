@@ -46,6 +46,7 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import cc.grepon.relais.ui.benchmark.BenchmarkScreen
 import cc.grepon.relais.ui.modelmanager.ModelManagerViewModel
+import kotlinx.coroutines.flow.first
 
 /**
  * The unified shell: one `RelaisTheme`-wrapped `Scaffold` with a DESIGN.md bottom nav and a
@@ -62,9 +63,12 @@ fun RelaisAppShell(
     val navController = rememberNavController()
     // One-shot: honor an incoming deep link once, on first composition / whenever the URI changes.
     LaunchedEffect(deepLinkUri) {
-      resolveShellDeepLink(deepLinkUri?.scheme, deepLinkUri?.host)?.let { route ->
-        navController.navigate(route) { launchSingleTop = true }
-      }
+      val route = resolveShellDeepLink(deepLinkUri?.scheme, deepLinkUri?.host) ?: return@LaunchedEffect
+      // On a COLD start via a deep link this effect runs before the NavHost below has attached its
+      // graph to the controller; navigating then throws "Navigation graph has not been set".
+      // Suspend until the graph is live (first back-stack entry emitted) before navigating.
+      navController.currentBackStackEntryFlow.first()
+      navController.navigate(route) { launchSingleTop = true }
     }
     Scaffold(
       containerColor = Charcoal,
