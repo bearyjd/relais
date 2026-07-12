@@ -70,6 +70,12 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
   private val _streaming = MutableStateFlow(false)
   val streaming: StateFlow<Boolean> = _streaming.asStateFlow()
 
+  // Set to the just-persisted assistant turn's id for the brief hand-off window (see
+  // streamAndPersist), so the UI can suppress the streaming bubble by id rather than by content —
+  // content equality misfires when two consecutive assistant turns happen to match.
+  private val _pendingPersistedTurnId = MutableStateFlow<String?>(null)
+  val pendingPersistedTurnId: StateFlow<String?> = _pendingPersistedTurnId.asStateFlow()
+
   private val _reloadingModel = MutableStateFlow(false)
   val reloadingModel: StateFlow<Boolean> = _reloadingModel.asStateFlow()
 
@@ -149,11 +155,13 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     // Keep the streaming bubble up until the just-persisted turn is actually reflected in [turns],
     // so there's never a frame with neither the bubble nor the persisted turn visible. Bounded by a
     // timeout so a missed/delayed Flow emission can't hang the UI in the streaming state forever.
+    _pendingPersistedTurnId.value = persisted.id
     withTimeoutOrNull(TURN_PERSIST_AWAIT_TIMEOUT_MS) {
       turns.first { list -> list.any { it.id == persisted.id } }
     }
     _streaming.value = false
     _streamingText.value = ""
+    _pendingPersistedTurnId.value = null
   }
 
   /** Flips the cancellation flag read by the in-flight transport's `shouldCancel`. */

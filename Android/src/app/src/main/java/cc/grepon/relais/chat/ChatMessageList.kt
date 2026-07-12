@@ -55,6 +55,7 @@ fun ChatMessageList(
   turns: List<ChatTurn>,
   streamingText: String,
   streaming: Boolean,
+  pendingPersistedTurnId: String?,
   onCopy: (String) -> Unit,
   onRegenerate: (ChatTurn) -> Unit,
   onEditResend: (ChatTurn, String) -> Unit,
@@ -65,11 +66,10 @@ fun ChatMessageList(
   // ChatViewModel holds the streaming bubble up briefly after persisting the assistant turn, until
   // that turn is reflected in [turns] (avoids a flicker frame with neither visible). That leaves a
   // narrow window where both `turns` and `streaming` could be true for the *same* content — guard
-  // against rendering the bubble a second time once the persisted turn already covers it.
-  val alreadyPersisted =
-    streamingText.isNotEmpty() &&
-      turns.lastOrNull()?.let { it.role == "assistant" && it.content == streamingText } == true
-  val showStreamingBubble = streaming && !alreadyPersisted
+  // against rendering the bubble a second time once the persisted turn already covers it. Matched
+  // by turn id (not content) so identical consecutive assistant replies can't mis-suppress.
+  val showStreamingBubble =
+    shouldShowStreamingBubble(streaming, streamingText, turns.lastOrNull()?.id, pendingPersistedTurnId)
 
   LazyColumn(modifier = modifier, state = listState) {
     items(turns, key = { it.id }) { turn ->
