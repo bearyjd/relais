@@ -28,18 +28,14 @@ import io.ktor.http.HttpMethod
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.contentType
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.takeWhile
 import org.json.JSONObject
 
 private const val TAG = "RelaisHttpChatTransport"
 private const val CHAT_URL = "http://127.0.0.1:8080/v1/chat/completions"
 private const val HEALTH_URL = "http://127.0.0.1:8080/health"
 private const val SSE_DONE_SENTINEL = "[DONE]"
-
-/**
- * Marker thrown to unwind out of an in-progress SSE `collect` once the stream is done ([DONE]) or
- * the caller asked to cancel — [collect] has no early-return primitive of its own.
- */
-private class ChatStreamStop : RuntimeException()
 
 /**
  * Streams one chat turn over the loopback OpenAI-compatible HTTP server
@@ -74,20 +70,24 @@ class HttpChatTransport(private val context: Context, private val client: HttpCl
     var firstDeltaNanos = 0L
     var lastDeltaNanos = 0L
     var finishReason: String? = null
-    try {
-      client.sse(
-        urlString = CHAT_URL,
-        request = {
-          method = HttpMethod.Post
-          contentType(ContentType.Application.Json)
-          header(HttpHeaders.Authorization, "Bearer ${RelaisConfig.apiKey(context)}")
-          setBody(body)
-        },
-      ) {
-        incoming.collect { event ->
-          if (shouldCancel()) throw ChatStreamStop()
+    client.sse(
+      urlString = CHAT_URL,
+      request = {
+        method = HttpMethod.Post
+        contentType(ContentType.Application.Json)
+        header(HttpHeaders.Authorization, "Bearer ${RelaisConfig.apiKey(context)}")
+        setBody(body)
+      },
+    ) {
+      // Stop the SSE flow the way Ktor expects: complete it via `takeWhile` on the [DONE] sentinel /
+      // a cooperative cancel. Do NOT throw out of `collect` to break early — the SSE session wraps
+      // any exception thrown mid-collection into an SSEClientException, so a thrown sentinel turns a
+      // perfectly good stream into a spurious error turn (the [DONE] terminator would fail EVERY
+      // turn). `takeWhile` completes the flow normally, and a real network error still propagates.
+      incoming
+        .takeWhile { event -> event.data != SSE_DONE_SENTINEL && !shouldCancel() }
+        .collect { event ->
           val raw = event.data ?: return@collect
-          if (raw == SSE_DONE_SENTINEL) throw ChatStreamStop()
           val line = "data: $raw"
           parseSseContentDelta(line)?.let { delta ->
             val now = System.nanoTime()
@@ -99,9 +99,6 @@ class HttpChatTransport(private val context: Context, private val client: HttpCl
           }
           parseSseFinishReason(line)?.let { finishReason = it }
         }
-      }
-    } catch (e: ChatStreamStop) {
-      // Expected early exit: [DONE] sentinel or a cooperative cancel.
     }
     val elapsedSeconds = (lastDeltaNanos - firstDeltaNanos) / 1_000_000_000.0
     // Rate over the (n-1) inter-delta intervals, not the raw count — delta #1 anchors t=0, so
