@@ -26,7 +26,6 @@ import java.io.File
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -90,6 +89,9 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
   private val _reloadingModel = MutableStateFlow(false)
   val reloadingModel: StateFlow<Boolean> = _reloadingModel.asStateFlow()
+
+  /** The in-flight reload-observation poll, cancelled and replaced on each model switch. */
+  private var reloadJob: kotlinx.coroutines.Job? = null
 
   /** Clears the active conversation; a new one is created lazily on the next [send]. */
   fun newConversation() {
@@ -258,19 +260,28 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     return if (file.exists()) file.readBytes() else null
   }
 
-  /** Switches the served model and reflects [RelaisEngine]'s reload into [reloadingModel]. */
-  fun switchModel(modelId: String) {
-    val ctx = getApplication<Application>()
-    RelaisConfig.setModelId(ctx, modelId)
-    viewModelScope.launch {
-      _reloadingModel.value = true
-      var iterations = 0
-      while (RelaisEngine.startupInProgress && iterations < MAX_RELOAD_POLL_ITERATIONS) {
-        delay(RELOAD_POLL_INTERVAL_MS)
-        iterations++
+  /** Switches to a curated ref (persisting the full ref, not just its id) and reflects the reload. */
+  fun switchToRef(ref: cc.grepon.relais.data.RelaisModelRef) {
+    ModelSwitch.applyRef(getApplication(), ref)
+    observeReload()
+  }
+
+  /** Switches to a raw manual id (dropping any curated ref) and reflects the reload. */
+  fun switchToManualId(modelId: String) {
+    ModelSwitch.applyManualId(getApplication(), modelId)
+    observeReload()
+  }
+
+  /** Reflects [RelaisEngine]'s lazy model reload into [reloadingModel] (see [ModelSwitch.awaitReload]). */
+  private fun observeReload() {
+    // Cancel any in-flight poll first so a rapid re-pick doesn't leave overlapping pollers racing to
+    // write _reloadingModel (harmless final value, but avoids flicker and wasted coroutines).
+    reloadJob?.cancel()
+    reloadJob =
+      viewModelScope.launch {
+        _reloadingModel.value = true
+        _reloadingModel.value = !ModelSwitch.awaitReload()
       }
-      _reloadingModel.value = !RelaisEngine.isReady
-    }
   }
 
   fun rename(id: String, title: String) {
@@ -292,8 +303,6 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
   }
 
   private companion object {
-    const val RELOAD_POLL_INTERVAL_MS = 500L
-    const val MAX_RELOAD_POLL_ITERATIONS = 120 // 60s cap
     const val TURN_PERSIST_AWAIT_TIMEOUT_MS = 3_000L
   }
 }
