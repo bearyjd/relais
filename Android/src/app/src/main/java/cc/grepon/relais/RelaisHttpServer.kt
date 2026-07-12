@@ -25,6 +25,7 @@ import cc.grepon.relais.embed.EmbeddingTask
 import cc.grepon.relais.embed.RelaisEmbedderProvider
 import cc.grepon.relais.imagegen.ImageGenAvailability
 import cc.grepon.relais.imagegen.RelaisImageGeneratorProvider
+import cc.grepon.relais.imagegen.imageModelById
 import cc.grepon.relais.batch.WebhookGuard
 import cc.grepon.relais.data.BatchJob
 import cc.grepon.relais.data.BatchStatus
@@ -590,7 +591,16 @@ class RelaisHttpServer(
             // and this returns an honest 501 — exactly how /v1/embeddings shipped before #6's impl.
             if (shedIfHot(::reply)) return
             val body = JSONObject(readBody(reader, contentLength))
-            when (val parsed = parseImageRequest(body, IMAGE_GEN_LIMITS)) {
+            // Default steps come from the SELECTED model's own step count (issue #135: SD-Turbo is a
+            // 4-step model, but a flat 20-step default ran 5x the intended work and blew the node's
+            // 720s watchdog). Falls back to IMAGE_GEN_LIMITS.defaultSteps only if the configured model
+            // id/URL/SHA no longer resolves to a known model (e.g. a stale custom-URL config).
+            val modelSteps = imageModelById(
+              RelaisConfig.imageModelId(context),
+              RelaisConfig.imageModelUrl(context),
+              RelaisConfig.imageModelSha(context),
+            )?.steps ?: IMAGE_GEN_LIMITS.defaultSteps
+            when (val parsed = parseImageRequest(body, IMAGE_GEN_LIMITS, modelSteps)) {
               is ImageRequestResult.Invalid ->
                 reply(400, buildImagesError(parsed.message, "invalid_request_error"))
               is ImageRequestResult.Valid -> {
