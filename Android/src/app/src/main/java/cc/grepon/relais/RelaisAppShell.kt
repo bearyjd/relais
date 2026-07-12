@@ -44,9 +44,9 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
-import kotlinx.coroutines.flow.first
 import cc.grepon.relais.ui.benchmark.BenchmarkScreen
 import cc.grepon.relais.ui.modelmanager.ModelManagerViewModel
+import kotlinx.coroutines.flow.first
 
 /**
  * The unified shell: one `RelaisTheme`-wrapped `Scaffold` with a DESIGN.md bottom nav and a
