@@ -12,6 +12,7 @@
 
 package cc.grepon.relais
 
+import cc.grepon.relais.chat.ERROR_BACKEND
 import cc.grepon.relais.chat.historyForRequest
 import cc.grepon.relais.data.ChatTurn
 import org.junit.Assert.assertEquals
@@ -30,6 +31,35 @@ class ChatHistoryTest {
     val h = historyForRequest(turns)
     assertEquals(listOf("hi", "hello"), h.map { it.text })
     assertEquals(listOf("user", "assistant"), h.map { it.role })
+  }
+
+  @Test
+  fun `history drops synthetic error assistant turns`() {
+    val turns =
+      listOf(
+        ChatTurn("t1", "c", "user", "hi", null, null, null, null, 1L),
+        ChatTurn("t2", "c", "assistant", "[error] boom", null, null, "m", ERROR_BACKEND, 2L),
+        ChatTurn("t3", "c", "user", "retry", null, null, null, null, 3L),
+        ChatTurn("t4", "c", "assistant", "real answer", null, null, "m", "GPU_LITERTLM", 4L),
+        ChatTurn("t5", "c", "user", "next", null, null, null, null, 5L), // live turn
+      )
+    val h = historyForRequest(turns)
+    // The error turn is filtered; the live turn is dropped; the rest survive in order.
+    assertEquals(listOf("hi", "retry", "real answer"), h.map { it.text })
+    assertEquals(listOf("user", "user", "assistant"), h.map { it.role })
+  }
+
+  @Test
+  fun `a user turn whose content starts with error bracket is kept`() {
+    // Only assistant turns tagged ERROR_BACKEND are dropped — user text is never filtered on content.
+    val turns =
+      listOf(
+        ChatTurn("t1", "c", "user", "[error] is a valid thing to type", null, null, null, null, 1L),
+        ChatTurn("t2", "c", "assistant", "ok", null, null, "m", "GPU_LITERTLM", 2L),
+        ChatTurn("t3", "c", "user", "live", null, null, null, null, 3L),
+      )
+    val h = historyForRequest(turns)
+    assertEquals(listOf("[error] is a valid thing to type", "ok"), h.map { it.text })
   }
 
   @Test
