@@ -21,38 +21,14 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * Hermetic tests for the pure decision functions behind the Pixel-10/Tensor-G5 engine handling:
- *  - [isG5Incompatible] — the pre-flight gate. gemma-4-E4B crashes natively on G5; refuse it there.
- *    Keyed by BOTH model id and on-disk file name so the gate still fires if those diverge.
- *  - [isMissingEncoder] — the text-only fallback trigger (LiteRT-LM rejects a model that lacks an
- *    image/audio encoder), anchored to the `TF_LITE_*_ENCODER` shape so an unrelated failure can't
- *    silently downgrade a multimodal model.
+ * Hermetic tests for [isMissingEncoder] — the text-only fallback trigger (LiteRT-LM rejects a model
+ * that lacks an image/audio encoder), anchored to the `TF_LITE_*_ENCODER` shape so an unrelated
+ * failure can't silently downgrade a multimodal model.
+ *
+ * (The former `isG5Incompatible` pre-flight gate and its tests were removed once gemma-4-E4B was
+ * verified to init + serve on Tensor G5 without the SIGSEGV it guarded — see RelaisEngine.)
  */
 class RelaisEngineConfigTest {
-  private val gemma = RelaisConfig.DEFAULT_MODEL_ID // litert-community/gemma-4-E4B-it-litert-lm
-  private val qwen = "litert-community/Qwen3-0.6B"
-  private val gemmaPath = "/data/files/relais/gemma-4-E4B-it.litertlm"
-  private val qwenPath = "/data/files/litert_community_Qwen3_0_6B/abc/Qwen3-0.6B.litertlm"
-
-  @Test
-  fun gemma_gated_only_on_pixel10() {
-    assertTrue("gemma-4-E4B must be gated on Pixel 10", isG5Incompatible(gemma, gemmaPath, isPixel10 = true))
-    assertFalse("gemma-4-E4B must serve on non-Pixel-10", isG5Incompatible(gemma, gemmaPath, isPixel10 = false))
-  }
-
-  @Test
-  fun compatible_model_never_gated() {
-    assertFalse(isG5Incompatible(qwen, qwenPath, isPixel10 = true))
-    assertFalse(isG5Incompatible(qwen, qwenPath, isPixel10 = false))
-  }
-
-  @Test
-  fun gate_fires_when_id_and_file_diverge() {
-    // The id says a compatible model but the file actually being loaded is gemma -> still gate.
-    assertTrue(isG5Incompatible(qwen, gemmaPath, isPixel10 = true))
-    // The id says gemma but the path differs -> still gate on the id.
-    assertTrue(isG5Incompatible(gemma, qwenPath, isPixel10 = true))
-  }
 
   @Test
   fun missing_encoder_detected_from_litertlm_messages() {
