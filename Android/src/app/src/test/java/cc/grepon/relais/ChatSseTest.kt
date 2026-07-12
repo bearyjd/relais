@@ -13,6 +13,7 @@
 package cc.grepon.relais
 
 import cc.grepon.relais.chat.parseSseContentDelta
+import cc.grepon.relais.chat.parseSseFinishReason
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
@@ -40,5 +41,30 @@ class ChatSseTest {
   @Test
   fun nonDataLineIsNull() {
     assertNull(parseSseContentDelta(": comment"))
+  }
+
+  @Test
+  fun extractsFinishReason() {
+    assertEquals(
+      "stop",
+      parseSseFinishReason(
+        """data: {"choices":[{"delta":{},"finish_reason":"stop"}]}"""))
+  }
+
+  @Test
+  fun finishReasonDoneSentinelIsNull() {
+    assertNull(parseSseFinishReason("data: [DONE]"))
+  }
+
+  @Test
+  fun finishReasonContentOnlyDeltaIsNull() {
+    assertNull(
+      parseSseFinishReason(
+        """data: {"choices":[{"delta":{"content":"Hi"},"finish_reason":null}]}"""))
+  }
+
+  @Test
+  fun finishReasonNonDataLineIsNull() {
+    assertNull(parseSseFinishReason(": comment"))
   }
 }
