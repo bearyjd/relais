@@ -110,9 +110,9 @@ class HttpChatTransport(private val context: Context, private val client: HttpCl
     return ChatStreamResult(
       text = assembled.toString(),
       // The loopback HTTP path has no way to learn which accelerator served the request — neither
-      // the SSE stream nor `/health` expose a backend field. GPU_LITERTLM is a placeholder, not a
-      // verified value; a real fix needs a `backend`/enum change (see task follow-up note).
-      backend = RelaisBackend.GPU_LITERTLM,
+      // the SSE stream nor `/health` expose a backend field — so report UNKNOWN rather than
+      // mislabeling as GPU_LITERTLM. (The in-process transport still reports the real backend.)
+      backend = RelaisBackend.UNKNOWN,
       tokensPerSec = tokensPerSec,
       finishReason = finishReason ?: "stop",
       modelId = RelaisConfig.modelId(context),

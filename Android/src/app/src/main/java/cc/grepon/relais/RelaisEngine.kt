@@ -96,6 +96,9 @@ enum class RelaisBackend {
   // dispatcher-gated (NOT AICore-gated), G5-AOT-compiled models only. Proven on rango:
   // T-2 (power-rail execution proof) + T-3 (8.51 tok/s vs 3.03 GPU). See docs/tensor-tpu-spike-plan.md.
   TPU_LITERTLM,
+  // The accelerator is not known to the caller — used by the in-app chat's HTTP transport, which
+  // talks to the loopback server and can't tell which backend served the reply from the SSE stream.
+  UNKNOWN,
 }
 
 /** Modalities present in an inbound request. */
