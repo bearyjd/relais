@@ -104,7 +104,9 @@ class HttpChatTransport(private val context: Context, private val client: HttpCl
       // Expected early exit: [DONE] sentinel or a cooperative cancel.
     }
     val elapsedSeconds = (lastDeltaNanos - firstDeltaNanos) / 1_000_000_000.0
-    val tokensPerSec = if (deltaCount > 1 && elapsedSeconds > 0.0) deltaCount / elapsedSeconds else 0.0
+    // Rate over the (n-1) inter-delta intervals, not the raw count — delta #1 anchors t=0, so
+    // dividing the whole count by the first→last window would inflate the rate on short streams.
+    val tokensPerSec = if (deltaCount > 1 && elapsedSeconds > 0.0) (deltaCount - 1) / elapsedSeconds else 0.0
     return ChatStreamResult(
       text = assembled.toString(),
       // The loopback HTTP path has no way to learn which accelerator served the request — neither
