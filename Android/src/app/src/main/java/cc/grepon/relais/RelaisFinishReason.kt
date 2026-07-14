@@ -79,4 +79,17 @@ object RelaisFinishReason {
    * @return [LENGTH] when truncated, otherwise [STOP].
    */
   fun forCompletion(truncated: Boolean): String = if (truncated) LENGTH else STOP
+
+  /**
+   * True when [message] is the terminal litertlm surfaces after a deliberate `Conversation.cancelProcess()`.
+   *
+   * A native mid-decode cancel (issue #125) ends the stream via `MessageCallback.onError` carrying
+   * `"Process cancelled."` (verified on-device, both lanes — see docs/litertlm-native-api.md §7.5).
+   * When Relais itself requested the cancel, that terminal is EXPECTED and must be folded into the
+   * already-computed `finish_reason` (a truncated `"length"` or a broken-pipe `"stop"`), NOT re-thrown
+   * as an inference error. Matched loosely (contains "cancel", case-insensitive) so a punctuation or
+   * wording tweak in a future AAR doesn't turn a clean cancel back into a spurious error turn.
+   */
+  fun isCancellationTerminal(message: String?): Boolean =
+    message?.contains("cancel", ignoreCase = true) == true
 }
