@@ -11,7 +11,7 @@ a prompt-injection + bracket-scraping tool parser because it didn't know about t
 SDK integration, **check this file** (and re-derive from the AAR if unsure). If a plan says "X is not
 available," verify against the AAR before believing it. See [`CLAUDE.md`](../CLAUDE.md).
 
-- **Pinned version:** `com.google.ai.edge.litertlm:litertlm-android:0.11.0` (see `Android/src/gradle/libs.versions.toml`). A `0.13.1` AAR is also in the gradle cache but **0.11.0 is what ships** (a 0.13.1 bump was tested on G5 and reverted — see `SPIKE-FINDINGS.md`).
+- **Pinned version:** `com.google.ai.edge.litertlm:litertlm-android:0.12.0` (see `Android/src/gradle/libs.versions.toml`). A `0.14.0` AAR is also in the gradle cache but **0.12.0 is what ships** (a 0.14.0 bump was A/B-tested on rango/G5 and **reverted** — it regresses the G5 TPU lane, `PR #150`; see memory `relais-tensor-tpu-path`).
 - **Regenerate this inventory** after any version bump: `scripts/dump-litertlm-api.sh` (decompiles the AAR's `classes.jar` with `javap`). Re-verify the "Verified on-device" claims below — a bump can change behavior even when signatures are stable.
 - **Verified on-device** = exercised on rango (Pixel 10 / Tensor G5) with Gemma-4 E2B via an `androidTest` probe or the live HTTP node. Probes live in `Android/src/app/src/androidTest/java/cc/grepon/relais/*Probe.kt`.
 
@@ -105,6 +105,47 @@ by `sendMessage`/`sendMessageAsync`/`renderMessageIntoString`.
 - `LogSeverity` + `Engine.Companion.setNativeMinLogSeverity(...)`: control native log verbosity.
 - `LiteRtLmJni` (internal): the raw native methods (`nativeRunPrefill`, `nativeRunDecode`, `nativeCreateConversation(... 2 booleans = automaticToolCalling, constrainedDecoding ...)`, etc.). Not for direct use, but documents what the high-level API can ultimately reach.
 
+## 7.5 Mid-decode cancellation — `cancelProcess()` `[verified on-device 2026-07-14 (0.12.0, rango/G5) — PASS both lanes]`
+
+**The API exists — "true mid-decode native stop is a TODO" (in `RelaisEngine.kt`) was stale w.r.t. the
+AAR.** `javap` on `litertlm-android:0.12.0` `classes.jar` (2026-07-14):
+
+- `Conversation.cancelProcess(): void` → `LiteRtLmJni.nativeConversationCancelProcess(handle)`.
+- `Session.cancelProcess(): void` → `LiteRtLmJni.nativeCancelProcess(handle)`.
+- The bundled native `.so` carries `LiteRtSetCompiledModelCancellationFunction`, the log string
+  `"Client requested cancel during Invoke()"`, and `kLiteRtStatusCancelled` — i.e. a **cooperative
+  cancel checked mid-`Invoke()`** at the compiled-model level, not merely a post-hoc bound.
+
+Relais today only does *cooperative* cancel (stop streaming to the client + set `finish_reason`);
+native decode still runs to `maxNumTokens`, burning battery/thermal budget on tokens nobody reads
+(the always-on-appliance anti-goal in issue #125). Wiring `conversation.cancelProcess()` into the
+`shouldCancel`/broken-pipe path would truly halt decode.
+
+**Threading caveat (why this needs the probe before wiring):** `MessageCallback.onMessage` runs on the
+native decode/callback thread. `cancelProcess()` must be issued from **another** thread (reentrant
+cancel against the in-flight `Invoke()` is untested and risky). `MidDecodeStopProbe` cancels from a
+watcher thread and this is the exact behavior it must confirm on-device.
+
+**On-device verdict (2026-07-14, rango / Pixel 10 / G5, `MidDecodeStopProbe`, litertlm 0.12.0) — PASS,
+both lanes.** Cancel issued from a watcher thread after 24 streamed tokens:
+
+| Lane | model | tokensAfterCancel | stopLatencyMs | mean token interval | terminal |
+|---|---|---|---|---|---|
+| **NPU / TPU** (G5-AOT, default sampler) | `gemma-4-E2B-it_Google_Tensor_G5` | **1** | **66 ms** | 99 ms | `onError` |
+| **GPU** (custom sampler) | `gemma-4-E4B-it` (generic) | **1** | **284 ms** | 236 ms | `onError` |
+
+So the native cancel halts decode in **≤1 token-interval on both lanes** — and fastest on the TPU lane,
+which is the always-on serving default. Wiring facts for the `RelaisEngine` follow-up:
+1. `cancelProcess()` MUST be called from a thread other than the `MessageCallback` thread (that thread
+   is the native decode thread; the probe cancels from a watcher thread).
+2. The cancel surfaces as **`onError` with message `"Process cancelled."`** — the engine must classify
+   that exact terminal as a *clean cancel* (map to the already-computed `finish_reason`), NOT a real error.
+3. Verified on both the custom-sampler GPU path and the default-sampler NPU path (a custom
+   `SamplerConfig` still crashes the NPU executor — unrelated to cancel; see `RelaisTpuLane`).
+
+Probe: `Android/src/app/src/androidTest/java/cc/grepon/relais/MidDecodeStopProbe.kt`
+(`-e backend gpu|npu`, `-e model <path>`).
+
 ## 8. Unexploited hooks — Relais opportunities (maximize)
 
 | Hook | Opportunity | Status |
@@ -113,6 +154,7 @@ by `sendMessage`/`sendMessageAsync`/`renderMessageIntoString`.
 | `message.channels["thought"]` + `extraContext["enable_thinking"]` | Expose model reasoning as `reasoning_content` | **DONE: feature-10a, §6** |
 | `ConversationConfig.extraContext` | Per-request chat-template variables (e.g. `enable_thinking`) | **verified: consumed by the template (§6); a generic "RAG document" slot is NOT how it behaves** |
 | `Session.runPrefill`/`runDecode` | Token-level control; prompt-cache reuse; embeddings-ish pooling experiments | unverified |
+| `Conversation.cancelProcess()` | Truly halt native decode on client-disconnect / thermal / stop (not just stop streaming) | **VERIFIED on-device both lanes (§7.5, #125): halts in ≤1 token-interval (TPU 66 ms). RelaisEngine wiring = follow-up** |
 | `SamplerConfig.seed` | Deterministic/reproducible sampling (testing, `seed` passthrough) | available |
 | `getBenchmarkInfo()` / `enableBenchmark` | Real prefill/decode tok/s + TTFT + exact token counts on the live path | **DEAD END (0.11.0): see below** |
 | `overwritePromptTemplate` | Support models with broken/missing templates | available |

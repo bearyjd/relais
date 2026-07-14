@@ -528,8 +528,12 @@ object RelaisEngine {
                 if (cancelState.get().canceled) return
                 // Cooperative cancel: thermal-truncate (device-protective) or client disconnect
                 // (onToken throws on a broken pipe). Best-effort — it stops streaming to the client;
-                // native decode is bounded by maxNumTokens. True mid-decode native stop is a TODO
-                // pending a litertlm cancellation API (see SPIKE-FINDINGS / Gate 2 stopResponse).
+                // native decode still runs to maxNumTokens. A TRUE mid-decode native stop IS available
+                // and VERIFIED on-device (litertlm 0.12.0 `Conversation.cancelProcess()`: halts in
+                // ≤1 token-interval on BOTH lanes — TPU 66 ms / GPU 284 ms; issue #125,
+                // docs/litertlm-native-api.md §7.5). Not yet wired here: cancelProcess() must be called
+                // OFF this (callback) thread, and it surfaces as onError("Process cancelled.") which the
+                // terminal-classification below must treat as a clean cancel, not an error. Follow-up.
                 if (shouldCancel?.invoke() == true) {
                   cancelState.updateAndGet { RelaisFinishReason.applyCancel(it, DecodeCancelCause.THERMAL) }
                   return
