@@ -35,7 +35,9 @@ import com.google.ai.edge.litertlm.tool
 import java.io.File
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
+import kotlin.concurrent.thread
 import org.json.JSONObject
 
 private const val TAG = "RelaisEngine"
@@ -464,6 +466,27 @@ object RelaisEngine {
             else -> ConversationConfig(initialMessages = initialMessages, samplerConfig = request.samplerConfig())
           }
         val conversation = e.createConversation(conversationConfig)
+        // True native mid-decode stop (issue #165, verified in #125): once a cooperative cancel is
+        // decided in the callback, halt the native decode via `conversation.cancelProcess()` so the
+        // node stops burning battery/thermal on tokens nobody reads. Two hard constraints from the
+        // on-device probe (docs/litertlm-native-api.md §7.5): (1) cancelProcess() must run OFF the
+        // callback thread (it IS the native decode thread) — so dispatch to a one-shot thread; (2) the
+        // native run then ends via onError("Process cancelled."), which the post-await handling
+        // classifies as a clean cancel, not an error. Fire once (CAS); the thread is joined in the
+        // finally before conversation.close() so cancel and close never race natively. Declared out
+        // here (not inside the try body) so the finally can join it.
+        val cancelRequested = AtomicBoolean(false)
+        val stopThread = AtomicReference<Thread?>(null)
+        fun requestNativeStop() {
+          if (cancelRequested.compareAndSet(false, true)) {
+            stopThread.set(
+              thread(start = true, isDaemon = true, name = "relais-decode-cancel") {
+                runCatching { conversation.cancelProcess() }
+                  .onFailure { Log.w(TAG, "cancelProcess() failed: ${it.message}") }
+              }
+            )
+          }
+        }
         return try {
           // Stream so we can measure decode throughput by wall clock: BenchmarkInfo only populates
           // via the library's benchmark() path, not normal conversations (SPIKE-FINDINGS.md / Q1).
@@ -505,6 +528,7 @@ object RelaisEngine {
                       onReasoning?.invoke(reasoning)
                     } catch (t: Throwable) {
                       cancelState.updateAndGet { RelaisFinishReason.applyCancel(it, DecodeCancelCause.BROKEN_PIPE) }
+                      requestNativeStop()
                     }
                   }
                 }
@@ -515,6 +539,7 @@ object RelaisEngine {
                   // cancel so a long thinking phase can be thermally truncated / pipe-aborted.
                   if (shouldCancel?.invoke() == true) {
                     cancelState.updateAndGet { RelaisFinishReason.applyCancel(it, DecodeCancelCause.THERMAL) }
+                    requestNativeStop()
                   }
                   return
                 }
@@ -527,21 +552,21 @@ object RelaisEngine {
                 sb.append(delta)
                 if (cancelState.get().canceled) return
                 // Cooperative cancel: thermal-truncate (device-protective) or client disconnect
-                // (onToken throws on a broken pipe). Best-effort — it stops streaming to the client;
-                // native decode still runs to maxNumTokens. A TRUE mid-decode native stop IS available
-                // and VERIFIED on-device (litertlm 0.12.0 `Conversation.cancelProcess()`: halts in
-                // ≤1 token-interval on BOTH lanes — TPU 66 ms / GPU 284 ms; issue #125,
-                // docs/litertlm-native-api.md §7.5). Not yet wired here: cancelProcess() must be called
-                // OFF this (callback) thread, and it surfaces as onError("Process cancelled.") which the
-                // terminal-classification below must treat as a clean cancel, not an error. Follow-up.
+                // (onToken throws on a broken pipe). It stops streaming to the client AND — via
+                // requestNativeStop() -> conversation.cancelProcess() — halts the native decode itself
+                // (issue #165; halts in ≤1 token-interval, verified in #125 / §7.5), instead of
+                // decoding on to maxNumTokens. finish_reason is unchanged: THERMAL -> "length",
+                // BROKEN_PIPE -> "stop".
                 if (shouldCancel?.invoke() == true) {
                   cancelState.updateAndGet { RelaisFinishReason.applyCancel(it, DecodeCancelCause.THERMAL) }
+                  requestNativeStop()
                   return
                 }
                 try {
                   onToken?.invoke(delta)
                 } catch (t: Throwable) {
                   cancelState.updateAndGet { RelaisFinishReason.applyCancel(it, DecodeCancelCause.BROKEN_PIPE) }
+                  requestNativeStop()
                 }
               }
 
@@ -555,7 +580,12 @@ object RelaisEngine {
             extraContext,
           )
           if (!latch.await(120, TimeUnit.SECONDS)) error("inference timed out")
-          error[0]?.let { throw it }
+          // When WE requested the native stop, litertlm ends the run via onError("Process cancelled.").
+          // That terminal is expected — fold it into the already-decided finish_reason (length/stop)
+          // below rather than throwing it as an inference error. Any OTHER error still propagates.
+          error[0]?.let { err ->
+            if (!(cancelRequested.get() && RelaisFinishReason.isCancellationTerminal(err.message))) throw err
+          }
           val decodeSec = if (lastTokenNs > firstTokenNs) (lastTokenNs - firstTokenNs) / 1e9 else 0.0
           val tokS = if (decodeSec > 0 && tokens > 1) (tokens - 1) / decodeSec else 0.0
           RelaisMetrics.recordThroughput(tokens, tokS, backend.name)
@@ -570,6 +600,9 @@ object RelaisEngine {
             finishReason = RelaisFinishReason.forCompletion(cancelState.get().truncated),
           )
         } finally {
+          // Join the cancel thread (if any) before closing so cancelProcess() and close() never run
+          // concurrently against the same native conversation. Bounded — the cancel returns promptly.
+          stopThread.get()?.let { runCatching { it.join(2_000) } }
           conversation.close()
         }
       }

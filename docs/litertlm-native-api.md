@@ -135,7 +135,9 @@ both lanes.** Cancel issued from a watcher thread after 24 streamed tokens:
 | **GPU** (custom sampler) | `gemma-4-E4B-it` (generic) | **1** | **284 ms** | 236 ms | `onError` |
 
 So the native cancel halts decode in **≤1 token-interval on both lanes** — and fastest on the TPU lane,
-which is the always-on serving default. Wiring facts for the `RelaisEngine` follow-up:
+which is the always-on serving default. **Wired into `RelaisEngine.generate` (#165):** each cooperative
+cancel (thermal or broken-pipe) now dispatches `conversation.cancelProcess()` off the callback thread.
+The facts that shaped the wiring:
 1. `cancelProcess()` MUST be called from a thread other than the `MessageCallback` thread (that thread
    is the native decode thread; the probe cancels from a watcher thread).
 2. The cancel surfaces as **`onError` with message `"Process cancelled."`** — the engine must classify
@@ -154,7 +156,7 @@ Probe: `Android/src/app/src/androidTest/java/cc/grepon/relais/MidDecodeStopProbe
 | `message.channels["thought"]` + `extraContext["enable_thinking"]` | Expose model reasoning as `reasoning_content` | **DONE: feature-10a, §6** |
 | `ConversationConfig.extraContext` | Per-request chat-template variables (e.g. `enable_thinking`) | **verified: consumed by the template (§6); a generic "RAG document" slot is NOT how it behaves** |
 | `Session.runPrefill`/`runDecode` | Token-level control; prompt-cache reuse; embeddings-ish pooling experiments | unverified |
-| `Conversation.cancelProcess()` | Truly halt native decode on client-disconnect / thermal / stop (not just stop streaming) | **VERIFIED on-device both lanes (§7.5, #125): halts in ≤1 token-interval (TPU 66 ms). RelaisEngine wiring = follow-up** |
+| `Conversation.cancelProcess()` | Truly halt native decode on client-disconnect / thermal / stop (not just stop streaming) | **DONE: verified on-device both lanes (§7.5, #125) + wired into `RelaisEngine.generate` (#165)** |
 | `SamplerConfig.seed` | Deterministic/reproducible sampling (testing, `seed` passthrough) | available |
 | `getBenchmarkInfo()` / `enableBenchmark` | Real prefill/decode tok/s + TTFT + exact token counts on the live path | **DEAD END (0.11.0): see below** |
 | `overwritePromptTemplate` | Support models with broken/missing templates | available |
