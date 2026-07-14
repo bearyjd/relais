@@ -93,4 +93,23 @@ class RelaisFinishReasonTest {
     val twice = RelaisFinishReason.applyCancel(once, DecodeCancelCause.THERMAL)
     assertEquals(once, twice)
   }
+
+  // ---- native-cancel terminal classification (issue #125 / #165) ----
+
+  @Test fun `the litertlm cancel terminal is recognized`() {
+    // The exact message observed on-device (MidDecodeStopProbe, both lanes).
+    assertTrue(RelaisFinishReason.isCancellationTerminal("Process cancelled."))
+  }
+
+  @Test fun `cancel terminal match is case-insensitive and loose`() {
+    assertTrue(RelaisFinishReason.isCancellationTerminal("CANCELLED"))
+    assertTrue(RelaisFinishReason.isCancellationTerminal("request was canceled by user"))
+  }
+
+  @Test fun `a real inference error is not a cancel terminal`() {
+    assertFalse(RelaisFinishReason.isCancellationTerminal("inference timed out"))
+    assertFalse(RelaisFinishReason.isCancellationTerminal("OOM: failed to allocate"))
+    assertFalse(RelaisFinishReason.isCancellationTerminal(null))
+    assertFalse(RelaisFinishReason.isCancellationTerminal(""))
+  }
 }
