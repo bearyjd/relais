@@ -62,10 +62,21 @@ import org.junit.runner.RunWith
  * time it would take to reach maxNumTokens. FAIL/ABSENT shape: callbacks continue to maxNumTokens
  * regardless of the cancel — record that verdict in docs/litertlm-native-api.md.
  *
- * Run (rango / Pixel 10 / G5, E2B staged — adjust -e model to the staged path):
- *   adb -s 57211FDCG0023C shell am instrument -w -e class cc.grepon.relais.MidDecodeStopProbe \
- *     -e model /storage/emulated/0/Android/data/cc.grepon.relais/files/.../gemma-4-E2B-it.litertlm \
- *     cc.grepon.relais.test/androidx.test.runner.AndroidJUnitRunner
+ * Backends: `-e backend gpu` (default) runs `Backend.GPU()` with a custom sampler; `-e backend npu`
+ * runs the Tensor-G5 TPU lane — `Backend.NPU(nativeLibraryDir)` against a `…_Google_Tensor_G5`
+ * AOT model, with the ENGINE-DEFAULT sampler (a custom `SamplerConfig` crashes the NPU compiled-model
+ * executor mid-decode, "new_step must be <= TokenCount()" — see `RelaisTpuLane`). The TPU lane is the
+ * always-on serving default, so it is the path where a real cancel matters most.
+ *
+ * Run (rango / Pixel 10 / G5 — adjust -e model to the staged path):
+ *   # GPU path, generic model:
+ *   adb shell am instrument -w -e class cc.grepon.relais.MidDecodeStopProbe \
+ *     -e model /storage/emulated/0/Android/data/<pkg>/files/bench/gemma-4-E4B-it.litertlm \
+ *     <pkg>.test/androidx.test.runner.AndroidJUnitRunner
+ *   # TPU/NPU path, G5-AOT model:
+ *   adb shell am instrument -w -e class cc.grepon.relais.MidDecodeStopProbe -e backend npu \
+ *     -e model /storage/emulated/0/Android/data/<pkg>/files/bench/gemma-4-E2B-it_Google_Tensor_G5.litertlm \
+ *     <pkg>.test/androidx.test.runner.AndroidJUnitRunner
  * Watch: adb logcat -s RelaisStopProbe
  */
 @RunWith(AndroidJUnit4::class)
@@ -74,6 +85,9 @@ class MidDecodeStopProbe {
   private val args = InstrumentationRegistry.getArguments()
   private val context = InstrumentationRegistry.getInstrumentation().targetContext
   private val cacheDir = context.getExternalFilesDir(null)?.absolutePath
+  private val nativeLibDir = context.applicationInfo.nativeLibraryDir
+  private val useNpu: Boolean
+    get() = args.getString("backend")?.equals("npu", ignoreCase = true) == true
   private val modelPath: String
     get() = args.getString("model") ?: DEFAULT_MODEL
 
@@ -93,22 +107,28 @@ class MidDecodeStopProbe {
     val path = modelPath
     assumeTrue("Model not found at $path (pass -e model <path>)", File(path).exists())
 
+    val backend = if (useNpu) Backend.NPU(nativeLibraryDir = nativeLibDir) else Backend.GPU()
+    // AOT G5 models carry a fixed KV size; the `…_Google_Tensor_G5` E2B build has no `ekvNNNN` marker
+    // so it uses the engine default (4096), matching RelaisEngine's TPU lane. GPU: a generous bound so
+    // a real cancel halts well BEFORE it is reached (else cancel ~ ran-to-completion).
+    val maxTokens = if (useNpu) 4096 else 1024
     val initStart = System.currentTimeMillis()
     val engine =
       Engine(
         EngineConfig(
           modelPath = path,
-          backend = Backend.GPU(),
-          visionBackend = Backend.GPU(),
+          backend = backend,
+          visionBackend = if (useNpu) Backend.NPU(nativeLibraryDir = nativeLibDir) else Backend.GPU(),
           audioBackend = Backend.CPU(),
-          // Deliberately generous: a real cancel must halt well BEFORE this bound is reached,
-          // otherwise "cancel" is indistinguishable from "ran to completion".
-          maxNumTokens = 1024,
+          maxNumTokens = maxTokens,
           cacheDir = cacheDir,
         )
       )
     engine.initialize()
-    Log.i(TAG, "engine ready in ${System.currentTimeMillis() - initStart} ms; resident=${engine.isInitialized()}")
+    Log.i(
+      TAG,
+      "engine ready in ${System.currentTimeMillis() - initStart} ms; backend=${if (useNpu) "NPU" else "GPU"} resident=${engine.isInitialized()}",
+    )
 
     // A prompt that reliably produces a long, steady stream so there is a decode to interrupt.
     val prompt =
@@ -126,9 +146,12 @@ class MidDecodeStopProbe {
   /** Stream a long turn, cancel mid-decode from a watcher thread, and time how fast tokens stop. */
   @OptIn(ExperimentalApi::class)
   private fun streamAndCancel(engine: Engine, prompt: String): StopOutcome {
+    // NPU compiled-model executor crashes mid-decode under a custom SamplerConfig (RelaisTpuLane);
+    // the TPU lane must run the engine-default sampler. GPU can take an explicit one.
     val conv =
       engine.createConversation(
-        ConversationConfig(samplerConfig = SamplerConfig(topK = 64, topP = 0.95, temperature = 0.8))
+        if (useNpu) ConversationConfig()
+        else ConversationConfig(samplerConfig = SamplerConfig(topK = 64, topP = 0.95, temperature = 0.8))
       )
 
     val tokenCount = AtomicInteger(0)
