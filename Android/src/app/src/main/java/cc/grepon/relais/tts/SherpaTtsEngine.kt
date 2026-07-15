@@ -105,8 +105,11 @@ object SherpaTtsEngine : RelaisTtsEngine {
       val tokens = File(dir, "tokens.txt")
       val dataDir = File(dir, "espeak-ng-data")
       if (!onnx.isFile || !tokens.isFile || !dataDir.isDirectory) return null
-      // Release any previously-loaded (different) voice before swapping.
-      tts?.let { runCatching { it.release() } }
+      // Release any previously-loaded (different) voice before swapping. Take synthLock so we never
+      // free a native engine while a concurrent synthesize() is mid-generate() on it (use-after-free).
+      // Lock order is always lock -> synthLock (synthesize acquires them sequentially, never nested the
+      // other way), so this can't deadlock. Dead path today (single voice), armed for a 2nd voice.
+      tts?.let { old -> synchronized(synthLock) { runCatching { old.release() } } }
       val config =
         OfflineTtsConfig(
           model =

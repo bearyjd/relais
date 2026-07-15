@@ -562,6 +562,11 @@ class RelaisHttpServer(
 
                   TtsAvailability.READY -> {
                     val eng = requireNotNull(engine)
+                    // Synthesis is seconds of full-CPU work (RTF ~0.12), so it belongs on the shared
+                    // admission gate like /generate + /v1/audio/transcriptions — not thermal-only like
+                    // the millisecond embeddings path. Bounds the queue (clean 429 vs unbounded pile-up)
+                    // and keeps TTS from starving concurrent LLM decode. Released in finally.
+                    if (rejectIfQueueFull(::reply)) return
                     val inferStartNs = System.nanoTime()
                     try {
                       val req = parsed.request
@@ -574,6 +579,7 @@ class RelaisHttpServer(
                       replyBytes(200, bytes, ttsContentType(req.format, audio.sampleRate))
                     } finally {
                       RelaisMetrics.recordEndpointLatency("/v1/audio/speech", (System.nanoTime() - inferStartNs) / 1e9)
+                      admissionGate.releaseShared()
                     }
                   }
                 }

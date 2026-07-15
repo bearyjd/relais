@@ -73,9 +73,10 @@ class RelaisTtsEndpointTest {
 
   // ---- content type ----
 
-  @Test fun `content type carries the sample rate for pcm`() {
+  @Test fun `content type carries the sample rate for pcm and matches the little-endian bytes`() {
     assertEquals("audio/wav", ttsContentType(TtsFormat.WAV, 22050))
-    assertEquals("audio/L16;rate=22050", ttsContentType(TtsFormat.PCM, 22050))
+    // Not audio/L16 (RFC big-endian) — pcm16() emits s16le, so the label is audio/pcm.
+    assertEquals("audio/pcm;rate=22050", ttsContentType(TtsFormat.PCM, 22050))
   }
 
   // ---- voice registry ----

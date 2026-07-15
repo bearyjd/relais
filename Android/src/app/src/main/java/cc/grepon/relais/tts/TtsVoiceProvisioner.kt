@@ -30,8 +30,10 @@ import org.apache.commons.compress.compressors.bzip2.BZip2CompressorInputStream
 object TtsVoiceProvisioner {
   private const val TAG = "RelaisTtsProvision"
 
-  /** Root under which all voices extract: `<externalFiles>/tts`. */
-  private fun ttsRoot(context: Context): File = File(context.getExternalFilesDir(null), "tts")
+  /** Root under which all voices extract: `<externalFiles>/tts`, falling back to internal `filesDir`
+   *  when external storage is unavailable (getExternalFilesDir → null). */
+  private fun ttsRoot(context: Context): File =
+    File(context.getExternalFilesDir(null) ?: context.filesDir, "tts")
 
   /** The extracted voice directory (`<externalFiles>/tts/<dirName>`). */
   fun voiceDir(context: Context, voice: TtsVoice): File = File(ttsRoot(context), voice.dirName)
@@ -108,6 +110,9 @@ object TtsVoiceProvisioner {
     }
     try {
       val total = if (expectedBytes > 0) expectedBytes else conn.contentLengthLong
+      // Abort if the server streams materially more than the pinned size (a redirect/compromised host
+      // shouldn't be able to fill the phone's storage before the post-hoc length/SHA check rejects it).
+      val cap = if (expectedBytes > 0) expectedBytes + 1_048_576L else 512L * 1024 * 1024
       conn.inputStream.use { input ->
         dst.outputStream().use { out ->
           val buf = ByteArray(64 * 1024)
@@ -118,6 +123,9 @@ object TtsVoiceProvisioner {
             if (n < 0) break
             out.write(buf, 0, n)
             read += n
+            if (read > cap) {
+              throw IllegalStateException("download exceeded size cap ($read > $cap) — aborting")
+            }
             if (total > 0) {
               val pct = (read * 100 / total).toInt().coerceIn(0, 100)
               if (pct != lastPct) { lastPct = pct; onProgress(pct) }

@@ -17,10 +17,15 @@ import org.json.JSONObject
 // OpenAI POST /v1/audio/speech helpers (issue #168). Pure (no Android types) so parsing + limits are
 // unit-tested on the JVM (RelaisTtsEndpointTest); the HTTP route is a thin shell over these.
 
-/** Audio container the node can encode on-device. OpenAI's mp3/opus/aac/flac map to [WAV] (no encoder). */
+/**
+ * Audio container the node can encode on-device. OpenAI's mp3/opus/aac/flac map to [WAV] (no encoder).
+ * [PCM] is raw signed 16-bit **little-endian** samples, matching OpenAI's `pcm` — NOT RFC-2586
+ * `audio/L16` (which is big-endian), so it is labeled `audio/pcm` (with a `rate=` param) to avoid
+ * telling a spec-honoring client to byte-swap.
+ */
 enum class TtsFormat(val wire: String, val contentType: String) {
   WAV("wav", "audio/wav"),
-  PCM("pcm", "audio/L16"),
+  PCM("pcm", "audio/pcm"),
 }
 
 /** Bounds for one speech request. [maxInputChars] caps synthesis work (OpenAI's limit is 4096). */
