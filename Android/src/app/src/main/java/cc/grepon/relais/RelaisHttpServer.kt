@@ -26,6 +26,15 @@ import cc.grepon.relais.embed.RelaisEmbedderProvider
 import cc.grepon.relais.imagegen.ImageGenAvailability
 import cc.grepon.relais.imagegen.RelaisImageGeneratorProvider
 import cc.grepon.relais.imagegen.imageModelById
+import cc.grepon.relais.tts.RelaisTtsEngineProvider
+import cc.grepon.relais.tts.SpeechRequestResult
+import cc.grepon.relais.tts.TTS_LIMITS
+import cc.grepon.relais.tts.TtsAvailability
+import cc.grepon.relais.tts.TtsFormat
+import cc.grepon.relais.tts.TtsWav
+import cc.grepon.relais.tts.buildTtsError
+import cc.grepon.relais.tts.parseSpeechRequest
+import cc.grepon.relais.tts.ttsContentType
 import cc.grepon.relais.batch.WebhookGuard
 import cc.grepon.relais.data.BatchJob
 import cc.grepon.relais.data.BatchStatus
@@ -262,6 +271,12 @@ class RelaisHttpServer(
         fun reply(status: Int, body: JSONObject, headers: List<String> = emptyList()) {
           RelaisMetrics.recordRequest(endpoint, status)
           respond(sock, status, body, headers)
+        }
+
+        // Raw-bytes reply for binary endpoints (audio/wav from /v1/audio/speech, #168).
+        fun replyBytes(status: Int, payload: ByteArray, contentType: String, headers: List<String> = emptyList()) {
+          RelaisMetrics.recordRequest(endpoint, status)
+          respondBytes(sock, status, payload, contentType, headers)
         }
 
         var contentLength = 0
@@ -515,6 +530,54 @@ class RelaisHttpServer(
             } finally {
               RelaisMetrics.recordEndpointLatency("/v1/audio/transcriptions", (System.nanoTime() - inferStartNs) / 1e9)
               admissionGate.releaseShared()
+            }
+          }
+
+          method == "POST" && path.startsWith("/v1/audio/speech") -> {
+            // OpenAI /v1/audio/speech (issue #168 — audio generation). On-device TTS is a SEPARATE
+            // runtime from LiteRT-LM (text-out only): sherpa-onnx + a Piper voice. Until the engine is
+            // registered + a voice provisioned, this returns an honest 501 (exactly how /v1/images and
+            // /v1/embeddings shipped pre-impl). Synthesis is CPU work, so honor thermal 503 first.
+            if (shedIfHot(::reply)) return
+            val body = JSONObject(readBody(reader, contentLength))
+            when (val parsed = parseSpeechRequest(body, TTS_LIMITS)) {
+              is SpeechRequestResult.Invalid ->
+                reply(400, JSONObject(buildTtsError(parsed.message, "invalid_request_error")))
+              is SpeechRequestResult.Valid -> {
+                val engine = RelaisTtsEngineProvider.get()
+                when (engine?.availability(context) ?: TtsAvailability.UNAVAILABLE) {
+                  TtsAvailability.UNAVAILABLE ->
+                    reply(501, JSONObject(buildTtsError("text-to-speech not available on this node", "not_implemented")))
+
+                  TtsAvailability.PROVISIONING -> {
+                    // Kick a one-time background voice download; tell the client to retry, so the request
+                    // thread never blocks on the ~60-90 MB fetch (mirrors /v1/images + /v1/embeddings).
+                    engine?.ensureProvisioningStarted(context)
+                    reply(
+                      503,
+                      JSONObject(buildTtsError("tts voice is provisioning; retry shortly", "service_unavailable")),
+                      listOf("Retry-After: 20"),
+                    )
+                  }
+
+                  TtsAvailability.READY -> {
+                    val eng = requireNotNull(engine)
+                    val inferStartNs = System.nanoTime()
+                    try {
+                      val req = parsed.request
+                      val audio = eng.synthesize(context, req.input, req.voice, req.speed)
+                      val bytes =
+                        when (req.format) {
+                          TtsFormat.WAV -> TtsWav.wav(audio.samples, audio.sampleRate)
+                          TtsFormat.PCM -> TtsWav.pcm16(audio.samples)
+                        }
+                      replyBytes(200, bytes, ttsContentType(req.format, audio.sampleRate))
+                    } finally {
+                      RelaisMetrics.recordEndpointLatency("/v1/audio/speech", (System.nanoTime() - inferStartNs) / 1e9)
+                    }
+                  }
+                }
+              }
             }
           }
 
@@ -1471,6 +1534,7 @@ class RelaisHttpServer(
       path.startsWith("/generate") -> "/generate"
       path.startsWith("/v1/chat/completions") -> "/v1/chat/completions"
       path.startsWith("/v1/audio/transcriptions") -> "/v1/audio/transcriptions"
+      path.startsWith("/v1/audio/speech") -> "/v1/audio/speech"
       path.startsWith("/v1/embeddings") -> "/v1/embeddings"
       path.startsWith("/v1/images/generations") -> "/v1/images/generations"
       path.startsWith("/v1/models") -> "/v1/models"
@@ -1538,8 +1602,16 @@ class RelaisHttpServer(
     body: String,
     contentType: String,
     extraHeaders: List<String> = emptyList(),
+  ) = respondBytes(sock, status, body.toByteArray(), contentType, extraHeaders)
+
+  /** Writes a raw binary response (e.g. `audio/wav` from `/v1/audio/speech`, #168). */
+  private fun respondBytes(
+    sock: java.net.Socket,
+    status: Int,
+    payload: ByteArray,
+    contentType: String,
+    extraHeaders: List<String> = emptyList(),
   ) {
-    val payload = body.toByteArray()
     val out: OutputStream = sock.getOutputStream()
     val head = StringBuilder("HTTP/1.1 $status ${reason(status)}\r\nContent-Type: $contentType\r\n")
     head.append("Content-Length: ${payload.size}\r\nConnection: close\r\n")

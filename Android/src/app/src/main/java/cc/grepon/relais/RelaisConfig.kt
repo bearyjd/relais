@@ -40,6 +40,7 @@ object RelaisConfig {
   private const val KEY_IMAGE_MODEL_ID = "image_model_id"
   private const val KEY_IMAGE_MODEL_URL = "image_model_url"
   private const val KEY_IMAGE_MODEL_SHA = "image_model_sha"
+  private const val KEY_TTS_VOICE_ID = "tts_voice_id"
   private const val KEY_TLS_PASS = "tls_keystore_pass"
   private const val KEY_RESTARTS = "restarts_total"
   private const val KEY_SHED_HEADROOM = "shed_headroom"
@@ -205,6 +206,14 @@ object RelaisConfig {
 
   fun setImageModelId(context: Context, value: String) {
     prefs(context).edit().putString(KEY_IMAGE_MODEL_ID, value).apply()
+  }
+
+  /** Selected on-device TTS voice id (#168); defaults to the Piper [tts.DEFAULT_TTS_VOICE_ID]. */
+  fun ttsVoiceId(context: Context): String =
+    prefs(context).getString(KEY_TTS_VOICE_ID, null) ?: cc.grepon.relais.tts.DEFAULT_TTS_VOICE_ID
+
+  fun setTtsVoiceId(context: Context, value: String) {
+    prefs(context).edit().putString(KEY_TTS_VOICE_ID, value).apply()
   }
 
   /** Operator override URL for the `custom` image model (a self-hosted sd.cpp gguf), or null. */

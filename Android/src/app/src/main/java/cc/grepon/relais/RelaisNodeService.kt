@@ -132,6 +132,10 @@ class RelaisNodeService : Service() {
         // process-isolated :imagegen service; degoogled = no-op (endpoint stays 501). Cheap (no load);
         // the route gates on isAvailable (Vulkan + provisioned) and provisions on demand via 503.
         cc.grepon.relais.imagegen.ImageGenRegistration.register(applicationContext)
+        // TTS (#168): register the sherpa-onnx engine on ALL flavors (GMS-free, unlike image-gen/OCR),
+        // so `/v1/audio/speech` works on degoogled too. Cheap (no load); the route gates on availability
+        // and provisions the Piper voice on demand via 503.
+        cc.grepon.relais.tts.TtsRegistration.register(applicationContext)
         // Security C1: plaintext HTTP is loopback-only (in-device app/dev); the LAN is served only
         // over HTTPS, so the bearer key never crosses the network in cleartext.
         httpServer = RelaisHttpServer(applicationContext, port = 8080, bindAddr = "127.0.0.1").also { it.start() }

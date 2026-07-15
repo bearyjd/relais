@@ -38,7 +38,14 @@ dependencyResolutionManagement {
     // feature #16). Scoped to that one group so it can't silently shadow google()/mavenCentral().
     maven {
       url = uri("https://jitpack.io")
-      content { includeGroup("io.github.aatricks") }
+      // sd.cpp/Vulkan image-gen AAR (io.github.aatricks:llmedge, #16) + the on-device TTS runtime
+      // (com.github.k2-fsa:sherpa-onnx, #168 — self-contained ONNX Runtime + espeak-ng + Piper/Kokoro,
+      // published on JitPack, not Maven Central). Scoped to those two groups so it can't shadow
+      // google()/mavenCentral().
+      content {
+        includeGroup("io.github.aatricks")
+        includeGroup("com.github.k2-fsa")
+      }
     }
   }
 }
