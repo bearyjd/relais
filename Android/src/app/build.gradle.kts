@@ -206,6 +206,11 @@ dependencies {
   implementation(libs.commonmark)
   implementation(libs.richtext)
   implementation(libs.litert) // bundled LiteRT runtime (no Play Services) — embeddings work de-Googled
+  // On-device TTS (#168): sherpa-onnx runtime (Apache-2.0, GMS-free → all flavors incl. degoogled).
+  // Ships ONNX Runtime + espeak-ng .so; abiFilters (arm64-v8a, x86_64) trim the rest at packaging.
+  // Measured Piper RTF 0.12 on rango/G5 (TtsProbe). commons-compress extracts the .tar.bz2 voice bundle.
+  implementation(libs.sherpa.onnx)
+  implementation(libs.commons.compress)
   implementation(libs.camerax.core)
   implementation(libs.camerax.camera2)
   implementation(libs.camerax.lifecycle)
