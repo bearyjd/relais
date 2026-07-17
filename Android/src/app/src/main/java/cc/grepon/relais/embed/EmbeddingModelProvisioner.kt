@@ -23,6 +23,16 @@ import java.net.URL
 data class EmbeddingAssets(val modelFile: File, val tokenizerFile: File)
 
 /**
+ * Whether the bearer token may still be sent after a manual redirect hop (issue #174). Pure so the
+ * one-way-drop invariant is unit-tested without network. Auth is kept ONLY while [currentlyAuthing]
+ * and the [nextHost] equals the [originalHost] — comparing to the ORIGINAL host (not the previous
+ * hop) and AND-ing with the running flag means once auth is dropped on a cross-host hop it can never
+ * be re-attached to a later same-CDN redirect. (`ImageModelProvisioner` uses the same rule.)
+ */
+internal fun redirectKeepsAuth(currentlyAuthing: Boolean, nextHost: String, originalHost: String): Boolean =
+  currentlyAuthing && nextHost.equals(originalHost, ignoreCase = true)
+
+/**
  * Downloads the EmbeddingGemma `.tflite` + paired `sentencepiece.model` from the gated HuggingFace
  * repo into app storage, reusing already-present files. Self-contained (a blocking, resumable-free
  * streaming GET with the HF bearer token) so it has no WorkManager / UI coupling — call it off the
@@ -146,6 +156,7 @@ object EmbeddingModelProvisioner {
    */
   private fun streamTo(url: String, target: File, token: String, expectedBytes: Long, onProgress: (Int) -> Unit) {
     var current = url
+    val originalHost = URL(url).host
     var sendAuth = true
     var hops = 0
     while (true) {
@@ -162,9 +173,11 @@ object EmbeddingModelProvisioner {
           val location = conn.getHeaderField("Location")
             ?: throw IllegalStateException("redirect ($code) with no Location for $target")
           if (++hops > MAX_REDIRECTS) throw IllegalStateException("too many redirects fetching $target")
-          // Only keep auth if we stay on the same (huggingface.co) host.
+          // One-way auth drop: the bearer token is sent ONLY while we stay on the ORIGINAL host.
+          // Compare to originalHost (not the previous hop) and never re-enable once dropped, so a
+          // chain huggingface.co -> cdn -> cdn/... can't re-attach the token to the CDN host (#174).
           val nextHost = URL(URL(current), location).host
-          sendAuth = nextHost.equals(URL(current).host, ignoreCase = true)
+          sendAuth = redirectKeepsAuth(sendAuth, nextHost, originalHost)
           current = URL(URL(current), location).toString()
           continue
         }

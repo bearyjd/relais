@@ -320,7 +320,10 @@ object RelaisEngine {
       Log.w(TAG, "Model is Google-Tensor AOT-compiled but the TPU dispatcher lib is absent — GPU lane")
     }
     residentIsTpu = tpu
-    val backend = if (tpu) Backend.NPU(nativeLibraryDir = nativeLibDir!!) else Backend.GPU()
+    // Non-null iff the TPU lane is selected (tpu implies nativeLibDir != null), so the NPU backend
+    // can be built without a `!!` — a null-check smart-cast instead (Kotlin no-`!!` rule).
+    val npuLibDir: String? = if (tpu) nativeLibDir else null
+    val backend = if (npuLibDir != null) Backend.NPU(nativeLibraryDir = npuLibDir) else Backend.GPU()
     val maxTokens = if (tpu) RelaisTpuLane.tpuMaxNumTokens(fileName, MAX_NUM_TOKENS) else MAX_NUM_TOKENS
     if (tpu) Log.i(TAG, "TPU lane selected for $fileName (maxNumTokens=$maxTokens)")
     // TPU lane: visionBackend must be NPU too — an AOT model probed with visionBackend=GPU fails
@@ -331,7 +334,7 @@ object RelaisEngine {
       EngineConfig(
         modelPath = modelPath,
         backend = backend,
-        visionBackend = if (tpu) Backend.NPU(nativeLibraryDir = nativeLibDir!!) else Backend.GPU(),
+        visionBackend = if (npuLibDir != null) Backend.NPU(nativeLibraryDir = npuLibDir) else Backend.GPU(),
         audioBackend = Backend.CPU(),
         maxNumTokens = maxTokens,
         cacheDir = cacheDir,
