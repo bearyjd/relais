@@ -48,33 +48,16 @@ import cc.grepon.relais.templates.parseTemplateMode
 import cc.grepon.relais.templates.resolveSystemPrompt
 import java.io.File
 import java.io.OutputStream
-import java.math.BigInteger
-import java.net.Inet4Address
 import java.net.InetSocketAddress
-import java.net.NetworkInterface
 import java.net.ServerSocket
-import java.security.KeyPair
-import java.security.KeyPairGenerator
-import java.security.KeyStore
 import java.security.MessageDigest
 import java.security.SecureRandom
-import java.security.cert.X509Certificate
-import java.util.Calendar
-import java.util.Date
 import java.util.concurrent.Executors
-import javax.net.ssl.KeyManagerFactory
-import javax.net.ssl.SSLContext
 import kotlinx.coroutines.runBlocking
-import org.bouncycastle.asn1.x500.X500Name
-import org.bouncycastle.cert.jcajce.JcaX509CertificateConverter
-import org.bouncycastle.cert.jcajce.JcaX509v3CertificateBuilder
-import org.bouncycastle.operator.jcajce.JcaContentSignerBuilder
 import org.json.JSONArray
 import org.json.JSONObject
 
 private const val TAG = "RelaisHttpServer"
-private const val TLS_KEY_ALIAS = "relais-tls"
-private const val TLS_KEYSTORE_FILE = "relais_tls.p12"
 private const val SOCKET_TIMEOUT_MS = 15_000 // read timeout: bounds slow/idle clients (slowloris)
 private const val MAX_CONNECTIONS = 16 // cap worker threads (single-engine node serializes anyway)
 // Shared body cap. `internal` so the byte-oriented [HttpRequestReader.readBodyBytes] enforces the
@@ -191,7 +174,7 @@ class RelaisHttpServer(
     Thread(
         {
           try {
-            val socket = buildServerSocket().apply { reuseAddress = true; bind(InetSocketAddress(bindAddr, port)) }
+            val socket = RelaisTls.buildServerSocket(context, tls).apply { reuseAddress = true; bind(InetSocketAddress(bindAddr, port)) }
             serverSocket = socket
             Log.i(TAG, "Listening on ${if (tls) "https" else "http"} $bindAddr:$port")
             while (running) {
@@ -207,52 +190,7 @@ class RelaisHttpServer(
       .start()
   }
 
-  /**
-   * Plain or TLS server socket. The TLS cert is a self-signed LAN cert (clients use `curl -k`),
-   * generated once at first use into an app-private PKCS12 ([TLS_KEYSTORE_FILE]) protected by a
-   * random per-install password ([RelaisConfig.tlsKeystorePassword]). No key material or password
-   * is bundled in the APK or committed to the repo.
-   *
-   * A **software** RSA key is used deliberately: AndroidKeyStore keys (RSA and EC) cannot sign the
-   * TLS server handshake through conscrypt's native upcall on-device, so the key is generated in
-   * software and stored in the app's private files dir.
-   */
-  private fun buildServerSocket(): ServerSocket {
-    if (!tls) return ServerSocket()
-    val pass = RelaisConfig.tlsKeystorePassword(context).toCharArray()
-    val ks = loadOrCreateKeystore(pass)
-    val kmf = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm()).apply { init(ks, pass) }
-    val ctx = SSLContext.getInstance("TLS").apply { init(kmf.keyManagers, null, null) }
-    return ctx.serverSocketFactory.createServerSocket()
-  }
-
-  /** Loads the app-private TLS keystore, generating a fresh self-signed cert on first use. */
-  private fun loadOrCreateKeystore(pass: CharArray): KeyStore {
-    val file = File(context.filesDir, TLS_KEYSTORE_FILE)
-    val ks = KeyStore.getInstance("PKCS12")
-    if (file.exists()) {
-      file.inputStream().use { ks.load(it, pass) }
-      return ks
-    }
-    ks.load(null, pass)
-    val keyPair = KeyPairGenerator.getInstance("RSA").apply { initialize(2048) }.generateKeyPair()
-    ks.setKeyEntry(TLS_KEY_ALIAS, keyPair.private, pass, arrayOf(selfSignedCert(keyPair)))
-    file.outputStream().use { ks.store(it, pass) }
-    Log.i(TAG, "Generated self-signed TLS keystore at ${file.path}")
-    return ks
-  }
-
-  /** Builds a 30-year self-signed `CN=relais-node` X509 cert for [keyPair] (SHA256withRSA). */
-  private fun selfSignedCert(keyPair: KeyPair): X509Certificate {
-    val now = System.currentTimeMillis()
-    val notBefore = Date(now - 60_000) // small backdate for client clock skew
-    val notAfter = Calendar.getInstance().apply { add(Calendar.YEAR, 30) }.time
-    val name = X500Name("CN=relais-node")
-    val builder =
-      JcaX509v3CertificateBuilder(name, BigInteger.valueOf(now), notBefore, notAfter, name, keyPair.public)
-    val signer = JcaContentSignerBuilder("SHA256withRSA").build(keyPair.private)
-    return JcaX509CertificateConverter().getCertificate(builder.build(signer))
-  }
+  // TLS keystore/cert minting moved to [RelaisTls] (#173); LAN-IP discovery to [RelaisLanIp].
 
   private fun handle(client: java.net.Socket) {
     client.use { sock ->
@@ -361,7 +299,7 @@ class RelaisHttpServer(
               recentRequests = RelaisMetrics.recentRequests(),
               // Mask the key for the HTML view — the raw key is only ever returned by the
               // bearer-gated /v1/clientconfig endpoint, never rendered into the dashboard page.
-              baseUrl = "https://${localLanIp(sock)}:8443/v1",
+              baseUrl = "https://${RelaisLanIp.localLanIp(sock)}:8443/v1",
               apiKeyMasked = maskApiKey(RelaisConfig.apiKey(context)),
               capabilities = dashCaps.toCapsString(),
             )
@@ -814,7 +752,7 @@ class RelaisHttpServer(
             // surface that may carry the raw API key — it builds paste-ready Open WebUI / Continue.dev
             // / Aider configs for the LAN HTTPS base URL. IP comes from the accepting socket's local
             // address (the real bound interface); lanIpv4() is a defensive fallback only.
-            val ip = localLanIp(sock)
+            val ip = RelaisLanIp.localLanIp(sock)
             val baseUrl = "https://$ip:8443/v1"
             val caps = RelaisClientConfig.Capabilities(
               multimodal = RelaisEngine.isMultimodal,
@@ -1592,20 +1530,6 @@ class RelaisHttpServer(
       else -> "other"
     }
 
-  /**
-   * The LAN IPv4 to advertise in the `/v1/clientconfig` base URL. Prefers the accepting socket's
-   * local address (the exact interface this connection arrived on — the most accurate value for the
-   * URL the client should call back). Falls back to [lanIpv4] only if that address is missing,
-   * loopback, a wildcard, or non-IPv4 (e.g. the HTTPS listener bound to 0.0.0.0).
-   */
-  private fun localLanIp(sock: java.net.Socket): String {
-    val local = sock.localAddress
-    if (local is Inet4Address && !local.isLoopbackAddress && !local.isAnyLocalAddress) {
-      local.hostAddress?.let { return it }
-    }
-    return lanIpv4()
-  }
-
   private fun authorized(header: String?): Boolean {
     val token = header?.removePrefix("Bearer ")?.trim() ?: return false
     // Constant-time compare to avoid leaking the key via response-timing differences.
@@ -1758,23 +1682,6 @@ internal fun buildUsageObject(promptText: String, completionTokens: Int): org.js
  */
 internal fun streamIncludeUsage(body: JSONObject): Boolean =
   body.optJSONObject("stream_options")?.optBoolean("include_usage", false) ?: false
-
-/**
- * Best-effort LAN IPv4 (prefers wlan), used only as a fallback when the accepting socket's local
- * address is unavailable/loopback/wildcard. Mirrors RelaisControlActivity's display helper, kept
- * small + duplicated here so the server has no UI dependency. Returns "0.0.0.0" if nothing resolves.
- */
-private fun lanIpv4(): String =
-  runCatching {
-    val nis = NetworkInterface.getNetworkInterfaces().toList().filter { it.isUp && !it.isLoopback }
-    val ordered = nis.sortedByDescending { it.name.startsWith("wlan") }
-    for (ni in ordered) {
-      for (addr in ni.inetAddresses) {
-        if (addr is Inet4Address && !addr.isLoopbackAddress) return@runCatching addr.hostAddress ?: continue
-      }
-    }
-    "0.0.0.0"
-  }.getOrDefault("0.0.0.0")
 
 // Stable epoch for the "created" field required by strict OpenAI clients (e.g. older openai-python).
 // A fixed constant keeps buildModelsResponse pure and deterministic — no System.currentTimeMillis().
