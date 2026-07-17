@@ -603,138 +603,25 @@ class RelaisHttpServer(
           }
 
           // RAG corpus ingest (Feature #4): chunk -> embed as DOCUMENT -> store a 256-dim MRL vector.
-          method == "POST" && path.startsWith("/v1/rag/documents") -> {
-            if (shedIfHot(::reply)) return
-            val body = JSONObject(readBody(reader, contentLength))
-            val text = body.optString("text")
-            if (text.isBlank()) {
-              reply(400, buildEmbeddingsError("missing 'text'", "invalid_request_error")); return
-            }
-            if (text.length > RAG_MAX_DOCUMENT_CHARS) {
-              reply(400, buildEmbeddingsError("document too large (max $RAG_MAX_DOCUMENT_CHARS chars)", "invalid_request_error")); return
-            }
-            val embedder = availableEmbedderOrReject(::reply) ?: return
-            val title = (body.optString("title").takeIf { it.isNotBlank() } ?: "untitled").take(RAG_MAX_TITLE_CHARS)
-            when (val res = runBlocking { RagStore.ingest(context, title, text, embedder) }) {
-              is RagStore.IngestOutcome.Stored ->
-                reply(
-                  200,
-                  JSONObject().put("object", "rag.document")
-                    .put("document_id", res.documentId).put("chunks", res.chunkCount),
-                )
-              RagStore.IngestOutcome.Empty ->
-                reply(400, buildEmbeddingsError("no embeddable content in 'text'", "invalid_request_error"))
-              is RagStore.IngestOutcome.OverCapacity ->
-                reply(413, buildEmbeddingsError("RAG corpus is at capacity (${res.cap} chunks); delete documents first", "corpus_full"))
-            }
-          }
+          method == "POST" && path.startsWith("/v1/rag/documents") ->
+            handleRagIngest(RequestContext(reader, contentLength, path, ::reply))
 
-          // RAG corpus listing + counts.
-          method == "GET" && path.startsWith("/v1/rag/documents") -> {
-            val docs = runBlocking { RagStore.documents(context) }
-            val arr = JSONArray()
-            docs.forEach {
-              arr.put(JSONObject().put("document_id", it.id).put("title", it.title).put("created", it.createdAt / 1000))
-            }
-            val (docCount, chunkCount) = runBlocking { RagStore.stats(context) }
-            reply(
-              200,
-              JSONObject().put("object", "list").put("data", arr)
-                .put("document_count", docCount).put("chunk_count", chunkCount),
-            )
-          }
+          method == "GET" && path.startsWith("/v1/rag/documents") ->
+            handleRagList(RequestContext(reader, contentLength, path, ::reply))
 
-          // RAG corpus delete (document + its chunks). Id in the body.
-          method == "DELETE" && path.startsWith("/v1/rag/documents") -> {
-            val body = if (contentLength > 0) JSONObject(readBody(reader, contentLength)) else JSONObject()
-            val id = if (body.has("document_id")) body.optLong("document_id", -1L) else -1L
-            if (id < 0) {
-              reply(400, buildEmbeddingsError("missing 'document_id'", "invalid_request_error")); return
-            }
-            runBlocking { RagStore.delete(context, id) }
-            reply(200, JSONObject().put("object", "rag.document.deleted").put("document_id", id))
-          }
+          method == "DELETE" && path.startsWith("/v1/rag/documents") ->
+            handleRagDelete(RequestContext(reader, contentLength, path, ::reply))
 
-          // RAG retrieval (Feature #4): embed the query as QUERY -> brute-force cosine top-k (chunks only).
-          method == "POST" && path.startsWith("/v1/rag/query") -> {
-            if (shedIfHot(::reply)) return
-            val body = JSONObject(readBody(reader, contentLength))
-            val q = body.optString("query")
-            if (q.isBlank()) {
-              reply(400, buildEmbeddingsError("missing 'query'", "invalid_request_error")); return
-            }
-            if (q.length > RAG_MAX_QUERY_CHARS) {
-              reply(400, buildEmbeddingsError("query too long (max $RAG_MAX_QUERY_CHARS chars)", "invalid_request_error")); return
-            }
-            val embedder = availableEmbedderOrReject(::reply) ?: return
-            val topK = body.optInt("top_k", RAG_DEFAULT_TOP_K).coerceIn(1, RAG_MAX_TOP_K)
-            val hits = runBlocking { RagStore.query(context, q, topK, embedder) }
-            val arr = JSONArray()
-            hits.forEach {
-              arr.put(
-                JSONObject().put("text", it.text).put("score", it.score)
-                  .put("document_id", it.documentId).put("chunk_index", it.chunkIndex),
-              )
-            }
-            reply(200, JSONObject().put("object", "list").put("data", arr))
-          }
+          method == "POST" && path.startsWith("/v1/rag/query") ->
+            handleRagQuery(RequestContext(reader, contentLength, path, ::reply))
 
-          // Async batch (Feature #14): queue a chat completion to run off the request path; poll via
-          // GET, and optionally deliver the signed result to a webhook.
-          method == "POST" && path.startsWith("/v1/batch") -> {
-            val raw = readBody(reader, contentLength)
-            if (raw.length > BATCH_MAX_BODY_CHARS) {
-              reply(400, buildEmbeddingsError("batch body too large (max $BATCH_MAX_BODY_CHARS chars)", "invalid_request_error")); return
-            }
-            val body = JSONObject(raw)
-            if (body.optJSONArray("messages") == null) {
-              reply(400, buildEmbeddingsError("missing 'messages'", "invalid_request_error")); return
-            }
-            val webhook = body.optString("webhook").takeIf { it.isNotBlank() }
-            if (webhook != null) {
-              if (webhook.length > BATCH_MAX_WEBHOOK_URL_CHARS) {
-                reply(400, buildEmbeddingsError("webhook URL too long", "invalid_request_error")); return
-              }
-              val verdict = WebhookGuard.check(webhook, RelaisConfig.webhookAllowlist(context))
-              if (verdict is WebhookGuard.Verdict.Blocked) {
-                reply(400, buildEmbeddingsError("webhook rejected: ${verdict.reason}", "invalid_request_error")); return
-              }
-            }
-            val dao = RelaisDatabase.get(context).batchDao()
-            val jobId = java.util.UUID.randomUUID().toString()
-            val now = System.currentTimeMillis()
-            // Atomic count+insert (one transaction): concurrent submits on the multi-threaded pool can't
-            // both pass a stale count and overshoot the cap.
-            val enqueued = runBlocking {
-              dao.insertIfUnderCap(
-                BatchJob(jobId = jobId, status = BatchStatus.QUEUED, requestJson = raw, resultJson = null, webhookUrl = webhook, createdAt = now, updatedAt = now),
-                queuedStatus = BatchStatus.QUEUED,
-                cap = BATCH_MAX_QUEUED,
-              )
-            }
-            if (!enqueued) {
-              reply(429, buildEmbeddingsError("batch queue full (max $BATCH_MAX_QUEUED queued)", "rate_limit_exceeded")); return
-            }
-            BatchWorker.kick(context)
-            reply(202, JSONObject().put("object", "batch.job").put("job_id", jobId).put("status", BatchStatus.QUEUED))
-          }
+          // Async batch (Feature #14): queue a chat completion off the request path; poll via GET.
+          method == "POST" && path.startsWith("/v1/batch") ->
+            handleBatchSubmit(RequestContext(reader, contentLength, path, ::reply))
 
           // Batch job status/result: GET /v1/batch/{job_id}
-          method == "GET" && path.startsWith("/v1/batch/") -> {
-            val jobId = path.removePrefix("/v1/batch/").substringBefore("?").trim()
-            if (jobId.isEmpty()) {
-              reply(400, buildEmbeddingsError("missing job id (GET /v1/batch/{job_id})", "invalid_request_error")); return
-            }
-            val job = runBlocking { RelaisDatabase.get(context).batchDao().byJobId(jobId) }
-            if (job == null) {
-              reply(404, buildEmbeddingsError("batch job not found", "not_found"))
-            } else {
-              val resp = JSONObject().put("object", "batch.job").put("job_id", job.jobId)
-                .put("status", job.status).put("created", job.createdAt / 1000)
-              job.resultJson?.let { resp.put("result", JSONObject(it)) }
-              reply(200, resp)
-            }
-          }
+          method == "GET" && path.startsWith("/v1/batch/") ->
+            handleBatchStatus(RequestContext(reader, contentLength, path, ::reply))
 
           method == "GET" && path.startsWith("/v1/clientconfig") -> {
             // Bearer-gated (the shared auth gate above already enforced the key), so this is the ONE
@@ -1007,6 +894,140 @@ class RelaisHttpServer(
         // "json" default, and any unknown response_format value -> default json (never reject).
         else -> reply(200, JSONObject().put("text", result.text), emptyList())
       }
+    }
+  }
+
+  // --- Extracted route handlers (#173): request-scoped state bundled so handle() shrinks to
+  //     parse -> gate -> dispatch. Behavior moved verbatim from the former inline `when` branches. ---
+
+  /** The request-scoped values an extracted handler needs (so signatures stay short). */
+  private class RequestContext(
+    val reader: HttpRequestReader,
+    val contentLength: Int,
+    val path: String,
+    val reply: (Int, JSONObject, List<String>) -> Unit,
+  ) {
+    /** 2-arg convenience mirroring the handle()-local reply's default (empty headers). */
+    fun send(status: Int, body: JSONObject) = reply(status, body, emptyList())
+  }
+
+  // --- RAG (Feature #4) ---
+
+  private fun handleRagIngest(ctx: RequestContext) {
+    if (shedIfHot(ctx.reply)) return
+    val body = JSONObject(readBody(ctx.reader, ctx.contentLength))
+    val text = body.optString("text")
+    if (text.isBlank()) {
+      ctx.send(400, buildEmbeddingsError("missing 'text'", "invalid_request_error")); return
+    }
+    if (text.length > RAG_MAX_DOCUMENT_CHARS) {
+      ctx.send(400, buildEmbeddingsError("document too large (max $RAG_MAX_DOCUMENT_CHARS chars)", "invalid_request_error")); return
+    }
+    val embedder = availableEmbedderOrReject(ctx.reply) ?: return
+    val title = (body.optString("title").takeIf { it.isNotBlank() } ?: "untitled").take(RAG_MAX_TITLE_CHARS)
+    when (val res = runBlocking { RagStore.ingest(context, title, text, embedder) }) {
+      is RagStore.IngestOutcome.Stored ->
+        ctx.send(200, JSONObject().put("object", "rag.document").put("document_id", res.documentId).put("chunks", res.chunkCount))
+      RagStore.IngestOutcome.Empty ->
+        ctx.send(400, buildEmbeddingsError("no embeddable content in 'text'", "invalid_request_error"))
+      is RagStore.IngestOutcome.OverCapacity ->
+        ctx.send(413, buildEmbeddingsError("RAG corpus is at capacity (${res.cap} chunks); delete documents first", "corpus_full"))
+    }
+  }
+
+  private fun handleRagList(ctx: RequestContext) {
+    val docs = runBlocking { RagStore.documents(context) }
+    val arr = JSONArray()
+    docs.forEach {
+      arr.put(JSONObject().put("document_id", it.id).put("title", it.title).put("created", it.createdAt / 1000))
+    }
+    val (docCount, chunkCount) = runBlocking { RagStore.stats(context) }
+    ctx.send(200, JSONObject().put("object", "list").put("data", arr).put("document_count", docCount).put("chunk_count", chunkCount))
+  }
+
+  private fun handleRagDelete(ctx: RequestContext) {
+    val body = if (ctx.contentLength > 0) JSONObject(readBody(ctx.reader, ctx.contentLength)) else JSONObject()
+    val id = if (body.has("document_id")) body.optLong("document_id", -1L) else -1L
+    if (id < 0) {
+      ctx.send(400, buildEmbeddingsError("missing 'document_id'", "invalid_request_error")); return
+    }
+    runBlocking { RagStore.delete(context, id) }
+    ctx.send(200, JSONObject().put("object", "rag.document.deleted").put("document_id", id))
+  }
+
+  private fun handleRagQuery(ctx: RequestContext) {
+    if (shedIfHot(ctx.reply)) return
+    val body = JSONObject(readBody(ctx.reader, ctx.contentLength))
+    val q = body.optString("query")
+    if (q.isBlank()) {
+      ctx.send(400, buildEmbeddingsError("missing 'query'", "invalid_request_error")); return
+    }
+    if (q.length > RAG_MAX_QUERY_CHARS) {
+      ctx.send(400, buildEmbeddingsError("query too long (max $RAG_MAX_QUERY_CHARS chars)", "invalid_request_error")); return
+    }
+    val embedder = availableEmbedderOrReject(ctx.reply) ?: return
+    val topK = body.optInt("top_k", RAG_DEFAULT_TOP_K).coerceIn(1, RAG_MAX_TOP_K)
+    val hits = runBlocking { RagStore.query(context, q, topK, embedder) }
+    val arr = JSONArray()
+    hits.forEach {
+      arr.put(JSONObject().put("text", it.text).put("score", it.score).put("document_id", it.documentId).put("chunk_index", it.chunkIndex))
+    }
+    ctx.send(200, JSONObject().put("object", "list").put("data", arr))
+  }
+
+  // --- Async batch (Feature #14) ---
+
+  private fun handleBatchSubmit(ctx: RequestContext) {
+    val raw = readBody(ctx.reader, ctx.contentLength)
+    if (raw.length > BATCH_MAX_BODY_CHARS) {
+      ctx.send(400, buildEmbeddingsError("batch body too large (max $BATCH_MAX_BODY_CHARS chars)", "invalid_request_error")); return
+    }
+    val body = JSONObject(raw)
+    if (body.optJSONArray("messages") == null) {
+      ctx.send(400, buildEmbeddingsError("missing 'messages'", "invalid_request_error")); return
+    }
+    val webhook = body.optString("webhook").takeIf { it.isNotBlank() }
+    if (webhook != null) {
+      if (webhook.length > BATCH_MAX_WEBHOOK_URL_CHARS) {
+        ctx.send(400, buildEmbeddingsError("webhook URL too long", "invalid_request_error")); return
+      }
+      val verdict = WebhookGuard.check(webhook, RelaisConfig.webhookAllowlist(context))
+      if (verdict is WebhookGuard.Verdict.Blocked) {
+        ctx.send(400, buildEmbeddingsError("webhook rejected: ${verdict.reason}", "invalid_request_error")); return
+      }
+    }
+    val dao = RelaisDatabase.get(context).batchDao()
+    val jobId = java.util.UUID.randomUUID().toString()
+    val now = System.currentTimeMillis()
+    // Atomic count+insert (one transaction): concurrent submits on the multi-threaded pool can't
+    // both pass a stale count and overshoot the cap.
+    val enqueued = runBlocking {
+      dao.insertIfUnderCap(
+        BatchJob(jobId = jobId, status = BatchStatus.QUEUED, requestJson = raw, resultJson = null, webhookUrl = webhook, createdAt = now, updatedAt = now),
+        queuedStatus = BatchStatus.QUEUED,
+        cap = BATCH_MAX_QUEUED,
+      )
+    }
+    if (!enqueued) {
+      ctx.send(429, buildEmbeddingsError("batch queue full (max $BATCH_MAX_QUEUED queued)", "rate_limit_exceeded")); return
+    }
+    BatchWorker.kick(context)
+    ctx.send(202, JSONObject().put("object", "batch.job").put("job_id", jobId).put("status", BatchStatus.QUEUED))
+  }
+
+  private fun handleBatchStatus(ctx: RequestContext) {
+    val jobId = ctx.path.removePrefix("/v1/batch/").substringBefore("?").trim()
+    if (jobId.isEmpty()) {
+      ctx.send(400, buildEmbeddingsError("missing job id (GET /v1/batch/{job_id})", "invalid_request_error")); return
+    }
+    val job = runBlocking { RelaisDatabase.get(context).batchDao().byJobId(jobId) }
+    if (job == null) {
+      ctx.send(404, buildEmbeddingsError("batch job not found", "not_found"))
+    } else {
+      val resp = JSONObject().put("object", "batch.job").put("job_id", job.jobId)
+        .put("status", job.status).put("created", job.createdAt / 1000)
+      job.resultJson?.let { resp.put("result", JSONObject(it)) }
+      ctx.send(200, resp)
     }
   }
 
