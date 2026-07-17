@@ -462,76 +462,24 @@ class RelaisHttpServer(
             }
           }
 
-          method == "POST" && path == "/v1/audio/transcriptions" -> {
-            // OpenAI /v1/audio/transcriptions (multipart/form-data audio upload). Auth + per-IP rate
-            // limit + 32MB body cap are already enforced above for every non-/health route. This is
-            // heavy resident-engine inference, so it mirrors /generate EXACTLY: thermal 503 first,
-            // admission 429 second, then the shared gate released + the endpoint-labeled latency
-            // recorded in finally for every outcome (success, guard-reject, error).
-            if (shedIfHot(::reply)) return         // thermal 503 wins first
-            if (rejectIfQueueFull(::reply)) return  // admission 429 second — shared permit acquired
-            val inferStartNs = System.nanoTime()
-            try {
-              val boundary = contentType?.let { parseMultipartBoundary(it) }
-              if (boundary == null) {
-                reply(400, JSONObject().put("error", "expected multipart/form-data"))
-                return
-              }
-              val bodyBytes = reader.readBodyBytes(contentLength)
-              val fileParts = parseMultipartFormData(bodyBytes, boundary)
-              val filePart = fileParts.firstOrNull { it.name == "file" }
-              if (filePart == null) {
-                reply(400, JSONObject().put("error", "missing 'file' field"))
-                return
-              }
-              // Optional text fields. `model` is ignored (the node serves its resident model);
-              // temperature/language/prompt are accepted and ignored (v1). Unknown fields never reject.
-              val responseFormat = fileParts.firstOrNull { it.name == "response_format" }
-                ?.let { String(it.bytes, Charsets.UTF_8).trim() }
-                ?.ifBlank { null } ?: "json"
-              // Audio-support guard: a non-multimodal model would silently transcribe to garbage, so
-              // fail clearly (per the audio plan). Engine-not-ready is a transient 503.
-              if (!RelaisEngine.isReady) {
-                reply(503, JSONObject().put("error", "engine not ready"))
-                return
-              }
-              if (!RelaisEngine.isMultimodal) {
-                reply(400, JSONObject().put("error", "resident model does not support audio input"))
-                return
-              }
-              // Bridge to the resident engine reusing the SAME audio wiring as /generate: the raw WAV
-              // bytes go through RelaisRequest.audioWav, driven by a verbatim-transcription instruction.
-              val request = RelaisRequest(
-                text = "Transcribe the following audio to text verbatim. Output only the " +
-                  "transcription, with no commentary, labels, or quotation marks.",
-                audioWav = filePart.bytes,
-              )
-              val result = RelaisEngine.generate(context, request, shouldCancel = { ThermalGovernor.shouldTruncate() })
-              when (responseFormat) {
-                "text" -> {
-                  // respondText does not record a metric (unlike reply), so record it explicitly.
-                  respondText(sock, 200, result.text, "text/plain; charset=utf-8")
-                  RelaisMetrics.recordRequest(endpoint, 200)
-                }
-                // verbose_json: honestly-empty task metadata; NO fabricated timestamps/segments.
-                "verbose_json" ->
-                  reply(
-                    200,
-                    JSONObject()
-                      .put("task", "transcribe")
-                      .put("language", "")
-                      .put("duration", 0)
-                      .put("text", result.text)
-                      .put("segments", JSONArray()),
-                  )
-                // "json" default, and any unknown response_format value -> default json (never reject).
-                else -> reply(200, JSONObject().put("text", result.text))
-              }
-            } finally {
-              RelaisMetrics.recordEndpointLatency("/v1/audio/transcriptions", (System.nanoTime() - inferStartNs) / 1e9)
-              admissionGate.releaseShared()
-            }
-          }
+          method == "POST" && path == "/v1/audio/transcriptions" ->
+            // OpenAI /v1/audio/transcriptions — speech → text verbatim (task=transcribe).
+            handleAudioToText(
+              sock, reader, contentLength, contentType, "/v1/audio/transcriptions", ::reply,
+              instruction = "Transcribe the following audio to text verbatim. Output only the " +
+                "transcription, with no commentary, labels, or quotation marks.",
+              task = "transcribe",
+            )
+
+          method == "POST" && path == "/v1/audio/translations" ->
+            // OpenAI /v1/audio/translations — speech (any language) → ENGLISH text (task=translate).
+            // Same multimodal audio pipeline as transcriptions, only the instruction differs (#175).
+            handleAudioToText(
+              sock, reader, contentLength, contentType, "/v1/audio/translations", ::reply,
+              instruction = "Translate the following audio into English text. Output only the English " +
+                "translation, with no commentary, labels, or quotation marks.",
+              task = "translate",
+            )
 
           method == "POST" && path.startsWith("/v1/audio/speech") -> {
             // OpenAI /v1/audio/speech (issue #168 — audio generation). On-device TTS is a SEPARATE
@@ -1041,6 +989,86 @@ class RelaisHttpServer(
     return true
   }
 
+  // --- OpenAI audio → text (transcriptions + translations) ---
+
+  /**
+   * Shared handler for the two OpenAI audio-to-text endpoints (#175): `/v1/audio/transcriptions`
+   * (task=transcribe) and `/v1/audio/translations` (task=translate). They differ ONLY in the
+   * [instruction] driving the resident multimodal engine and the `task` label in verbose_json.
+   * Mirrors /generate's admission discipline exactly: thermal 503 → admission 429 → shared gate
+   * released + endpoint latency recorded in finally for every outcome.
+   */
+  private fun handleAudioToText(
+    sock: java.net.Socket,
+    reader: HttpRequestReader,
+    contentLength: Int,
+    contentType: String?,
+    endpoint: String,
+    reply: (Int, JSONObject, List<String>) -> Unit,
+    instruction: String,
+    task: String,
+  ) {
+    if (shedIfHot(reply)) return         // thermal 503 wins first
+    if (rejectIfQueueFull(reply)) return // admission 429 second — shared permit acquired
+    val inferStartNs = System.nanoTime()
+    try {
+      val boundary = contentType?.let { parseMultipartBoundary(it) }
+      if (boundary == null) {
+        reply(400, JSONObject().put("error", "expected multipart/form-data"), emptyList())
+        return
+      }
+      val bodyBytes = reader.readBodyBytes(contentLength)
+      val fileParts = parseMultipartFormData(bodyBytes, boundary)
+      val filePart = fileParts.firstOrNull { it.name == "file" }
+      if (filePart == null) {
+        reply(400, JSONObject().put("error", "missing 'file' field"), emptyList())
+        return
+      }
+      // Optional text fields. `model`/temperature/language/prompt are accepted and ignored (v1);
+      // unknown fields never reject.
+      val responseFormat = fileParts.firstOrNull { it.name == "response_format" }
+        ?.let { String(it.bytes, Charsets.UTF_8).trim() }
+        ?.ifBlank { null } ?: "json"
+      // Audio-support guard: a non-multimodal model would silently produce garbage, so fail clearly.
+      if (!RelaisEngine.isReady) {
+        reply(503, JSONObject().put("error", "engine not ready"), emptyList())
+        return
+      }
+      if (!RelaisEngine.isMultimodal) {
+        reply(400, JSONObject().put("error", "resident model does not support audio input"), emptyList())
+        return
+      }
+      // Bridge to the resident engine reusing the SAME audio wiring as /generate: the raw WAV bytes
+      // go through RelaisRequest.audioWav, driven by the transcribe/translate instruction.
+      val request = RelaisRequest(text = instruction, audioWav = filePart.bytes)
+      val result = RelaisEngine.generate(context, request, shouldCancel = { ThermalGovernor.shouldTruncate() })
+      when (responseFormat) {
+        "text" -> {
+          // respondText does not record a metric (unlike reply), so record it explicitly.
+          respondText(sock, 200, result.text, "text/plain; charset=utf-8")
+          RelaisMetrics.recordRequest(endpoint, 200)
+        }
+        // verbose_json: honestly-empty task metadata; NO fabricated timestamps/segments.
+        "verbose_json" ->
+          reply(
+            200,
+            JSONObject()
+              .put("task", task)
+              .put("language", "")
+              .put("duration", 0)
+              .put("text", result.text)
+              .put("segments", JSONArray()),
+            emptyList(),
+          )
+        // "json" default, and any unknown response_format value -> default json (never reject).
+        else -> reply(200, JSONObject().put("text", result.text), emptyList())
+      }
+    } finally {
+      RelaisMetrics.recordEndpointLatency(endpoint, (System.nanoTime() - inferStartNs) / 1e9)
+      admissionGate.releaseShared()
+    }
+  }
+
   // --- OpenAI-compatible chat completions ---
 
   private fun handleOpenAi(sock: java.net.Socket, body: JSONObject, sessionKey: String? = null) {
@@ -1077,6 +1105,9 @@ class RelaisHttpServer(
     // Record the live turn + reply after the response is sent, when a key resolved on the plain path.
     val recordKey = sessionKey?.takeIf { isPlainChat }
     val id = "chatcmpl-" + System.currentTimeMillis()
+    // OpenAI `stream_options.include_usage`: when true, usage is delivered as a dedicated terminal
+    // chunk with empty `choices` (the form LiteLLM / OpenWebUI parse), #175.
+    val includeUsage = streamIncludeUsage(body)
 
     // Tool path: a request advertising tools OR replying with tool results uses the dedicated
     // BLOCKING tool completion (native LiteRT-LM tool API), not the streaming/text paths.
@@ -1157,20 +1188,28 @@ class RelaisHttpServer(
         shouldCancel = { ThermalGovernor.shouldTruncate() },
         onReasoning = { r -> emitDelta(JSONObject().put("reasoning_content", r), null) },
       )
-      // Final chunk: finish_reason (result.finishReason — "length" if thermally truncated, else
-      // "stop"; issue #22) + usage block (always included for client compatibility). OpenAI spec
-      // allows usage on the terminal chunk; we always emit it regardless of
-      // stream_options.include_usage — intermediate chunks carry no usage field.
+      // finish_reason chunk (result.finishReason — "length" if thermally truncated, else "stop"; #22).
+      val created = System.currentTimeMillis() / 1000
+      val usageObj = buildUsageObject(request.text, result.completionTokens)
       val finalChunk = JSONObject().put("id", id).put("object", "chat.completion.chunk")
-        .put("created", System.currentTimeMillis() / 1000)
+        .put("created", created)
         .put("model", model)
         .put("choices", JSONArray().put(
           JSONObject().put("index", 0)
             .put("delta", JSONObject())
             .put("finish_reason", result.finishReason)))
-        .put("usage", buildUsageObject(request.text, result.completionTokens))
-        .put("x_relais_usage_note", "prompt_tokens_estimated")
+      // Backward-compat: usage stays on the finish chunk UNLESS the client opted into the spec form
+      // (stream_options.include_usage), where usage is a SEPARATE empty-choices terminal chunk (#175).
+      if (!includeUsage) finalChunk.put("usage", usageObj).put("x_relais_usage_note", "prompt_tokens_estimated")
       out.write("data: $finalChunk\n\n".toByteArray()); out.flush()
+      if (includeUsage) {
+        val usageChunk = JSONObject().put("id", id).put("object", "chat.completion.chunk")
+          .put("created", created).put("model", model)
+          .put("choices", JSONArray()) // empty choices per the OpenAI include_usage spec
+          .put("usage", usageObj)
+          .put("x_relais_usage_note", "prompt_tokens_estimated")
+        out.write("data: $usageChunk\n\n".toByteArray()); out.flush()
+      }
       out.write("data: [DONE]\n\n".toByteArray()); out.flush()
       // Session memory: persist on stream completion using the captured full result text (the engine
       // returns the whole reply alongside the deltas). Best-effort; never affects the stream.
@@ -1540,6 +1579,7 @@ class RelaisHttpServer(
       path.startsWith("/generate") -> "/generate"
       path.startsWith("/v1/chat/completions") -> "/v1/chat/completions"
       path.startsWith("/v1/audio/transcriptions") -> "/v1/audio/transcriptions"
+      path.startsWith("/v1/audio/translations") -> "/v1/audio/translations"
       path.startsWith("/v1/audio/speech") -> "/v1/audio/speech"
       path.startsWith("/v1/embeddings") -> "/v1/embeddings"
       path.startsWith("/v1/images/generations") -> "/v1/images/generations"
@@ -1710,6 +1750,14 @@ internal fun buildUsageObject(promptText: String, completionTokens: Int): org.js
     .put("completion_tokens", completionTokens)
     .put("total_tokens", promptTokens + completionTokens)
 }
+
+/**
+ * OpenAI `stream_options.include_usage` (#175). True → the streaming response ends with a dedicated
+ * chunk carrying `usage` and an empty `choices` array (what LiteLLM/OpenWebUI parse). Absent/false →
+ * legacy behavior (usage on the finish chunk). Pure + unit-tested. Tolerant of a malformed field.
+ */
+internal fun streamIncludeUsage(body: JSONObject): Boolean =
+  body.optJSONObject("stream_options")?.optBoolean("include_usage", false) ?: false
 
 /**
  * Best-effort LAN IPv4 (prefers wlan), used only as a fallback when the accepting socket's local

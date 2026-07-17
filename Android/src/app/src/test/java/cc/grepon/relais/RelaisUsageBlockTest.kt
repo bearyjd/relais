@@ -16,6 +16,7 @@
 
 package cc.grepon.relais
 
+import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -156,5 +157,20 @@ class RelaisUsageBlockTest {
       "usage sub-object must still have total_tokens",
       usage.has("total_tokens"),
     )
+  }
+
+  // ---------------------------------------------------------------------------
+  // Test 6 — stream_options.include_usage parsing (#175)
+  // ---------------------------------------------------------------------------
+
+  @Test
+  fun `streamIncludeUsage true only when stream_options include_usage is true`() {
+    assertTrue(streamIncludeUsage(JSONObject("""{"stream_options":{"include_usage":true}}""")))
+    assertFalse(streamIncludeUsage(JSONObject("""{"stream_options":{"include_usage":false}}""")))
+    // Absent stream_options, absent field, and a whole absent body-shape all default to false.
+    assertFalse(streamIncludeUsage(JSONObject("""{"stream_options":{}}""")))
+    assertFalse(streamIncludeUsage(JSONObject("""{}""")))
+    // Tolerant of a malformed stream_options (not an object) — no throw, defaults false.
+    assertFalse(streamIncludeUsage(JSONObject("""{"stream_options":"nope"}""")))
   }
 }
