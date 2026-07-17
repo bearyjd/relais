@@ -359,15 +359,8 @@ class RelaisHttpServer(
             }
           }
 
-          method == "POST" && path.startsWith("/generate") -> {
-            if (shedIfHot(::reply)) return         // thermal 503 wins first
-            if (rejectIfQueueFull(::reply)) return  // admission 429 second
-            // Permit acquired — release in finally so a crash or timeout never leaks a slot.
-            // Per-endpoint latency (Feature #10): time the whole inference branch so EVERY outcome
-            // (success, timeout, error) lands in the /generate-labeled histogram. The global tail
-            // guarantee stays in the engine's finally (recordLatency) — un-double-counted.
-            val inferStartNs = System.nanoTime()
-            try {
+          method == "POST" && path.startsWith("/generate") ->
+            withInferenceAdmission("/generate", ::reply) {
               val json = JSONObject(readBody(reader, contentLength))
               if (PromptTemplateStore.isUnknown(context, parseTemplateId(json))) {
                 reply(400, JSONObject().put("error", "unknown template").put("code", "unknown_template"))
@@ -394,11 +387,7 @@ class RelaisHttpServer(
                   .put("backend", result.backend.name)
                   .put("decode_tok_s", result.decodeTokensPerSec),
               )
-            } finally {
-              RelaisMetrics.recordEndpointLatency("/generate", (System.nanoTime() - inferStartNs) / 1e9)
-              admissionGate.releaseShared()
             }
-          }
 
           method == "POST" && path == "/v1/audio/transcriptions" ->
             // OpenAI /v1/audio/transcriptions — speech → text verbatim (task=transcribe).
@@ -770,15 +759,11 @@ class RelaisHttpServer(
             )
           }
 
-          method == "POST" && path.startsWith("/v1/chat/completions") -> {
-            if (shedIfHot(::reply)) return         // thermal 503 wins first
-            if (rejectIfQueueFull(::reply)) return  // admission 429 second (before SSE 200 header)
-            // Permit acquired — release in finally; handleOpenAi may commit the SSE 200 header
-            // before returning, so post-commit errors are handled inside handleOpenAi itself.
-            // Per-endpoint latency (Feature #10): time the whole chat-completions branch, mirroring
-            // /generate, so its p95 separates from /generate's in the labeled histogram.
-            val inferStartNs = System.nanoTime()
-            try {
+          method == "POST" && path.startsWith("/v1/chat/completions") ->
+            // handleOpenAi may commit the SSE 200 header before returning, so post-commit errors are
+            // handled inside handleOpenAi itself; the shared gate + latency are still released/recorded
+            // in withInferenceAdmission's finally.
+            withInferenceAdmission("/v1/chat/completions", ::reply) {
               // Resolve the session key only when session memory is enabled (null otherwise = inert).
               val sessionKey = if (sessionEnabled) resolveSessionKey(sock, sessionHeader) else null
               // Body construction branches on Content-Type; everything downstream (session, streaming,
@@ -817,11 +802,7 @@ class RelaisHttpServer(
               } else {
                 handleOpenAi(sock, JSONObject(readBody(reader, contentLength)), sessionKey)
               }
-            } finally {
-              RelaisMetrics.recordEndpointLatency("/v1/chat/completions", (System.nanoTime() - inferStartNs) / 1e9)
-              admissionGate.releaseShared()
             }
-          }
 
           method == "DELETE" && path.startsWith("/v1/sessions") -> {
             // Clears the caller's resolved session. Auth-gated (shared gate above). Inert + 404 when
@@ -856,6 +837,34 @@ class RelaisHttpServer(
         // Generic client message; detail stays in logcat (don't leak internals to the caller).
         runCatching { respond(sock, 500, JSONObject().put("error", "internal error")) }
       }
+    }
+  }
+
+  /**
+   * Runs [block] under the shared inference-admission discipline (#173): thermal 503 → queue 429 →
+   * then [block], with the shared permit released and the endpoint latency recorded in a `finally` for
+   * EVERY outcome (success, guard-reject, error). Centralizing the gate ordering here — thermal before
+   * queue, release-in-finally — stops the /generate, /v1/chat/completions, and audio-to-text call sites
+   * from drifting. `inline` so a `return` inside [block] is a non-local return from the caller (matching
+   * the prior per-branch skeleton exactly) and the `finally` still runs. A thermal/queue reject replies
+   * and returns without running [block]; the caller's `when` branch simply ends (no fallthrough — the
+   * `else` 404 only fires for UNMATCHED paths).
+   */
+  private inline fun withInferenceAdmission(
+    endpoint: String,
+    // noinline: `reply` is forwarded to the non-inline shedIfHot/rejectIfQueueFull. `block` stays
+    // inline so a `return` inside it is a non-local return from the caller.
+    noinline reply: (Int, JSONObject, List<String>) -> Unit,
+    block: () -> Unit,
+  ) {
+    if (shedIfHot(reply)) return         // thermal 503 wins first
+    if (rejectIfQueueFull(reply)) return // admission 429 second — shared permit acquired
+    val startNs = System.nanoTime()
+    try {
+      block()
+    } finally {
+      RelaisMetrics.recordEndpointLatency(endpoint, (System.nanoTime() - startNs) / 1e9)
+      admissionGate.releaseShared()
     }
   }
 
@@ -946,10 +955,7 @@ class RelaisHttpServer(
     instruction: String,
     task: String,
   ) {
-    if (shedIfHot(reply)) return         // thermal 503 wins first
-    if (rejectIfQueueFull(reply)) return // admission 429 second — shared permit acquired
-    val inferStartNs = System.nanoTime()
-    try {
+    withInferenceAdmission(endpoint, reply) {
       val boundary = contentType?.let { parseMultipartBoundary(it) }
       if (boundary == null) {
         reply(400, JSONObject().put("error", "expected multipart/form-data"), emptyList())
@@ -1001,9 +1007,6 @@ class RelaisHttpServer(
         // "json" default, and any unknown response_format value -> default json (never reject).
         else -> reply(200, JSONObject().put("text", result.text), emptyList())
       }
-    } finally {
-      RelaisMetrics.recordEndpointLatency(endpoint, (System.nanoTime() - inferStartNs) / 1e9)
-      admissionGate.releaseShared()
     }
   }
 
