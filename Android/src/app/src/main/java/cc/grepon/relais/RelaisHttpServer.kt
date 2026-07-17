@@ -265,6 +265,8 @@ class RelaisHttpServer(
           }
         }
 
+        // Request-scoped context threaded into the extracted route handlers (#173).
+        val ctx = RequestContext(sock, reader, contentLength, path, sessionEnabled, sessionHeader, ::reply)
         when {
           method == "GET" && path.startsWith("/health") ->
             reply(
@@ -462,11 +464,7 @@ class RelaisHttpServer(
             }
           }
 
-          method == "GET" && path.startsWith("/v1/models") -> {
-            val refs = RelaisModelCatalog.curatedModels()
-            val fallback = RelaisConfig.modelId(context)
-            reply(200, buildModelsResponse(refs, fallback))
-          }
+          method == "GET" && path.startsWith("/v1/models") -> handleModels(ctx)
 
           method == "POST" && path.startsWith("/v1/embeddings") -> {
             // OpenAI /v1/embeddings. Auth-gated by the shared gate above. Embedding inference runs the
@@ -604,47 +602,26 @@ class RelaisHttpServer(
 
           // RAG corpus ingest (Feature #4): chunk -> embed as DOCUMENT -> store a 256-dim MRL vector.
           method == "POST" && path.startsWith("/v1/rag/documents") ->
-            handleRagIngest(RequestContext(reader, contentLength, path, ::reply))
+            handleRagIngest(ctx)
 
           method == "GET" && path.startsWith("/v1/rag/documents") ->
-            handleRagList(RequestContext(reader, contentLength, path, ::reply))
+            handleRagList(ctx)
 
           method == "DELETE" && path.startsWith("/v1/rag/documents") ->
-            handleRagDelete(RequestContext(reader, contentLength, path, ::reply))
+            handleRagDelete(ctx)
 
           method == "POST" && path.startsWith("/v1/rag/query") ->
-            handleRagQuery(RequestContext(reader, contentLength, path, ::reply))
+            handleRagQuery(ctx)
 
           // Async batch (Feature #14): queue a chat completion off the request path; poll via GET.
           method == "POST" && path.startsWith("/v1/batch") ->
-            handleBatchSubmit(RequestContext(reader, contentLength, path, ::reply))
+            handleBatchSubmit(ctx)
 
           // Batch job status/result: GET /v1/batch/{job_id}
           method == "GET" && path.startsWith("/v1/batch/") ->
-            handleBatchStatus(RequestContext(reader, contentLength, path, ::reply))
+            handleBatchStatus(ctx)
 
-          method == "GET" && path.startsWith("/v1/clientconfig") -> {
-            // Bearer-gated (the shared auth gate above already enforced the key), so this is the ONE
-            // surface that may carry the raw API key — it builds paste-ready Open WebUI / Continue.dev
-            // / Aider configs for the LAN HTTPS base URL. IP comes from the accepting socket's local
-            // address (the real bound interface); lanIpv4() is a defensive fallback only.
-            val ip = RelaisLanIp.localLanIp(sock)
-            val baseUrl = "https://$ip:8443/v1"
-            val caps = RelaisClientConfig.Capabilities(
-              multimodal = RelaisEngine.isMultimodal,
-              tools = true,
-              reasoning = true,
-            )
-            reply(
-              200,
-              RelaisClientConfig.buildClientConfigJson(
-                baseUrl = baseUrl,
-                apiKey = RelaisConfig.apiKey(context),
-                modelId = RelaisConfig.modelId(context),
-                caps = caps,
-              ),
-            )
-          }
+          method == "GET" && path.startsWith("/v1/clientconfig") -> handleClientConfig(ctx)
 
           method == "POST" && path.startsWith("/v1/chat/completions") ->
             // handleOpenAi may commit the SSE 200 header before returning, so post-commit errors are
@@ -691,30 +668,9 @@ class RelaisHttpServer(
               }
             }
 
-          method == "DELETE" && path.startsWith("/v1/sessions") -> {
-            // Clears the caller's resolved session. Auth-gated (shared gate above). Inert + 404 when
-            // the feature is off so the surface area doesn't exist by default.
-            val key = if (sessionEnabled) resolveSessionKey(sock, sessionHeader) else null
-            if (key == null) {
-              reply(if (sessionEnabled) 400 else 404,
-                JSONObject().put("error", if (sessionEnabled) "no session key" else "not found"))
-            } else {
-              runBlocking { RelaisSessionStore.clear(context, key) }
-              reply(200, JSONObject().put("status", "cleared"))
-            }
-          }
+          method == "DELETE" && path.startsWith("/v1/sessions") -> handleSessionClear(ctx)
 
-          method == "GET" && path.startsWith("/v1/sessions") -> {
-            // Returns the caller's own turn count only — never another session's data.
-            val key = if (sessionEnabled) resolveSessionKey(sock, sessionHeader) else null
-            if (key == null) {
-              reply(if (sessionEnabled) 400 else 404,
-                JSONObject().put("error", if (sessionEnabled) "no session key" else "not found"))
-            } else {
-              val turns = runBlocking { RelaisSessionStore.count(context, key) }
-              reply(200, JSONObject().put("turns", turns).put("session_memory", true))
-            }
-          }
+          method == "GET" && path.startsWith("/v1/sessions") -> handleSessionInfo(ctx)
 
           else -> reply(404, JSONObject().put("error", "not found"))
         }
@@ -902,9 +858,12 @@ class RelaisHttpServer(
 
   /** The request-scoped values an extracted handler needs (so signatures stay short). */
   private class RequestContext(
+    val sock: java.net.Socket,
     val reader: HttpRequestReader,
     val contentLength: Int,
     val path: String,
+    val sessionEnabled: Boolean,
+    val sessionHeader: String?,
     val reply: (Int, JSONObject, List<String>) -> Unit,
   ) {
     /** 2-arg convenience mirroring the handle()-local reply's default (empty headers). */
@@ -1028,6 +987,62 @@ class RelaisHttpServer(
         .put("status", job.status).put("created", job.createdAt / 1000)
       job.resultJson?.let { resp.put("result", JSONObject(it)) }
       ctx.send(200, resp)
+    }
+  }
+
+  // --- Metadata / config endpoints ---
+
+  private fun handleModels(ctx: RequestContext) {
+    val refs = RelaisModelCatalog.curatedModels()
+    val fallback = RelaisConfig.modelId(context)
+    ctx.send(200, buildModelsResponse(refs, fallback))
+  }
+
+  private fun handleClientConfig(ctx: RequestContext) {
+    // Bearer-gated (the shared auth gate above already enforced the key), so this is the ONE surface
+    // that may carry the raw API key — it builds paste-ready Open WebUI / Continue.dev / Aider configs
+    // for the LAN HTTPS base URL. IP comes from the accepting socket's local address (the real bound
+    // interface); lanIpv4() is a defensive fallback only.
+    val ip = RelaisLanIp.localLanIp(ctx.sock)
+    val baseUrl = "https://$ip:8443/v1"
+    val caps = RelaisClientConfig.Capabilities(
+      multimodal = RelaisEngine.isMultimodal,
+      tools = true,
+      reasoning = true,
+    )
+    ctx.send(
+      200,
+      RelaisClientConfig.buildClientConfigJson(
+        baseUrl = baseUrl,
+        apiKey = RelaisConfig.apiKey(context),
+        modelId = RelaisConfig.modelId(context),
+        caps = caps,
+      ),
+    )
+  }
+
+  private fun handleSessionClear(ctx: RequestContext) {
+    // Clears the caller's resolved session. Auth-gated (shared gate above). Inert + 404 when the
+    // feature is off so the surface area doesn't exist by default.
+    val key = if (ctx.sessionEnabled) resolveSessionKey(ctx.sock, ctx.sessionHeader) else null
+    if (key == null) {
+      ctx.send(if (ctx.sessionEnabled) 400 else 404,
+        JSONObject().put("error", if (ctx.sessionEnabled) "no session key" else "not found"))
+    } else {
+      runBlocking { RelaisSessionStore.clear(context, key) }
+      ctx.send(200, JSONObject().put("status", "cleared"))
+    }
+  }
+
+  private fun handleSessionInfo(ctx: RequestContext) {
+    // Returns the caller's own turn count only — never another session's data.
+    val key = if (ctx.sessionEnabled) resolveSessionKey(ctx.sock, ctx.sessionHeader) else null
+    if (key == null) {
+      ctx.send(if (ctx.sessionEnabled) 400 else 404,
+        JSONObject().put("error", if (ctx.sessionEnabled) "no session key" else "not found"))
+    } else {
+      val turns = runBlocking { RelaisSessionStore.count(context, key) }
+      ctx.send(200, JSONObject().put("turns", turns).put("session_memory", true))
     }
   }
 
