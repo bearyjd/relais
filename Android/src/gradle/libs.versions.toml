@@ -53,6 +53,9 @@ mlkit-text-recognition = "16.0.1"
 mcp = "0.8.0"
 ktor = "3.4.3"
 robolectric = "4.14.1"  # https://github.com/robolectric/robolectric/releases/tag/robolectric-4.14.1
+# Virtual-time coroutine testing (runTest/TestScope) — matches the resolved kotlinx-coroutines 1.10.x
+# in the graph. Test-only; used by the shell-polling pause/resume regression (#171).
+coroutinesTest = "1.10.2"
 room = "2.7.1"  # KSP2-compatible line (Kotlin 2.2.0 uses KSP2); 2.6.x predates KSP2 Room support
 glance = "1.1.1"  # Glance app-widget (#3); pinned to the cached version so --offline builds resolve
 # On-device text-to-image (sd.cpp / Stable Diffusion via Vulkan) — feature #16, FULL FLAVOR ONLY. Its
@@ -114,6 +117,7 @@ mcp-kotlin-sdk = { group = "io.modelcontextprotocol", name = "kotlin-sdk", versi
 ktor-client-android = { group = "io.ktor", name = "ktor-client-android", version.ref = "ktor" }
 ktor-client-core = { group = "io.ktor", name = "ktor-client-core", version.ref = "ktor" }
 robolectric = { group = "org.robolectric", name = "robolectric", version.ref = "robolectric" }
+kotlinx-coroutines-test = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-test", version.ref = "coroutinesTest" }
 androidx-room-runtime = { group = "androidx.room", name = "room-runtime", version.ref = "room" }
 androidx-room-ktx = { group = "androidx.room", name = "room-ktx", version.ref = "room" }
 androidx-room-compiler = { group = "androidx.room", name = "room-compiler", version.ref = "room" }

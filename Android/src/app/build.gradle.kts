@@ -243,6 +243,7 @@ dependencies {
   testImplementation(libs.junit)
   testImplementation(libs.com.google.code.gson)
   testImplementation(libs.robolectric)
+  testImplementation(libs.kotlinx.coroutines.test) // virtual-time coroutine tests (#171 shell-polling)
   // Real org.json implementation for JVM unit tests: Android stubs return null for put() under
   // isReturnDefaultValues=true, which breaks buildModelsResponse. This jar provides the real impl.
   testImplementation("org.json:json:20240303")

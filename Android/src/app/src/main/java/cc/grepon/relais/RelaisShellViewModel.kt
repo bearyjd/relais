@@ -19,12 +19,41 @@ package cc.grepon.relais
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
+
+/** Poll cadence + how long the shared loop keeps running after the last collector leaves. */
+internal const val SHELL_POLL_INTERVAL_MS = 1000L
+internal const val SHELL_POLL_STOP_TIMEOUT_MS = 5000L
+
+/**
+ * Builds the shell's lifecycle-scoped node-status poll: a cold loop that emits `produce()` every
+ * [intervalMs], shared via `SharingStarted.WhileSubscribed([stopTimeoutMs])`. It runs ONLY while a
+ * collector is present and stops [stopTimeoutMs] ms after the last one leaves (app backgrounded),
+ * resuming on re-subscribe — the #145 "polling pauses when backgrounded" behavior.
+ *
+ * Extracted as a pure, injectable seam so that pause/resume is guarded by a fast JVM test (#171) with
+ * a counting `produce` + virtual time — no Android/Robolectric needed. [produce] is also called once
+ * eagerly to seed the StateFlow's initial value (so the first composed frame isn't empty).
+ */
+internal fun <T> pollingStateFlow(
+  scope: CoroutineScope,
+  intervalMs: Long = SHELL_POLL_INTERVAL_MS,
+  stopTimeoutMs: Long = SHELL_POLL_STOP_TIMEOUT_MS,
+  produce: () -> T,
+): StateFlow<T> =
+  flow {
+      while (true) {
+        emit(produce())
+        delay(intervalMs)
+      }
+    }
+    .stateIn(scope, SharingStarted.WhileSubscribed(stopTimeoutMs), produce())
 
 /** One polling tick's worth of node-status state, snapshotted together so both derived
  * [RelaisShellViewModel.panelState] and [RelaisShellViewModel.modelDisplay] StateFlows come from
@@ -48,28 +77,20 @@ private data class RelaisShellSnapshot(
  * synchronously with an initial snapshot so the first composed frame isn't empty/default.
  */
 class RelaisShellViewModel(app: Application) : AndroidViewModel(app) {
-  private val snapshots =
-      flow {
-            while (true) {
-              emit(RelaisShellSnapshot(panelState = snapshotPanelState(), modelDisplay = currentModelDisplay()))
-              delay(1000)
-            }
-          }
-          .stateIn(
-              viewModelScope,
-              SharingStarted.WhileSubscribed(5000),
-              RelaisShellSnapshot(panelState = snapshotPanelState(), modelDisplay = currentModelDisplay()),
-          )
+  private val snapshots: StateFlow<RelaisShellSnapshot> =
+      pollingStateFlow(viewModelScope) {
+        RelaisShellSnapshot(panelState = snapshotPanelState(), modelDisplay = currentModelDisplay())
+      }
 
   val panelState: StateFlow<RelaisControlPanelState> =
       snapshots
           .map { it.panelState }
-          .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), snapshots.value.panelState)
+          .stateIn(viewModelScope, SharingStarted.WhileSubscribed(SHELL_POLL_STOP_TIMEOUT_MS), snapshots.value.panelState)
 
   val modelDisplay: StateFlow<String> =
       snapshots
           .map { it.modelDisplay }
-          .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), snapshots.value.modelDisplay)
+          .stateIn(viewModelScope, SharingStarted.WhileSubscribed(SHELL_POLL_STOP_TIMEOUT_MS), snapshots.value.modelDisplay)
 
   /** Dispatches the single state-appropriate primary action (START / CANCEL / STOP). */
   fun onPrimaryAction() {
