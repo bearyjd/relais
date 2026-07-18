@@ -466,139 +466,9 @@ class RelaisHttpServer(
 
           method == "GET" && path.startsWith("/v1/models") -> handleModels(ctx)
 
-          method == "POST" && path.startsWith("/v1/embeddings") -> {
-            // OpenAI /v1/embeddings. Auth-gated by the shared gate above. Embedding inference runs the
-            // NPU/CPU too, so honor thermal backpressure first (same 503 + Retry-After as inference).
-            if (shedIfHot(::reply)) return
-            val body = JSONObject(readBody(reader, contentLength))
-            val inputs = parseEmbeddingInputs(body)
-            if (inputs == null) {
-              reply(400, buildEmbeddingsError("invalid 'input' (expected a non-empty string or string[])", "invalid_request_error"))
-              return
-            }
-            when (validateEmbeddingInputs(inputs, EMBEDDINGS_MAX_INPUTS, EMBEDDINGS_MAX_INPUT_CHARS)) {
-              EmbeddingValidation.TooMany ->
-                reply(400, buildEmbeddingsError("too many inputs (max $EMBEDDINGS_MAX_INPUTS)", "invalid_request_error"))
-              EmbeddingValidation.TooLong ->
-                reply(400, buildEmbeddingsError("an input exceeds the per-item limit ($EMBEDDINGS_MAX_INPUT_CHARS chars)", "invalid_request_error"))
-              EmbeddingValidation.Ok -> {
-                // Optional retrieval-asymmetry selector: queries and documents use different
-                // EmbeddingGemma prefixes. Absent/blank → DOCUMENT (the sensible default for "embed
-                // these inputs"); an unrecognized value → 400. `x_relais_` is the namespaced alias.
-                val taskSel = body.optString("embedding_task").ifBlank { body.optString("x_relais_embedding_task") }
-                val task = EmbeddingTask.fromRequest(taskSel)
-                if (task == null) {
-                  reply(400, buildEmbeddingsError("unknown 'embedding_task' (expected 'query' or 'document')", "invalid_request_error"))
-                } else {
-                  val embedder = RelaisEmbedderProvider.get()
-                  if (embedder == null || !embedder.isAvailable(context)) {
-                    // Not loaded yet. If it CAN provision (an HF token is set for the gated model),
-                    // kick a one-time background download/load and tell the client to retry — the
-                    // request thread never blocks on the ~180 MB fetch. Otherwise it's genuinely
-                    // unavailable (no token for the gated model).
-                    if (embedder is EmbeddingGemmaEmbedder && embedder.canProvision(context)) {
-                      embedder.ensureProvisioningStarted(context)
-                      reply(
-                        503,
-                        buildEmbeddingsError("embeddings model is provisioning; retry shortly", "service_unavailable"),
-                        listOf("Retry-After: 10"),
-                      )
-                    } else {
-                      reply(501, buildEmbeddingsError("embeddings model not provisioned", "not_implemented"))
-                    }
-                  } else {
-                    val model = body.optString("model").takeIf { it.isNotBlank() } ?: RelaisConfig.modelId(context)
-                    val vectors =
-                      if (embedder is EmbeddingGemmaEmbedder) embedder.embed(context, inputs, task)
-                      else embedder.embed(context, inputs)
-                    // Contract insurance: one vector per input. A misbehaving embedder returning fewer
-                    // would otherwise silently drop entries from the OpenAI response (→ outer catch 500).
-                    check(vectors.size == inputs.size) {
-                      "embedder returned ${vectors.size} vectors for ${inputs.size} inputs"
-                    }
-                    val promptTokens = embedder.countTokens(inputs)
-                    reply(200, buildEmbeddingsResponse(vectors, model, promptTokens))
-                  }
-                }
-              }
-            }
-          }
+          method == "POST" && path.startsWith("/v1/embeddings") -> handleEmbeddings(ctx)
 
-          method == "POST" && path.startsWith("/v1/images/generations") -> {
-            // OpenAI /v1/images/generations (Feature #16). Image gen is the heaviest decode, so honor
-            // thermal backpressure first (same 503 + Retry-After as inference). On-device generation is
-            // a SEPARATE runtime from LiteRT-LM (text-out only); per the verdict (docs/images-
-            // generations-api.md) the viable path is sd.cpp via a process-isolated backend (MediaPipe is
-            // a dead end here). Until a backend registers a RelaisImageGenerator, the provider is null
-            // and this returns an honest 501 — exactly how /v1/embeddings shipped before #6's impl.
-            if (shedIfHot(::reply)) return
-            val body = JSONObject(readBody(reader, contentLength))
-            // Default steps come from the SELECTED model's own step count (issue #135: SD-Turbo is a
-            // 4-step model, but a flat 20-step default ran 5x the intended work and blew the node's
-            // 720s watchdog). Falls back to IMAGE_GEN_LIMITS.defaultSteps only if the configured model
-            // id/URL/SHA no longer resolves to a known model (e.g. a stale custom-URL config).
-            val modelSteps = imageModelById(
-              RelaisConfig.imageModelId(context),
-              RelaisConfig.imageModelUrl(context),
-              RelaisConfig.imageModelSha(context),
-            )?.steps ?: IMAGE_GEN_LIMITS.defaultSteps
-            when (val parsed = parseImageRequest(body, IMAGE_GEN_LIMITS, modelSteps)) {
-              is ImageRequestResult.Invalid ->
-                reply(400, buildImagesError(parsed.message, "invalid_request_error"))
-              is ImageRequestResult.Valid -> {
-                val generator = RelaisImageGeneratorProvider.get()
-                // Single snapshot (the full impl computes it atomically) so a provision completing
-                // mid-request can't yield a spurious 501; a null provider (degoogled/unregistered) → 501.
-                when (generator?.availability(context) ?: ImageGenAvailability.UNAVAILABLE) {
-                  ImageGenAvailability.UNAVAILABLE ->
-                    // No backend registered (degoogled / not yet) or a GPU-less / nothing-to-provision
-                    // backend → honest 501, exactly how /v1/embeddings shipped before #6's impl.
-                    reply(501, buildImagesError("image generation model not provisioned", "not_implemented"))
-
-                  ImageGenAvailability.PROVISIONING -> {
-                    // Mirror /v1/embeddings: kick a one-time background download + tell the client to
-                    // retry, so the request thread never blocks on the multi-GB model fetch.
-                    generator?.ensureProvisioningStarted(context)
-                    reply(
-                      503,
-                      buildImagesError("image generation model is provisioning; retry shortly", "service_unavailable"),
-                      listOf("Retry-After: 30"),
-                    )
-                  }
-
-                  ImageGenAvailability.READY -> {
-                    val gen = requireNotNull(generator) // READY implies a non-null, available generator
-                    // Image gen is the heaviest GPU op, so run it EXCLUSIVELY: drain the whole admission
-                    // gate (all permits) so no LLM decode or a 2nd image-gen co-occupies GPU memory with
-                    // it (single-flight + decode-exclusive by construction). If the gate can't drain
-                    // within the wait window (device busy with in-flight decode) this 503s; decode
-                    // requests fast-fail 429 while the lock is held — they never block on the long generate.
-                    // Released in finally so a crash never leaks the lock.
-                    if (acquireImageGenExclusiveOrReject(::reply)) return
-                    val inferStartNs = System.nanoTime()
-                    try {
-                      val req = parsed.request
-                      // n is capped at IMAGE_GEN_LIMITS (≤2), so the base64 PNGs held here are bounded.
-                      val pngs = ArrayList<ByteArray>(req.n)
-                      // Thermal-cancellation seam, like /generate (RelaisEngine.generate shouldCancel).
-                      repeat(req.n) {
-                        pngs.add(
-                          gen.generate(
-                            context, req.prompt, req.steps, req.seed,
-                            shouldCancel = { ThermalGovernor.shouldTruncate() },
-                          )
-                        )
-                      }
-                      reply(200, buildImagesResponse(pngs, System.currentTimeMillis() / 1000))
-                    } finally {
-                      RelaisMetrics.recordEndpointLatency("/v1/images/generations", (System.nanoTime() - inferStartNs) / 1e9)
-                      admissionGate.releaseExclusive()
-                    }
-                  }
-                }
-              }
-            }
-          }
+          method == "POST" && path.startsWith("/v1/images/generations") -> handleImages(ctx)
 
           // RAG corpus ingest (Feature #4): chunk -> embed as DOCUMENT -> store a 256-dim MRL vector.
           method == "POST" && path.startsWith("/v1/rag/documents") ->
@@ -1043,6 +913,111 @@ class RelaisHttpServer(
     } else {
       val turns = runBlocking { RelaisSessionStore.count(context, key) }
       ctx.send(200, JSONObject().put("turns", turns).put("session_memory", true))
+    }
+  }
+
+  // --- Embeddings (#6) + image generation (#16) ---
+
+  private fun handleEmbeddings(ctx: RequestContext) {
+    // Embedding inference runs the NPU/CPU too, so honor thermal backpressure first (503 + Retry-After).
+    if (shedIfHot(ctx.reply)) return
+    val body = JSONObject(readBody(ctx.reader, ctx.contentLength))
+    val inputs = parseEmbeddingInputs(body)
+    if (inputs == null) {
+      ctx.send(400, buildEmbeddingsError("invalid 'input' (expected a non-empty string or string[])", "invalid_request_error")); return
+    }
+    when (validateEmbeddingInputs(inputs, EMBEDDINGS_MAX_INPUTS, EMBEDDINGS_MAX_INPUT_CHARS)) {
+      EmbeddingValidation.TooMany ->
+        ctx.send(400, buildEmbeddingsError("too many inputs (max $EMBEDDINGS_MAX_INPUTS)", "invalid_request_error"))
+      EmbeddingValidation.TooLong ->
+        ctx.send(400, buildEmbeddingsError("an input exceeds the per-item limit ($EMBEDDINGS_MAX_INPUT_CHARS chars)", "invalid_request_error"))
+      EmbeddingValidation.Ok -> {
+        // Retrieval-asymmetry selector: query vs document use different EmbeddingGemma prefixes.
+        // Absent/blank → DOCUMENT default; unrecognized → 400. `x_relais_` is the namespaced alias.
+        val taskSel = body.optString("embedding_task").ifBlank { body.optString("x_relais_embedding_task") }
+        val task = EmbeddingTask.fromRequest(taskSel)
+        if (task == null) {
+          ctx.send(400, buildEmbeddingsError("unknown 'embedding_task' (expected 'query' or 'document')", "invalid_request_error"))
+        } else {
+          val embedder = RelaisEmbedderProvider.get()
+          if (embedder == null || !embedder.isAvailable(context)) {
+            // Not loaded. If it CAN provision (HF token set), kick a one-time background load + 503-retry
+            // so the request thread never blocks on the ~180 MB fetch; else genuinely unavailable → 501.
+            if (embedder is EmbeddingGemmaEmbedder && embedder.canProvision(context)) {
+              embedder.ensureProvisioningStarted(context)
+              ctx.reply(503, buildEmbeddingsError("embeddings model is provisioning; retry shortly", "service_unavailable"), listOf("Retry-After: 10"))
+            } else {
+              ctx.send(501, buildEmbeddingsError("embeddings model not provisioned", "not_implemented"))
+            }
+          } else {
+            val model = body.optString("model").takeIf { it.isNotBlank() } ?: RelaisConfig.modelId(context)
+            val vectors =
+              if (embedder is EmbeddingGemmaEmbedder) embedder.embed(context, inputs, task)
+              else embedder.embed(context, inputs)
+            // Contract insurance: one vector per input (a short return would silently drop entries → 500).
+            check(vectors.size == inputs.size) { "embedder returned ${vectors.size} vectors for ${inputs.size} inputs" }
+            val promptTokens = embedder.countTokens(inputs)
+            ctx.send(200, buildEmbeddingsResponse(vectors, model, promptTokens))
+          }
+        }
+      }
+    }
+  }
+
+  private fun handleImages(ctx: RequestContext) {
+    // Image gen is the heaviest decode → thermal 503 first. On-device gen is a SEPARATE runtime from
+    // LiteRT-LM (sd.cpp via a process-isolated backend); honest 501 until a RelaisImageGenerator registers.
+    if (shedIfHot(ctx.reply)) return
+    val body = JSONObject(readBody(ctx.reader, ctx.contentLength))
+    // Default steps come from the SELECTED model (issue #135: SD-Turbo is 4-step; a flat 20 blew the
+    // watchdog). Falls back to IMAGE_GEN_LIMITS.defaultSteps only if the config no longer resolves.
+    val modelSteps = imageModelById(
+      RelaisConfig.imageModelId(context),
+      RelaisConfig.imageModelUrl(context),
+      RelaisConfig.imageModelSha(context),
+    )?.steps ?: IMAGE_GEN_LIMITS.defaultSteps
+    when (val parsed = parseImageRequest(body, IMAGE_GEN_LIMITS, modelSteps)) {
+      is ImageRequestResult.Invalid ->
+        ctx.send(400, buildImagesError(parsed.message, "invalid_request_error"))
+      is ImageRequestResult.Valid -> {
+        val generator = RelaisImageGeneratorProvider.get()
+        // Single atomic snapshot so a provision completing mid-request can't yield a spurious 501;
+        // a null provider (degoogled/unregistered) → 501.
+        when (generator?.availability(context) ?: ImageGenAvailability.UNAVAILABLE) {
+          ImageGenAvailability.UNAVAILABLE ->
+            ctx.send(501, buildImagesError("image generation model not provisioned", "not_implemented"))
+
+          ImageGenAvailability.PROVISIONING -> {
+            generator?.ensureProvisioningStarted(context)
+            ctx.reply(503, buildImagesError("image generation model is provisioning; retry shortly", "service_unavailable"), listOf("Retry-After: 30"))
+          }
+
+          ImageGenAvailability.READY -> {
+            val gen = requireNotNull(generator) // READY implies a non-null, available generator
+            // Heaviest GPU op → run EXCLUSIVELY: drain the whole admission gate so no LLM decode or a
+            // 2nd image-gen co-occupies GPU memory (single-flight, decode-exclusive). If it can't drain
+            // in the wait window this 503s; decode requests fast-fail 429 while held. Released in finally.
+            if (acquireImageGenExclusiveOrReject(ctx.reply)) return
+            val inferStartNs = System.nanoTime()
+            try {
+              val req = parsed.request
+              val pngs = ArrayList<ByteArray>(req.n) // n ≤ IMAGE_GEN_LIMITS, so the base64 PNGs are bounded
+              repeat(req.n) {
+                pngs.add(
+                  gen.generate(
+                    context, req.prompt, req.steps, req.seed,
+                    shouldCancel = { ThermalGovernor.shouldTruncate() },
+                  )
+                )
+              }
+              ctx.send(200, buildImagesResponse(pngs, System.currentTimeMillis() / 1000))
+            } finally {
+              RelaisMetrics.recordEndpointLatency("/v1/images/generations", (System.nanoTime() - inferStartNs) / 1e9)
+              admissionGate.releaseExclusive()
+            }
+          }
+        }
+      }
     }
   }
 
