@@ -956,7 +956,7 @@ class RelaisHttpServer(
               ctx.send(501, buildEmbeddingsError("embeddings model not provisioned", "not_implemented"))
             }
           } else {
-            val model = body.optString("model").takeIf { it.isNotBlank() } ?: RelaisConfig.modelId(context)
+            val model = resolveEmbeddingModel(body.optString("model"), embedder.modelId)
             val vectors =
               if (embedder is EmbeddingGemmaEmbedder) embedder.embed(context, inputs, task)
               else embedder.embed(context, inputs)
@@ -993,9 +993,7 @@ class RelaisHttpServer(
             ctx.send(501, buildRerankError("rerank model not provisioned", "not_implemented"))
           }
         } else {
-          // Report the embedder that actually did the rerank (issue #190), not the resident LLM. A
-          // rerank client's `model` field is meaningless here (one embedder), so it is not echoed.
-          val model = embedder.modelId
+          val model = resolveEmbeddingModel(body.optString("model"), embedder.modelId)
           val queryVec =
             (if (embedder is EmbeddingGemmaEmbedder) embedder.embed(context, listOf(req.query), EmbeddingTask.QUERY)
             else embedder.embed(context, listOf(req.query))).first()
@@ -1827,6 +1825,18 @@ internal fun validateEmbeddingInputs(inputs: List<String>, maxCount: Int, maxIte
     inputs.any { it.length > maxItemLength } -> EmbeddingValidation.TooLong
     else -> EmbeddingValidation.Ok
   }
+
+/**
+ * Resolves the `model` reported in an embeddings/rerank response: echoes [requestedModel] when the
+ * client sent one (OpenAI/Cohere both echo the requested model), otherwise falls back to
+ * [embedderModelId] — the embedder that actually produced the result — rather than the resident
+ * LLM's id (issue #190/#192). Shared by `/v1/embeddings` and `/v1/rerank`, the two RAG-triad
+ * endpoints that serve from [cc.grepon.relais.embed.RelaisEmbedder].
+ *
+ * Pure — unit-testable on the JVM.
+ */
+internal fun resolveEmbeddingModel(requestedModel: String?, embedderModelId: String): String =
+  requestedModel?.takeIf { it.isNotBlank() } ?: embedderModelId
 
 /**
  * Shapes the OpenAI-compatible `/v1/embeddings` success response from already-computed [vectors].

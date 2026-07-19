@@ -56,6 +56,9 @@ class EmbeddingGemmaEmbedder : RelaisEmbedder {
   /** EmbeddingGemma's native hidden size; validated against the loaded graph's output. */
   override val dim: Int get() = DIM
 
+  /** States its own identity explicitly rather than riding [RelaisEmbedder]'s interface default. */
+  override val modelId: String get() = EMBEDDING_REPO_ID
+
   @Volatile private var loaded: Loaded? = null
   @Volatile private var integrityFailures: Int = 0
   @Volatile private var lastIntegrityFailureAtMs: Long = 0L
