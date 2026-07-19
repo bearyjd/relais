@@ -1,50 +1,86 @@
-RELAIS CODEMAP — GENERATION REPORT
-Generated: 2026-06-26 | Branch: main @ 44879e6
+Codemap refresh — 2026-07-19
+Previous generation: 2026-06-26 @ main 44879e6
+This generation:      2026-07-19 @ main ab345ff (~35 days, +63 commits)
 
-STATUS: INITIAL GENERATION (no prior codemaps in docs/CODEMAPS/ — diff baseline established)
+FILES SCANNED: 334 main .kt (was 289) + 87 test .kt at prior snapshot (untracked delta this pass)
 
-FILES SCANNED
-  Relais-authored main (cc/grepon/relais): 289 .kt
-  Unit tests (src/test, relais):            69 .kt
-  Instrumented tests (src/androidTest):     18 .kt
-  Build/config:  build.gradle.kts, src/gradle/libs.versions.toml,
-                 AndroidManifest.xml + src/{full,degoogled,playsafe} overrides
+=== CHANGE SUMMARY BY FILE ===
 
-CODEMAPS WRITTEN (docs/CODEMAPS/)
-  architecture.md  — node subsystem boundaries, data flow, backends, resilience
-  backend.md       — HTTP routes -> core/ seams; node lifecycle; admission/security
-  frontend.md      — UI nav tree, Relais-control vs inherited-Gallery split, theme, customtasks
-  data.md          — Room v4 schema + migrations, proto DataStore, Hilt DI graph
-  dependencies.md  — external deps, flavor/appId matrix, manifest exported surface + perms
+architecture.md   ~45% changed
+  - ADDED: rerank subsystem, TTS subsystem, native mid-decode cancel (issue #165) to the
+    resilience spine and data-flow diagram
+  - CHANGED: litertlm 0.11.0 -> 0.12.0 (pinned; 0.14.0 tested+reverted, regresses G5 TPU, #150)
+  - CHANGED: "what it is" framing extended to include TTS/rerank/RAG-triad
+  - CORRECTED: ui/+customtasks/ reframed from "inherited Gallery, in active use" to
+    "mostly dead code, unreachable" (see frontend.md finding below)
 
-SUBSYSTEM INVENTORY (Relais-authored, cc/grepon/relais/)
-  core/        pure JVM seams (Admission, ToolParsing, StructuredOutput, SessionPolicy,
-               Reasoning, FinishReason, ClientConfig, RelaisInference, NodeState, NodeController)
-  runtime/ worker/ batch/   model I/O, session-prune, download, batch drain + signed webhook
-  embed/ rag/ nodetools/    EmbeddingGemma + SentencePiece; brute-force vector RAG; builtin tools
-  triage/ notifications/    notification listener + AI digest/urgent workers (#7)
-  share/ nfc/ tile/ widget/ automation/ templates/   trampoline -> pure-decision -> worker pattern
-  imagegen/    process-isolated :imagegen facade; endpoint honest-501 (#16)
-  ui/ customtasks/   inherited google-ai-edge/gallery (re-namespaced, off DESIGN.md)
+backend.md   ~55% changed (largest structural rewrite)
+  - RelaisHttpServer: 1570L -> 1876L, but decomposed from one ~717-line handle() god-method
+    into ~20 small handleX(ctx: RequestContext) handlers behind a shared RequestContext
+    (PRs #183-#188, issue #173 finding #1)
+  - ADDED ROUTES: POST /v1/rerank (new), POST /v1/audio/speech (new, TTS)
+  - ADDED: RequestContext field list, 5 new extracted helper files (RelaisTls, RelaisLanIp,
+    RelaisHttpIo, RelaisAdmission, RelaisAdmissionGate), resolveEmbeddingModel echo-contract
+    fix (issue #190/#192)
+  - ADDED PACKAGES: rerank/, tts/ (both new since old snapshot)
 
-KEY FACTS VERIFIED AGAINST CODE (not the handoff)
-  litertlm = 0.11.0 (shipped); litert = 1.4.2; llmedge = 0.3.9
-    (NOTE: 0.13.1 in HANDOFF was a G5-bug test build, NOT the shipped version)
-  compileSdk/targetSdk = 35, minSdk = 31, ABIs = arm64-v8a + x86_64
-  Room relais.db v4, additive migrations 1->2->3->4, no destructive fallback
-  Flavors: dist(full|degoogled) x policy(open|playsafe) -> 3 shipped appIds; degoogled+playsafe filtered
-  playsafe Play-compliance stripping is LIVE (#76): src/playsafe/AndroidManifest.xml,
-    6x tools:node="remove" + CI aapt-permission gate  [corrects an Explore agent's stale "future PR" read]
+data.md   ~30% changed
+  - Room schema v4 -> v5: new Conversation + ChatTurn entities, new ChatDao (backs the
+    "chat depth" persistent in-app conversation feature)
+  - New migration 4->5
+  - UNCHANGED: DataStore (5 serializers), DI (AppModule), config storage (RelaisConfig)
+  - ADDED: on-disk provisioning path table for TTS/embed/imagegen (was previously undocumented)
 
-ARCHITECTURE NOTES
-  Two consumer surfaces: HTTP (RelaisHttpServer :8443 TLS / :8080 loopback) and
-    in-process core/RelaisInference (tiles/widgets/share/nfc/triage/automation; cold-start-guarded)
-  Node core is NOT in Hilt (plain singletons reachable from cold-start paths); only DataStore/repos are
-  Default model gemma-4-E4B-it; Tensor G5 pins E2B (LiteRT-LM #2566 first-inference SIGSEGV)
+frontend.md   ~65% changed (biggest reframe, not just additive)
+  - STRUCTURAL FINDING: ui/navigation/GalleryNavGraph.kt and GalleryApp() are now UNREACHABLE.
+    MainActivity calls the new RelaisAppShell NavHost directly instead. This makes ~157 files
+    (ui/ 114 + customtasks/ 43) dead code, not "inherited UI still in use" as the prior map
+    stated — this is a correction, not just an addition.
+  - ADDED: RelaisAppShell nav tree (Dashboard/Chat/Models bottom nav), Chat Depth feature
+    (Room-persistent conversations, hybrid HTTP/in-process transport, ChatTransportSelector,
+    markdown, attachments, export, in-chat model switch)
+  - REMOVED FROM ACTIVE DESCRIPTION: old GalleryNavGraph route table (still exists in code,
+    now dead)
 
-DEPENDENCY CHANGES SINCE LAST SCAN: n/a (initial)
-STALENESS WARNINGS: n/a (initial) — re-run after major feature/refactor work; flag codemaps >90 days old
+dependencies.md   ~35% changed
+  - ADDED DEPS: sherpa-onnx 1.13.4 (JitPack, TTS), commons-compress 1.27.1 (voice bundle
+    decompression), kotlinx-coroutines-test 1.10.2 (virtual-time testing)
+  - CHANGED: litertlm 0.11.0 -> 0.12.0 with regression rationale
+  - ADDED: license-lint.yml CI job (AGPL/Apache header enforcement) — not present in old map
+  - ADDED: new exported cc.grepon.relais.notifications.BootReceiver
+  - UNCHANGED: flavor matrix shape (full/degoogled x open/playsafe), manifest core surface
 
-OPEN SECURITY SURFACE FLAGGED IN MAPS
-  customtasks/agentchat add-skill-from-URL: host-allowlist only, descriptor content unvalidated,
-    skills run JS in WebView (SSRF guard added #72; residual prompt-injection risk if app ships UI)
+=== STALENESS WARNINGS ===
+None of the 5 codemaps were stale beyond the >30% threshold check itself (35 days is within a
+reasonable cadence) — the volume of change reflects an unusually dense feature-shipping window
+(TTS #168, rerank #177/#189, native cancel #125/#165, RelaisHttpServer decomposition #173,
+OpenAI quick-wins #175, chat depth, model-echo contract fix #190/#192), not doc neglect.
+
+=== HIGH-VALUE FINDING (not a codemap-format issue, flagged separately) ===
+frontend.md's dead-code discovery (ui/ + customtasks/, ~157 files, ~unreachable since the
+app-shell unification) is a real cleanup opportunity worth its own issue/PR, independent of
+the codemap refresh itself. Not filed as a GitHub issue during this pass — flagging here per
+the codemap workflow's "staleness warnings" step so it isn't silently lost.
+
+=== SAME-DAY CORRECTION (2026-07-19, later this session) ===
+The "~157 files dead" claim above was investigated further while planning the actual cleanup
+and found FALSE. A rigorous reachability audit (import BFS + Hilt @IntoSet multibinding trace,
+hand-verified against source) found only 29 files are genuinely dead. The other 128 are live:
+- ui/modelmanager/ModelManagerViewModel.kt + ui/benchmark/* are directly wired into
+  MainActivity.kt/RelaisAppShell.kt (not through GalleryNavGraph at all).
+- customtasks/agentchat/ (skill manager + URL-based skill install, MCP client w/ OAuth+header
+  auth, WebView agent sandbox), customtasks/mobileactions/, customtasks/tinygarden/,
+  ui/llmchat/, ui/llmsingleturn/ are all Hilt @Provides @IntoSet multibindings feeding
+  ModelManagerViewModel's `Set<CustomTask>` constructor parameter — a wiring mechanism that
+  has ZERO Kotlin import connecting it to RelaisAppShell, so a plain grep/BFS (which is what
+  produced the original "157 dead" claim) cannot see it. Deleting these would break the build
+  via Hilt annotation processing.
+- customtasks/agentchat/ in particular has NO replacement anywhere in the new Relais-native
+  stack (nodetools/ is a fixed 4-tool list; no user-facing skill/MCP management exists) — so
+  even setting DI-liveness aside, deleting it would be a real feature regression, not cleanup.
+docs/CODEMAPS/architecture.md and frontend.md have been corrected same-day. The actual cleanup
+plan (scoped to the verified 29-file dead list only) is at
+.claude/PRPs/plans/dead-code-cleanup-ui-customtasks.plan.md.
+LESSON: for "is this code reachable" questions in Hilt/Dagger codebases, multibinding
+(@IntoSet/@IntoMap) is invisible to import-graph analysis — always grep for @IntoSet/@IntoMap
+providers separately and trace their consumers before declaring code dead.
