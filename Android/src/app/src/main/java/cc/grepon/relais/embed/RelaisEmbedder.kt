@@ -23,6 +23,14 @@ interface RelaisEmbedder {
   /** Embedding vector dimension (e.g. 384 for bge-small-en-v1.5). */
   val dim: Int
 
+  /**
+   * Stable model identifier reported to clients in the `model` field of `/v1/embeddings` and
+   * `/v1/rerank` responses — the embedding model that actually did the work, NOT the resident LLM
+   * (issue #190). Defaults to the EmbeddingGemma HF repo id, the only shipped embedder today.
+   */
+  val modelId: String
+    get() = EMBEDDING_REPO_ID
+
   /** True once a model is provisioned + loaded. Callers gate on this (→ 501 / RAG-disabled). */
   fun isAvailable(context: Context): Boolean
 

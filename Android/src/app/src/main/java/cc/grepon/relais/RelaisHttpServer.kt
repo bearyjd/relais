@@ -993,7 +993,9 @@ class RelaisHttpServer(
             ctx.send(501, buildRerankError("rerank model not provisioned", "not_implemented"))
           }
         } else {
-          val model = body.optString("model").takeIf { it.isNotBlank() } ?: RelaisConfig.modelId(context)
+          // Report the embedder that actually did the rerank (issue #190), not the resident LLM. A
+          // rerank client's `model` field is meaningless here (one embedder), so it is not echoed.
+          val model = embedder.modelId
           val queryVec =
             (if (embedder is EmbeddingGemmaEmbedder) embedder.embed(context, listOf(req.query), EmbeddingTask.QUERY)
             else embedder.embed(context, listOf(req.query))).first()
