@@ -266,100 +266,15 @@ class RelaisHttpServer(
         }
 
         // Request-scoped context threaded into the extracted route handlers (#173).
-        val ctx = RequestContext(sock, reader, contentLength, path, sessionEnabled, sessionHeader, ::reply)
+        val ctx = RequestContext(sock, reader, contentLength, path, endpoint, accept, sessionEnabled, sessionHeader, ::reply)
         when {
-          method == "GET" && path.startsWith("/health") ->
-            reply(
-              200,
-              JSONObject()
-                .put("status", "ok")
-                .put("ready", RelaisEngine.isReady)
-                .put("thermal_state", ThermalGovernor.statusValue),
-            )
+          method == "GET" && path.startsWith("/health") -> handleHealth(ctx)
 
-          method == "GET" && path == "/" -> {
-            // Auth-gated (bearer required — same gate as /metrics; /health is the only open route).
-            // Reads only already-collected metrics; no state change. Scriptless + escaped; strict
-            // security headers added via extraHeaders (CSP no script-src, nosniff, X-Frame DENY).
-            RelaisMetrics.recordRequest(endpoint, 200)
-            val metricsJson = RelaisMetrics.renderJson(context)
-            val dashCaps = RelaisClientConfig.Capabilities(
-              multimodal = RelaisEngine.isMultimodal,
-              tools = true,
-              reasoning = true,
-            )
-            val dashStatus = assembleDashboardStatus(
-              engineReady = RelaisEngine.isReady,
-              startupInProgress = RelaisEngine.startupInProgress,
-              thermalStatus = ThermalGovernor.statusValue,
-              decodeTokensPerSec = metricsJson.optDouble("decode_tokens_per_second", 0.0),
-              currentModelId = RelaisConfig.modelId(context),
-              uptimeSeconds = metricsJson.optDouble("uptime_seconds", 0.0),
-              queueDepth = RelaisMetrics.queueDepth(),
-              errorsTotal = metricsJson.optLong("errors_total", 0L),
-              shedTotal = metricsJson.optLong("shed_total", 0L),
-              recentRequests = RelaisMetrics.recentRequests(),
-              // Mask the key for the HTML view — the raw key is only ever returned by the
-              // bearer-gated /v1/clientconfig endpoint, never rendered into the dashboard page.
-              baseUrl = "https://${RelaisLanIp.localLanIp(sock)}:8443/v1",
-              apiKeyMasked = maskApiKey(RelaisConfig.apiKey(context)),
-              capabilities = dashCaps.toCapsString(),
-            )
-            val html = renderDashboardHtml(dashStatus)
-            respondText(
-              sock, 200, html, "text/html; charset=utf-8",
-              listOf(
-                // Scriptless page — no script-src at all; default-src 'none' blocks everything else.
-                "Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'",
-                "X-Content-Type-Options: nosniff",
-                "X-Frame-Options: DENY",
-                "Referrer-Policy: no-referrer",
-              ),
-            )
-          }
+          method == "GET" && path == "/" -> handleDashboard(ctx)
 
-          method == "GET" && path == "/experiments" -> {
-            // Auth-gated like "/" (bearer required). Unlike the scriptless dashboard, this page
-            // carries ONE inline script, authorized via a per-request CSP nonce — no other script
-            // can execute. connect-src 'self' lets that script call the node's own /v1 endpoints.
-            RelaisMetrics.recordRequest(endpoint, 200)
-            val expCaps = RelaisClientConfig.Capabilities(
-              multimodal = RelaisEngine.isMultimodal,
-              tools = true,
-              reasoning = true,
-            )
-            val expStatus = assembleExperimentsStatus(
-              engineReady = RelaisEngine.isReady,
-              startupInProgress = RelaisEngine.startupInProgress,
-              currentModelId = RelaisConfig.modelId(context),
-              capabilities = expCaps.toCapsString(),
-            )
-            val nonce = Base64.encodeToString(
-              ByteArray(16).also { SecureRandom().nextBytes(it) },
-              Base64.NO_WRAP,
-            )
-            val html = renderExperimentsHtml(expStatus, nonce)
-            respondText(
-              sock, 200, html, "text/html; charset=utf-8",
-              listOf(
-                "Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; " +
-                  "script-src 'nonce-$nonce'; connect-src 'self'; img-src data:; base-uri 'none'; " +
-                  "frame-ancestors 'none'; form-action 'none'",
-                "X-Content-Type-Options: nosniff",
-                "X-Frame-Options: DENY",
-                "Referrer-Policy: no-referrer",
-              ),
-            )
-          }
+          method == "GET" && path == "/experiments" -> handleExperiments(ctx)
 
-          method == "GET" && path.startsWith("/metrics") -> {
-            RelaisMetrics.recordRequest(endpoint, 200)
-            if (accept?.contains("application/json") == true) {
-              respond(sock, 200, RelaisMetrics.renderJson(context))
-            } else {
-              respondText(sock, 200, RelaisMetrics.renderProm(context), "text/plain; version=0.0.4")
-            }
-          }
+          method == "GET" && path.startsWith("/metrics") -> handleMetrics(ctx)
 
           method == "POST" && path.startsWith("/generate") ->
             withInferenceAdmission("/generate", ::reply) {
@@ -732,12 +647,93 @@ class RelaisHttpServer(
     val reader: HttpRequestReader,
     val contentLength: Int,
     val path: String,
+    val endpoint: String,
+    val accept: String?,
     val sessionEnabled: Boolean,
     val sessionHeader: String?,
     val reply: (Int, JSONObject, List<String>) -> Unit,
   ) {
     /** 2-arg convenience mirroring the handle()-local reply's default (empty headers). */
     fun send(status: Int, body: JSONObject) = reply(status, body, emptyList())
+  }
+
+  // --- Status pages / metrics ---
+
+  private fun handleHealth(ctx: RequestContext) {
+    ctx.send(
+      200,
+      JSONObject().put("status", "ok").put("ready", RelaisEngine.isReady).put("thermal_state", ThermalGovernor.statusValue),
+    )
+  }
+
+  private fun handleDashboard(ctx: RequestContext) {
+    // Auth-gated (bearer required — same gate as /metrics; /health is the only open route). Reads only
+    // already-collected metrics; no state change. Scriptless + escaped; strict security headers below.
+    RelaisMetrics.recordRequest(ctx.endpoint, 200)
+    val metricsJson = RelaisMetrics.renderJson(context)
+    val dashCaps = RelaisClientConfig.Capabilities(multimodal = RelaisEngine.isMultimodal, tools = true, reasoning = true)
+    val dashStatus = assembleDashboardStatus(
+      engineReady = RelaisEngine.isReady,
+      startupInProgress = RelaisEngine.startupInProgress,
+      thermalStatus = ThermalGovernor.statusValue,
+      decodeTokensPerSec = metricsJson.optDouble("decode_tokens_per_second", 0.0),
+      currentModelId = RelaisConfig.modelId(context),
+      uptimeSeconds = metricsJson.optDouble("uptime_seconds", 0.0),
+      queueDepth = RelaisMetrics.queueDepth(),
+      errorsTotal = metricsJson.optLong("errors_total", 0L),
+      shedTotal = metricsJson.optLong("shed_total", 0L),
+      recentRequests = RelaisMetrics.recentRequests(),
+      // Mask the key for the HTML view — the raw key is only ever returned by the bearer-gated
+      // /v1/clientconfig endpoint, never rendered into the dashboard page.
+      baseUrl = "https://${RelaisLanIp.localLanIp(ctx.sock)}:8443/v1",
+      apiKeyMasked = maskApiKey(RelaisConfig.apiKey(context)),
+      capabilities = dashCaps.toCapsString(),
+    )
+    respondText(
+      ctx.sock, 200, renderDashboardHtml(dashStatus), "text/html; charset=utf-8",
+      listOf(
+        // Scriptless page — no script-src at all; default-src 'none' blocks everything else.
+        "Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'",
+        "X-Content-Type-Options: nosniff",
+        "X-Frame-Options: DENY",
+        "Referrer-Policy: no-referrer",
+      ),
+    )
+  }
+
+  private fun handleExperiments(ctx: RequestContext) {
+    // Auth-gated like "/". Unlike the scriptless dashboard, this page carries ONE inline script,
+    // authorized via a per-request CSP nonce — no other script can execute. connect-src 'self' lets
+    // that script call the node's own /v1 endpoints.
+    RelaisMetrics.recordRequest(ctx.endpoint, 200)
+    val expCaps = RelaisClientConfig.Capabilities(multimodal = RelaisEngine.isMultimodal, tools = true, reasoning = true)
+    val expStatus = assembleExperimentsStatus(
+      engineReady = RelaisEngine.isReady,
+      startupInProgress = RelaisEngine.startupInProgress,
+      currentModelId = RelaisConfig.modelId(context),
+      capabilities = expCaps.toCapsString(),
+    )
+    val nonce = Base64.encodeToString(ByteArray(16).also { SecureRandom().nextBytes(it) }, Base64.NO_WRAP)
+    respondText(
+      ctx.sock, 200, renderExperimentsHtml(expStatus, nonce), "text/html; charset=utf-8",
+      listOf(
+        "Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; " +
+          "script-src 'nonce-$nonce'; connect-src 'self'; img-src data:; base-uri 'none'; " +
+          "frame-ancestors 'none'; form-action 'none'",
+        "X-Content-Type-Options: nosniff",
+        "X-Frame-Options: DENY",
+        "Referrer-Policy: no-referrer",
+      ),
+    )
+  }
+
+  private fun handleMetrics(ctx: RequestContext) {
+    RelaisMetrics.recordRequest(ctx.endpoint, 200)
+    if (ctx.accept?.contains("application/json") == true) {
+      respond(ctx.sock, 200, RelaisMetrics.renderJson(context))
+    } else {
+      respondText(ctx.sock, 200, RelaisMetrics.renderProm(context), "text/plain; version=0.0.4")
+    }
   }
 
   // --- RAG (Feature #4) ---
