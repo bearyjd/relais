@@ -1,0 +1,30 @@
+{
+  "provenance": "synthetic",
+  "note": "Hand-authored OpenAI-shape messages[] array, same style as ToolConversationParseTest.kt's inline literals. Not a device capture — see README.md in this directory.",
+  "messages": [
+    { "role": "user", "content": "What's the weather in Paris?" },
+    {
+      "role": "assistant",
+      "content": null,
+      "tool_calls": [
+        {
+          "id": "call_1",
+          "type": "function",
+          "function": { "name": "get_weather", "arguments": "{\"city\":\"Paris\"}" }
+        }
+      ]
+    },
+    { "role": "tool", "tool_call_id": "call_1", "content": "sunny, 21C" },
+    { "role": "user", "content": "And tomorrow?" }
+  ],
+  "expected": {
+    "lastUserText": "And tomorrow?",
+    "assistantToolCallCount": 1,
+    "assistantToolCallId": "call_1",
+    "assistantToolCallName": "get_weather",
+    "assistantToolCallArgumentsJson": "{\"city\":\"Paris\"}",
+    "toolTurnName": "get_weather",
+    "toolTurnText": "sunny, 21C",
+    "liveToolResultsEmpty": true
+  }
+}

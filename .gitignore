@@ -6,3 +6,4 @@ Android/src/app/src/main/res/raw/relais_keystore.p12
 
 # oh-my-claudecode local orchestration state (ephemeral; scattered through the tree by hooks)
 .omc/
+.gstack/
