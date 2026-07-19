@@ -956,7 +956,9 @@ class RelaisHttpServer(
               ctx.send(501, buildEmbeddingsError("embeddings model not provisioned", "not_implemented"))
             }
           } else {
-            val model = body.optString("model").takeIf { it.isNotBlank() } ?: RelaisConfig.modelId(context)
+            // Report the embedder that produced the vectors (issue #190), not the resident LLM. The
+            // client's `model` field is meaningless here (one embedder) so it is not echoed.
+            val model = embedder.modelId
             val vectors =
               if (embedder is EmbeddingGemmaEmbedder) embedder.embed(context, inputs, task)
               else embedder.embed(context, inputs)
