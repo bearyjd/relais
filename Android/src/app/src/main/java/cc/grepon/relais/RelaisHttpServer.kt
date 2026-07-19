@@ -22,6 +22,14 @@ import android.util.Log
 import cc.grepon.relais.data.RelaisModelRef
 import cc.grepon.relais.embed.EmbeddingGemmaEmbedder
 import cc.grepon.relais.embed.EmbeddingTask
+import cc.grepon.relais.embed.cosineSimilarity
+import cc.grepon.relais.rerank.RERANK_LIMITS
+import cc.grepon.relais.rerank.RerankRequestResult
+import cc.grepon.relais.rerank.buildRerankError
+import cc.grepon.relais.rerank.buildRerankResponse
+import cc.grepon.relais.rerank.cosineToRelevance
+import cc.grepon.relais.rerank.parseRerankRequest
+import cc.grepon.relais.rerank.rerankOrder
 import cc.grepon.relais.embed.RelaisEmbedderProvider
 import cc.grepon.relais.imagegen.ImageGenAvailability
 import cc.grepon.relais.imagegen.RelaisImageGeneratorProvider
@@ -382,6 +390,8 @@ class RelaisHttpServer(
           method == "GET" && path.startsWith("/v1/models") -> handleModels(ctx)
 
           method == "POST" && path.startsWith("/v1/embeddings") -> handleEmbeddings(ctx)
+
+          method == "POST" && path.startsWith("/v1/rerank") -> handleRerank(ctx)
 
           method == "POST" && path.startsWith("/v1/images/generations") -> handleImages(ctx)
 
@@ -960,6 +970,44 @@ class RelaisHttpServer(
     }
   }
 
+  private fun handleRerank(ctx: RequestContext) {
+    // Bi-encoder rerank (#177) — completes the RAG triad (embeddings -> retrieve -> rerank). Embeds the
+    // query (QUERY prefix) + each document (DOCUMENT prefix) with the resident EmbeddingGemma model and
+    // orders by cosine, mapped to the Cohere/Jina [0,1] relevance_score. Reuses the RAG embedder: no new
+    // model/runtime, works on all flavors. A true cross-encoder is a quality follow-up (no tflite one
+    // exists yet); the /v1/rerank interface stays stable so that swap is internal.
+    if (shedIfHot(ctx.reply)) return
+    val body = JSONObject(readBody(ctx.reader, ctx.contentLength))
+    when (val parsed = parseRerankRequest(body, RERANK_LIMITS)) {
+      is RerankRequestResult.Invalid ->
+        ctx.send(400, buildRerankError(parsed.message, "invalid_request_error"))
+      is RerankRequestResult.Valid -> {
+        val req = parsed.request
+        val embedder = RelaisEmbedderProvider.get()
+        if (embedder == null || !embedder.isAvailable(context)) {
+          // Mirror /v1/embeddings: kick a one-time background load + 503-retry if provisionable, else 501.
+          if (embedder is EmbeddingGemmaEmbedder && embedder.canProvision(context)) {
+            embedder.ensureProvisioningStarted(context)
+            ctx.reply(503, buildRerankError("rerank model is provisioning; retry shortly", "service_unavailable"), listOf("Retry-After: 10"))
+          } else {
+            ctx.send(501, buildRerankError("rerank model not provisioned", "not_implemented"))
+          }
+        } else {
+          val model = body.optString("model").takeIf { it.isNotBlank() } ?: RelaisConfig.modelId(context)
+          val queryVec =
+            (if (embedder is EmbeddingGemmaEmbedder) embedder.embed(context, listOf(req.query), EmbeddingTask.QUERY)
+            else embedder.embed(context, listOf(req.query))).first()
+          val docVecs =
+            if (embedder is EmbeddingGemmaEmbedder) embedder.embed(context, req.documents, EmbeddingTask.DOCUMENT)
+            else embedder.embed(context, req.documents)
+          val scores = FloatArray(docVecs.size) { cosineToRelevance(cosineSimilarity(queryVec, docVecs[it])) }
+          val order = rerankOrder(scores, req.topN)
+          ctx.send(200, buildRerankResponse(order, scores, req.documents, req.returnDocuments, model))
+        }
+      }
+    }
+  }
+
   private fun handleImages(ctx: RequestContext) {
     // Image gen is the heaviest decode → thermal 503 first. On-device gen is a SEPARATE runtime from
     // LiteRT-LM (sd.cpp via a process-isolated backend); honest 501 until a RelaisImageGenerator registers.
@@ -1530,6 +1578,7 @@ class RelaisHttpServer(
       path.startsWith("/v1/audio/translations") -> "/v1/audio/translations"
       path.startsWith("/v1/audio/speech") -> "/v1/audio/speech"
       path.startsWith("/v1/embeddings") -> "/v1/embeddings"
+      path.startsWith("/v1/rerank") -> "/v1/rerank"
       path.startsWith("/v1/images/generations") -> "/v1/images/generations"
       path.startsWith("/v1/models") -> "/v1/models"
       path.startsWith("/v1/clientconfig") -> "/v1/clientconfig"
