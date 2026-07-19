@@ -26,7 +26,9 @@ interface RelaisEmbedder {
   /**
    * Stable model identifier reported to clients in the `model` field of `/v1/embeddings` and
    * `/v1/rerank` responses — the embedding model that actually did the work, NOT the resident LLM
-   * (issue #190). Defaults to the EmbeddingGemma HF repo id, the only shipped embedder today.
+   * (issue #190). The default (EmbeddingGemma's HF repo id) exists so test fakes need not override
+   * it; [EmbeddingGemmaEmbedder] — the only shipped real implementation — states it explicitly
+   * rather than relying on this default.
    */
   val modelId: String
     get() = EMBEDDING_REPO_ID

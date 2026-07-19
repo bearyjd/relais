@@ -147,4 +147,28 @@ class RelaisEmbeddingsEndpointTest {
     assertEquals("embeddings model not provisioned", error.getString("message"))
     assertEquals("not_implemented", error.getString("type"))
   }
+
+  // resolveEmbeddingModel (issue #190/#192): echo the client's requested model (OpenAI/Cohere both
+  // echo it) when present; fall back to the embedder's own id — never the resident LLM — otherwise.
+
+  @Test fun `resolveEmbeddingModel echoes a client-requested model`() {
+    assertEquals(
+      "text-embedding-3-small",
+      resolveEmbeddingModel("text-embedding-3-small", "litert-community/embeddinggemma-300m"),
+    )
+  }
+
+  @Test fun `resolveEmbeddingModel falls back to the embedder id when the request omits model`() {
+    assertEquals(
+      "litert-community/embeddinggemma-300m",
+      resolveEmbeddingModel(null, "litert-community/embeddinggemma-300m"),
+    )
+  }
+
+  @Test fun `resolveEmbeddingModel falls back to the embedder id for a blank model`() {
+    assertEquals(
+      "litert-community/embeddinggemma-300m",
+      resolveEmbeddingModel("", "litert-community/embeddinggemma-300m"),
+    )
+  }
 }
