@@ -22,11 +22,8 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.pdf.PdfRenderer
 import android.net.Uri
-import android.os.Bundle
 import android.os.ParcelFileDescriptor
-import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -49,14 +46,11 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.DrawerValue
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalDrawerSheet
 import androidx.compose.material3.ModalNavigationDrawer
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextFieldDefaults
-import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -86,46 +80,6 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-/**
- * In-app chat surface — a minimal client for the resident engine, styled per DESIGN.md (amber on
- * charcoal, monospace). Unlike the OpenAI HTTP endpoint, this calls [RelaisEngine.generate]
- * in-process: no node start, no key, no LAN. Multi-turn history is seeded via [RelaisRequest.history]
- * so each send costs one decode. A trailing readout shows the resolved backend + decode tok/s — the
- * same numbers the benchmark screen reports, so this doubles as a quick on-device sanity check that
- * the model is live and which accelerator served it.
- *
- * Attachments map to what the engine can actually ingest ([RelaisRequest] carries ONE imagePng and
- * ONE audioWav; LiteRT-LM has no document encoder):
- *  - images           → downscaled PNG → vision encoder (multimodal models only)
- *  - PDF              → first page rendered via [PdfRenderer] → vision encoder (single-image cap)
- *  - audio (WAV only) → raw bytes → audio encoder, same pass-through as /v1/audio/transcriptions
- *  - text-ish files   → inlined above the prompt, capped hard: the resident engine runs
- *    MAX_NUM_TOKENS=4096 total, so docs are trimmed to [DOC_CHAR_CAP] chars (works on any model)
- * (Mime names spelled out in prose here because Kotlin block comments NEST — a literal
- * slash-star wildcard inside a KDoc opens a nested comment and eats the rest of the file.)
- */
-class RelaisChatActivity : ComponentActivity() {
-  override fun onCreate(savedInstanceState: Bundle?) {
-    super.onCreate(savedInstanceState)
-    setContent {
-      MaterialTheme(
-        colorScheme =
-          darkColorScheme(
-            primary = Amber,
-            onPrimary = Charcoal,
-            background = Charcoal,
-            onBackground = Paper,
-            surface = Panel,
-            onSurface = Paper,
-            error = StopRed,
-          )
-      ) {
-        Surface(modifier = Modifier.fillMaxSize(), color = Charcoal) { ChatScreen() }
-      }
-    }
-  }
-}
-
 /** One staged attachment, already converted to an engine-ingestible form. */
 private sealed interface Attachment {
   val label: String
@@ -149,6 +103,24 @@ private const val CHAT_TAG = "RelaisChat"
 /** Cap applied to the READ itself, before buffering — a hostile provider can stream unbounded. */
 private const val MAX_ATTACH_BYTES = 32 * 1024 * 1024
 
+/**
+ * In-app chat surface — a minimal client for the resident engine, styled per DESIGN.md (amber on
+ * charcoal, monospace). Unlike the OpenAI HTTP endpoint, this calls [RelaisEngine.generate]
+ * in-process: no node start, no key, no LAN. Multi-turn history is seeded via [RelaisRequest.history]
+ * so each send costs one decode. A trailing readout shows the resolved backend + decode tok/s — the
+ * same numbers the benchmark screen reports, so this doubles as a quick on-device sanity check that
+ * the model is live and which accelerator served it.
+ *
+ * Attachments map to what the engine can actually ingest ([RelaisRequest] carries ONE imagePng and
+ * ONE audioWav; LiteRT-LM has no document encoder):
+ *  - images           → downscaled PNG → vision encoder (multimodal models only)
+ *  - PDF              → first page rendered via [PdfRenderer] → vision encoder (single-image cap)
+ *  - audio (WAV only) → raw bytes → audio encoder, same pass-through as /v1/audio/transcriptions
+ *  - text-ish files   → inlined above the prompt, capped hard: the resident engine runs
+ *    MAX_NUM_TOKENS=4096 total, so docs are trimmed to [DOC_CHAR_CAP] chars (works on any model)
+ * (Mime names spelled out in prose here because Kotlin block comments NEST — a literal
+ * slash-star wildcard inside a KDoc opens a nested comment and eats the rest of the file.)
+ */
 @Composable
 internal fun ChatScreen() {
   val ctx = LocalContext.current
