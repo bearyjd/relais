@@ -83,7 +83,7 @@ class MainActivity : ComponentActivity() {
       }
     }
 
-    // Convert FCM Console data extras to intent data for GalleryNavGraph to pick up
+    // Convert FCM Console data extras to intent data for the RelaisAppShell deep link (below)
     intent.getStringExtra("deeplink")?.let { link ->
       Log.d(TAG, "onCreate: Found deeplink extra: $link")
       if (link.startsWith("http://") || link.startsWith("https://")) {
