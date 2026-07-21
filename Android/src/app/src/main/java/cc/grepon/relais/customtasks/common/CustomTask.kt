@@ -53,11 +53,9 @@ import kotlinx.coroutines.CoroutineScope
  *    implementation into a set of `CustomTask`s. This makes your task automatically discoverable by
  *    the app's home screen.
  *
- * For a concrete example of how to implement these steps, see the
- * [cc.grepon.relais.customtasks.examplecustomtask.ExampleCustomTask] class. This example
- * implements a "Model Viewer" task that displays the text content of a model file for demonstration
- * purpose. See comments there for more details.
- *
+ * For a concrete example of how to implement these steps, see
+ * [cc.grepon.relais.customtasks.mobileactions.MobileActionsTask], one of the simpler existing
+ * implementations.
  */
 interface CustomTask {
   /**
