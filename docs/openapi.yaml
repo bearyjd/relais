@@ -1,0 +1,936 @@
+openapi: 3.1.0
+info:
+  title: Relais Node API
+  description: |
+    Relais is a headless on-device LLM node: it runs a model on a phone and serves an
+    OpenAI-compatible API over the LAN (HTTPS on the network interface, plain HTTP on
+    loopback only). This spec documents the *live* route surface of `RelaisHttpServer.kt`
+    as of the point it was generated — see `docs/CODEMAPS/backend.md` for the authoritative
+    route table and `docs/MODEL_CARD.md` for the resident model / capability description.
+
+    ## Auth
+    Every route except `GET /health` requires `Authorization: Bearer <api_key>`, checked
+    with a constant-time comparison. The key is generated per install; retrieve a
+    paste-ready client config (with the raw key) via the bearer-gated `GET /v1/clientconfig`.
+
+    ## Backpressure
+    Inference-heavy endpoints participate in a shared admission gate and the device's
+    thermal governor:
+      - `503` + `Retry-After` — thermal shedding (device is hot) or a not-yet-provisioned
+        optional model that is background-downloading.
+      - `429` + `Retry-After` — the admission queue (capacity 8) is full.
+      - `501` — an optional feature (embeddings/rerank/RAG, image generation, TTS) is not
+        provisioned on this node and cannot be enabled without operator action.
+    `/v1/images/generations` additionally acquires the admission gate *exclusively*
+    (drains all in-flight decode) because on-device image generation cannot safely share
+    GPU memory with concurrent LLM decode.
+
+    ## Non-standard extensions
+    Fields prefixed `x_relais_` (and their unprefixed convenience aliases, e.g.
+    `embedding_task` / `x_relais_embedding_task`) are Relais-specific extensions layered on
+    top of the OpenAI-compatible surface. Response bodies may carry an
+    `x_relais_usage_note` field noting that `prompt_tokens` is a word-boundary *estimate*
+    (LiteRT-LM does not expose a detached prompt tokenizer) — never treat it as exact.
+  version: "1.0.0"
+  license:
+    name: AGPL-3.0-or-later (Relais-authored code) / Apache-2.0 (inherited Gallery code)
+    url: https://www.gnu.org/licenses/agpl-3.0.html
+
+servers:
+  - url: "https://{node_ip}:8443/v1"
+    description: LAN HTTPS (self-signed cert; the standard client-facing base URL)
+    variables:
+      node_ip:
+        default: 192.168.1.100
+        description: The node's LAN IPv4 address (see `GET /v1/clientconfig` or mDNS `_relais._tcp`)
+  - url: "http://127.0.0.1:8080"
+    description: Loopback plain HTTP (local app / dev only — never exposed off-device)
+
+security:
+  - bearerAuth: []
+
+tags:
+  - name: status
+    description: Health, dashboard, and metrics surfaces
+  - name: chat
+    description: OpenAI-compatible chat completion and the legacy `/generate` convenience endpoint
+  - name: audio
+    description: Speech-to-text and text-to-speech
+  - name: embeddings
+    description: Text embeddings, completing the retrieval half of the RAG triad
+  - name: rerank
+    description: Bi-encoder document reranking, completing the RAG triad
+  - name: images
+    description: On-device image generation
+  - name: rag
+    description: Retrieval-augmented generation corpus management and query
+  - name: batch
+    description: Asynchronous batched chat completions
+  - name: metadata
+    description: Model listing and client-config discovery
+  - name: sessions
+    description: Server-side conversation memory (opt-in feature)
+
+paths:
+  /health:
+    get:
+      tags: [status]
+      summary: Liveness/readiness probe
+      description: The only unauthenticated route. Never rate-limited or backpressure-gated.
+      security: []
+      responses:
+        "200":
+          description: Node is reachable (may still be `ready:false` during model load).
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status, ready, thermal_state]
+                properties:
+                  status: { type: string, enum: [ok] }
+                  ready: { type: boolean, description: Whether the resident engine has finished loading a model. }
+                  thermal_state: { type: string, description: "Current ThermalGovernor status label (e.g. nominal, hot, shedding)." }
+
+  /metrics:
+    get:
+      tags: [status]
+      summary: Prometheus or JSON metrics
+      description: "Returns Prometheus text exposition by default; send `Accept: application/json` for a JSON snapshot of the same counters."
+      responses:
+        "200":
+          description: Metrics snapshot.
+          content:
+            text/plain:
+              schema: { type: string }
+            application/json:
+              schema:
+                type: object
+                description: Counters/gauges including decode_tokens_per_second, uptime_seconds, errors_total, shed_total, queue depth, and recent request log.
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /:
+    get:
+      tags: [status]
+      summary: HTML status dashboard
+      description: Scriptless HTML status page (device readiness, thermal state, queue depth, masked API key, base URL). Not a JSON API surface.
+      responses:
+        "200":
+          description: Rendered dashboard.
+          content:
+            text/html: { schema: { type: string } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /experiments:
+    get:
+      tags: [status]
+      summary: HTML experiments/debug page
+      description: Auth-gated HTML page with a single nonce-scoped inline script that calls this node's own `/v1` endpoints from the browser.
+      responses:
+        "200":
+          description: Rendered experiments page.
+          content:
+            text/html: { schema: { type: string } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /generate:
+    post:
+      tags: [chat]
+      summary: "Legacy single-turn generate (pre-OpenAI-compatible convenience endpoint)"
+      description: |
+        Not OpenAI-standard — prefer `POST /v1/chat/completions`. Accepts a flat text prompt
+        plus optional inline base64 image/audio and returns a single non-streamed reply.
+        Subject to the shared admission gate (thermal 503 → queue 429).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [text]
+              properties:
+                text: { type: string }
+                image_b64: { type: string, description: "Base64-encoded image (PNG/JPEG), decoded server-side." }
+                audio_b64: { type: string, description: "Base64-encoded WAV audio, decoded server-side." }
+                system: { type: string, description: "Explicit system prompt; overrides any resolved template." }
+                template: { type: string, description: "Named prompt template id (x_relais_template is an alias)." }
+                x_relais_template: { type: string }
+      responses:
+        "200":
+          description: Generation result.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [response, backend]
+                properties:
+                  response: { type: string }
+                  backend: { type: string, description: "GPU_LITERTLM / NPU_AICORE / TPU_LITERTLM." }
+                  decode_tok_s: { type: number }
+        "400": { $ref: "#/components/responses/BadRequestFlat" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "429": { $ref: "#/components/responses/QueueFull" }
+        "503": { $ref: "#/components/responses/ThermalShed" }
+
+  /v1/chat/completions:
+    post:
+      tags: [chat]
+      summary: OpenAI-compatible chat completion
+      description: |
+        Supports text + image/audio multimodal input (image_url with data: URIs), streaming
+        (SSE, connection-close delimited, no chunked framing), native tool-calling,
+        structured output (`response_format`: `json_object` / `json_schema`), and optional
+        server-side session memory. A `multipart/form-data` body with a `file` field is
+        also accepted as a convenience adapter for single-image uploads and is translated
+        into the same synthetic vision chat request as the JSON path.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ChatCompletionRequest" }
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                file: { type: string, format: binary }
+                prompt: { type: string }
+                text: { type: string }
+                model: { type: string }
+                system: { type: string }
+                stream: { type: string, enum: ["true", "false"] }
+      responses:
+        "200":
+          description: Non-streaming completion, or an SSE stream when `stream:true`.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ChatCompletionResponse" }
+            text/event-stream:
+              schema:
+                type: string
+                description: "SSE `data: {...}` chunks (OpenAI chat.completion.chunk shape) terminated by `data: [DONE]`. A post-header failure is delivered as an in-band `data: {\"error\":...}` event rather than an HTTP error status."
+        "400": { $ref: "#/components/responses/BadRequestFlat" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422":
+          description: "Structured output (`response_format`) validation failed after retries."
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error: { type: string }
+                  last_output: { type: string }
+        "429": { $ref: "#/components/responses/QueueFull" }
+        "503": { $ref: "#/components/responses/ThermalShed" }
+
+  /v1/embeddings:
+    post:
+      tags: [embeddings]
+      summary: OpenAI-compatible text embeddings (EmbeddingGemma, 768-dim)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [input]
+              properties:
+                input:
+                  description: A single string or an array of strings (max 64 items, 32768 chars each).
+                  oneOf:
+                    - type: string
+                    - type: array
+                      items: { type: string }
+                model: { type: string, description: "Echoed back in the response if provided; otherwise the embedder's own id." }
+                embedding_task:
+                  type: string
+                  enum: [query, document]
+                  description: "Retrieval-asymmetry selector (EmbeddingGemma). Default document. x_relais_embedding_task is an alias."
+                x_relais_embedding_task: { type: string, enum: [query, document] }
+      responses:
+        "200":
+          description: Embeddings result.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [object, data, model, usage]
+                properties:
+                  object: { type: string, enum: [list] }
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        object: { type: string, enum: [embedding] }
+                        index: { type: integer }
+                        embedding: { type: array, items: { type: number } }
+                  model: { type: string }
+                  usage:
+                    type: object
+                    properties:
+                      prompt_tokens: { type: integer }
+                      total_tokens: { type: integer }
+        "400": { $ref: "#/components/responses/BadRequestEnvelope" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "501": { $ref: "#/components/responses/NotProvisioned" }
+        "503": { $ref: "#/components/responses/ProvisioningRetry" }
+
+  /v1/rerank:
+    post:
+      tags: [rerank]
+      summary: "Bi-encoder document rerank (Cohere/Jina-compatible shape)"
+      description: |
+        Completes the RAG triad (embeddings → retrieve → rerank). Embeds the query and each
+        document with the resident EmbeddingGemma model and orders by cosine similarity
+        mapped to a `[0,1]` relevance_score. Shares the embeddings model/provisioning state
+        with `POST /v1/embeddings`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [query, documents]
+              properties:
+                query: { type: string, maxLength: 8192 }
+                documents:
+                  type: array
+                  maxItems: 128
+                  items:
+                    oneOf:
+                      - type: string
+                      - type: object
+                        properties: { text: { type: string } }
+                        required: [text]
+                top_n: { type: integer, minimum: 1 }
+                return_documents: { type: boolean, default: false }
+                model: { type: string, description: "Accepted and ignored; echoed in the response if provided." }
+      responses:
+        "200":
+          description: Ranked results.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [object, model, results]
+                properties:
+                  object: { type: string, enum: [list] }
+                  model: { type: string }
+                  results:
+                    type: array
+                    items:
+                      type: object
+                      required: [index, relevance_score]
+                      properties:
+                        index: { type: integer, description: "Index into the original request 'documents' array." }
+                        relevance_score: { type: number, minimum: 0, maximum: 1 }
+                        document:
+                          type: object
+                          properties: { text: { type: string } }
+                          description: "Present only when return_documents:true."
+        "400": { $ref: "#/components/responses/BadRequestEnvelope" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "501": { $ref: "#/components/responses/NotProvisioned" }
+        "503": { $ref: "#/components/responses/ProvisioningRetry" }
+
+  /v1/images/generations:
+    post:
+      tags: [images]
+      summary: On-device image generation
+      description: |
+        Optional feature (a separate sd.cpp-based runtime from the resident LiteRT-LM
+        model); returns `501` until an image model is registered/provisioned. Heaviest GPU
+        op on the node — acquires the admission gate *exclusively*, so it 503s under
+        concurrent decode load rather than queuing behind it.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [prompt]
+              properties:
+                prompt: { type: string }
+                n: { type: integer, minimum: 1, maximum: 2, default: 1 }
+                size: { type: string, enum: ["512x512"], default: "512x512", description: "Only 512x512 is served in v1 — no upscaling." }
+                response_format: { type: string, enum: [b64_json], default: b64_json, description: "Only b64_json is served — a LAN node hosts no image URLs." }
+                x_relais_steps: { type: integer, minimum: 1, maximum: 50, description: "Diffusion step count; defaults to the selected model's own default (e.g. 4 for SD-Turbo, 20 for SD-1.5)." }
+                seed: { type: integer }
+      responses:
+        "200":
+          description: Generated image(s).
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [created, data]
+                properties:
+                  created: { type: integer, description: Unix epoch seconds. }
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      properties: { b64_json: { type: string } }
+        "400": { $ref: "#/components/responses/BadRequestEnvelope" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "501": { $ref: "#/components/responses/NotProvisioned" }
+        "503":
+          description: Thermal shedding, provisioning in progress, or the admission gate could not be drained for exclusive access within the wait window.
+          content:
+            application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } }
+          headers:
+            Retry-After: { schema: { type: integer } }
+
+  /v1/audio/speech:
+    post:
+      tags: [audio]
+      summary: "OpenAI-compatible text-to-speech (issue #168)"
+      description: |
+        On-device TTS is a separate runtime (sherpa-onnx + a Piper voice) from the resident
+        LiteRT-LM model; returns `501` until a voice is registered/provisioned. Synthesis
+        shares the shared (non-exclusive) admission gate with chat/generate/audio-to-text.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [input]
+              properties:
+                input: { type: string, maxLength: 4096 }
+                voice: { type: string, description: "Optional; falls back to the node's configured default voice." }
+                response_format:
+                  type: string
+                  description: "mp3/opus/aac/flac all map to wav (no on-device encoder for those containers); pcm is raw signed 16-bit little-endian samples."
+                  enum: [wav, pcm, mp3, opus, aac, flac]
+                  default: wav
+                speed: { type: number, minimum: 0.25, maximum: 4.0, default: 1.0 }
+                model: { type: string, description: "Accepted and ignored — the node serves its one provisioned voice." }
+      responses:
+        "200":
+          description: Raw audio bytes.
+          content:
+            audio/wav: { schema: { type: string, format: binary } }
+            audio/pcm: { schema: { type: string, format: binary } }
+        "400": { $ref: "#/components/responses/BadRequestEnvelope" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "501": { $ref: "#/components/responses/NotProvisioned" }
+        "503": { $ref: "#/components/responses/ProvisioningRetry" }
+
+  /v1/audio/transcriptions:
+    post:
+      tags: [audio]
+      summary: OpenAI-compatible speech-to-text (verbatim transcription)
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema: { $ref: "#/components/schemas/AudioToTextRequest" }
+      responses:
+        "200": { $ref: "#/components/responses/AudioToTextOk" }
+        "400": { $ref: "#/components/responses/BadRequestFlat" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "429": { $ref: "#/components/responses/QueueFull" }
+        "503": { $ref: "#/components/responses/ThermalShed" }
+
+  /v1/audio/translations:
+    post:
+      tags: [audio]
+      summary: OpenAI-compatible speech-to-text (translate to English)
+      description: |
+        Identical pipeline to `/v1/audio/transcriptions`; the only difference is the
+        instruction driving the resident multimodal model (output is always English) and
+        the `task` label in `verbose_json` responses.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema: { $ref: "#/components/schemas/AudioToTextRequest" }
+      responses:
+        "200": { $ref: "#/components/responses/AudioToTextOk" }
+        "400": { $ref: "#/components/responses/BadRequestFlat" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "429": { $ref: "#/components/responses/QueueFull" }
+        "503": { $ref: "#/components/responses/ThermalShed" }
+
+  /v1/rag/documents:
+    post:
+      tags: [rag]
+      summary: Ingest a document into the RAG corpus
+      description: Chunks the text, embeds each chunk (DOCUMENT task), and stores a 256-dim MRL vector. Requires the embeddings model to be available (same provisioning state as /v1/embeddings).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [text]
+              properties:
+                text: { type: string, maxLength: 1048576, description: "Max 1 MB of text." }
+                title: { type: string, maxLength: 1024, default: untitled }
+      responses:
+        "200":
+          description: Stored.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  object: { type: string, enum: [rag.document] }
+                  document_id: { type: integer }
+                  chunks: { type: integer }
+        "400": { $ref: "#/components/responses/BadRequestEnvelope" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "413":
+          description: RAG corpus is at capacity; delete documents before ingesting more.
+          content:
+            application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } }
+        "501": { $ref: "#/components/responses/NotProvisioned" }
+        "503": { $ref: "#/components/responses/ProvisioningRetry" }
+    get:
+      tags: [rag]
+      summary: List ingested RAG documents
+      responses:
+        "200":
+          description: Corpus listing.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  object: { type: string, enum: [list] }
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        document_id: { type: integer }
+                        title: { type: string }
+                        created: { type: integer, description: Unix epoch seconds. }
+                  document_count: { type: integer }
+                  chunk_count: { type: integer }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    delete:
+      tags: [rag]
+      summary: Delete a RAG document by id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [document_id]
+              properties: { document_id: { type: integer } }
+      responses:
+        "200":
+          description: Deleted (idempotent — succeeds even if the id did not exist).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  object: { type: string, enum: [rag.document.deleted] }
+                  document_id: { type: integer }
+        "400": { $ref: "#/components/responses/BadRequestEnvelope" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /v1/rag/query:
+    post:
+      tags: [rag]
+      summary: Query the RAG corpus (retrieval only, no generation)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [query]
+              properties:
+                query: { type: string, maxLength: 8192 }
+                top_k: { type: integer, minimum: 1, maximum: 20, default: 4 }
+      responses:
+        "200":
+          description: Top-k chunk matches.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  object: { type: string, enum: [list] }
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        text: { type: string }
+                        score: { type: number }
+                        document_id: { type: integer }
+                        chunk_index: { type: integer }
+        "400": { $ref: "#/components/responses/BadRequestEnvelope" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "501": { $ref: "#/components/responses/NotProvisioned" }
+        "503": { $ref: "#/components/responses/ProvisioningRetry" }
+
+  /v1/batch:
+    post:
+      tags: [batch]
+      summary: Submit an asynchronous chat completion job
+      description: |
+        Queues a chat-completion request (same body shape as `/v1/chat/completions`, plus
+        an optional webhook) off the request path. Poll `GET /v1/batch/{job_id}` for the
+        result, or provide `webhook` for an HMAC-signed callback on completion. The webhook
+        URL is validated against an SSRF guard and an optional operator-configured allowlist.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [messages]
+              properties:
+                messages:
+                  type: array
+                  items: { $ref: "#/components/schemas/ChatMessage" }
+                webhook: { type: string, format: uri, maxLength: 2048, description: "HTTPS callback URL; must pass the node's SSRF guard." }
+              additionalProperties: true
+              description: "Additional fields accepted by /v1/chat/completions (model, temperature, tools, ...) are also honored."
+      responses:
+        "202":
+          description: Job accepted and queued.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  object: { type: string, enum: [batch.job] }
+                  job_id: { type: string, format: uuid }
+                  status: { type: string, enum: [queued] }
+        "400": { $ref: "#/components/responses/BadRequestEnvelope" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "429":
+          description: "Batch queue full (max 256 queued jobs)."
+          content:
+            application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } }
+
+  /v1/batch/{job_id}:
+    get:
+      tags: [batch]
+      summary: Fetch batch job status/result
+      parameters:
+        - name: job_id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Job status (and result, once complete).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  object: { type: string, enum: [batch.job] }
+                  job_id: { type: string }
+                  status: { type: string, enum: [queued, running, completed, failed] }
+                  created: { type: integer, description: Unix epoch seconds. }
+                  result:
+                    type: object
+                    description: "Present once status is completed/failed; the underlying chat.completion response (or error)."
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404":
+          description: No job with that id.
+          content:
+            application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } }
+
+  /v1/models:
+    get:
+      tags: [metadata]
+      summary: OpenAI-compatible model listing
+      description: Lists the curated model catalog; falls back to a single entry for the currently-provisioned model id if the catalog is unavailable offline.
+      responses:
+        "200":
+          description: Model list.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  object: { type: string, enum: [list] }
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: string }
+                        object: { type: string, enum: [model] }
+                        owned_by: { type: string, description: "allowlist or huggingface." }
+                        created: { type: integer }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /v1/clientconfig:
+    get:
+      tags: [metadata]
+      summary: Paste-ready client configuration (capability discovery)
+      description: |
+        Bearer-gated capability-discovery surface: base URL, model id, capability flags
+        (multimodal/tools/reasoning), ready-to-paste config blocks for Open WebUI /
+        Continue.dev / Aider, and self-signed TLS guidance. This is the only route that
+        returns the raw API key in its response body (safe because the caller already
+        proved possession of it to reach this route).
+      responses:
+        "200":
+          description: Client configuration.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  base_url: { type: string, format: uri }
+                  model: { type: string }
+                  capabilities:
+                    type: object
+                    properties:
+                      multimodal: { type: boolean }
+                      tools: { type: boolean }
+                      reasoning: { type: boolean }
+                  clients:
+                    type: object
+                    description: "open_webui / continue_dev / aider config blocks, each including the raw API key."
+                  tls:
+                    type: object
+                    properties:
+                      self_signed: { type: boolean }
+                      note: { type: string }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /v1/sessions:
+    get:
+      tags: [sessions]
+      summary: Read the caller's session turn count
+      description: "Session memory is a default-off feature. Returns 404 when disabled (the surface does not exist by default)."
+      responses:
+        "200":
+          description: Session info for the resolved session key (derived from the X-Relais-Session header or a hashed peer IP).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  turns: { type: integer }
+                  session_memory: { type: boolean, enum: [true] }
+        "400":
+          description: Session memory enabled but no session key could be resolved.
+          content:
+            application/json: { schema: { $ref: "#/components/schemas/ErrorFlat" } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { description: "Session memory is disabled on this node." }
+    delete:
+      tags: [sessions]
+      summary: Clear the caller's session history
+      responses:
+        "200":
+          description: Cleared.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties: { status: { type: string, enum: [cleared] } }
+        "400":
+          description: Session memory enabled but no session key could be resolved.
+          content:
+            application/json: { schema: { $ref: "#/components/schemas/ErrorFlat" } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { description: "Session memory is disabled on this node." }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: |
+        `Authorization: Bearer <api_key>`. The key is generated per install and compared
+        with a constant-time check. Retrieve it (paste-ready) via the bearer-gated
+        `GET /v1/clientconfig`, or read the masked value on the HTML dashboard (`GET /`).
+        Required on every route except `GET /health`.
+
+  headers:
+    RetryAfter:
+      description: Seconds to wait before retrying.
+      schema: { type: integer }
+
+  schemas:
+    ErrorFlat:
+      type: object
+      description: "The legacy flat error envelope used by server-level gating (auth, rate limit, body size, unknown template)."
+      properties:
+        error: { type: string }
+        code: { type: string, description: "Present on some 4xx responses, e.g. unknown_template, queue_full." }
+        retry_after_seconds: { type: integer }
+
+    ErrorEnvelope:
+      type: object
+      description: "The OpenAI-style nested error envelope used by the embeddings/rerank/images/tts/rag/batch domain handlers."
+      properties:
+        error:
+          type: object
+          properties:
+            message: { type: string }
+            type: { type: string, description: "e.g. invalid_request_error, not_implemented, service_unavailable, corpus_full, rate_limit_exceeded, not_found." }
+
+    ChatMessage:
+      type: object
+      required: [role]
+      properties:
+        role: { type: string, enum: [system, user, assistant, tool] }
+        content:
+          description: "A string, or an OpenAI content-parts array (text + image_url with data: URIs) for multimodal turns."
+          oneOf:
+            - type: string
+            - type: array
+              items: { type: object }
+        tool_calls:
+          type: array
+          items: { type: object }
+        tool_call_id: { type: string }
+
+    ChatCompletionRequest:
+      type: object
+      required: [messages]
+      properties:
+        model: { type: string, default: gemma-4-e4b-it }
+        messages:
+          type: array
+          items: { $ref: "#/components/schemas/ChatMessage" }
+        stream: { type: boolean, default: false }
+        stream_options:
+          type: object
+          properties:
+            include_usage: { type: boolean, default: false, description: "When true, streaming usage is delivered as a separate terminal chunk with empty choices (LiteLLM/OpenWebUI convention) instead of on the finish chunk." }
+        tools:
+          type: array
+          items: { type: object }
+        tool_choice:
+          oneOf:
+            - type: string
+              enum: [auto, none, required]
+            - type: object
+        temperature: { type: number }
+        top_p: { type: number }
+        seed: { type: integer }
+        reasoning_effort: { type: string, description: "Enables the model's thinking channel; reasoning deltas stream as delta.reasoning_content." }
+        response_format:
+          type: object
+          description: "text (default) / json_object / json_schema. json_schema is realized via the native tool-calling path; incompatible with stream:true."
+          properties:
+            type: { type: string, enum: [text, json_object, json_schema] }
+            json_schema: { type: object }
+        node_tools: { type: boolean, default: false, description: "Enable curated node-side built-in tools (calculator, unit conversion, rag_search, ...). x_relais_node_tools is an alias." }
+        x_relais_node_tools: { type: boolean }
+        rag: { type: boolean, default: false, description: "Per-request opt-in RAG: retrieves top-k corpus chunks and folds them into the system prompt. Best-effort; never fails the chat. x_relais_rag is an alias." }
+        x_relais_rag: { type: boolean }
+        rag_top_k: { type: integer, minimum: 1, maximum: 20, default: 4 }
+        template: { type: string, description: "Named prompt-template id folded into the system prompt. x_relais_template is an alias." }
+        x_relais_template: { type: string }
+
+    ChatCompletionResponse:
+      type: object
+      properties:
+        id: { type: string }
+        object: { type: string, enum: [chat.completion] }
+        created: { type: integer }
+        model: { type: string }
+        choices:
+          type: array
+          items:
+            type: object
+            properties:
+              index: { type: integer }
+              message:
+                type: object
+                properties:
+                  role: { type: string, enum: [assistant] }
+                  content: { type: [string, "null"] }
+                  reasoning_content: { type: string, description: "Present only when reasoning_effort was set and the model emitted a thinking trace." }
+                  tool_calls:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: string }
+                        type: { type: string, enum: [function] }
+                        function:
+                          type: object
+                          properties:
+                            name: { type: string }
+                            arguments: { type: string }
+              finish_reason: { type: string, enum: [stop, length, tool_calls] }
+        usage:
+          type: object
+          properties:
+            prompt_tokens: { type: integer, description: "Word-boundary ESTIMATE — see x_relais_usage_note." }
+            completion_tokens: { type: integer, description: "Exact engine token counter; 0 on the AICore backend." }
+            total_tokens: { type: integer }
+        x_relais_usage_note: { type: string, enum: [prompt_tokens_estimated] }
+
+    AudioToTextRequest:
+      type: object
+      required: [file]
+      properties:
+        file: { type: string, format: binary }
+        response_format: { type: string, enum: [json, text, verbose_json], default: json }
+        model: { type: string, description: "Accepted and ignored." }
+        temperature: { type: string, description: "Accepted and ignored." }
+        language: { type: string, description: "Accepted and ignored." }
+        prompt: { type: string, description: "Accepted and ignored." }
+
+  responses:
+    Unauthorized:
+      description: Missing or invalid bearer token.
+      content:
+        application/json: { schema: { $ref: "#/components/schemas/ErrorFlat" } }
+    BadRequestFlat:
+      description: Malformed request (server-level gating).
+      content:
+        application/json: { schema: { $ref: "#/components/schemas/ErrorFlat" } }
+    BadRequestEnvelope:
+      description: Malformed request (domain-handler validation).
+      content:
+        application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } }
+    QueueFull:
+      description: Admission queue is full; retry after the hinted delay.
+      headers:
+        Retry-After: { $ref: "#/components/headers/RetryAfter" }
+      content:
+        application/json: { schema: { $ref: "#/components/schemas/ErrorFlat" } }
+    ThermalShed:
+      description: Device is thermally shedding load; retry after the hinted delay.
+      headers:
+        Retry-After: { $ref: "#/components/headers/RetryAfter" }
+      content:
+        application/json: { schema: { $ref: "#/components/schemas/ErrorFlat" } }
+    NotProvisioned:
+      description: This optional model/feature is not provisioned on this node (and cannot auto-provision, e.g. no HF token configured).
+      content:
+        application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } }
+    ProvisioningRetry:
+      description: The required model is downloading in the background; retry after the hinted delay.
+      headers:
+        Retry-After: { $ref: "#/components/headers/RetryAfter" }
+      content:
+        application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } }
+    AudioToTextOk:
+      description: Transcription/translation result. Shape depends on response_format.
+      content:
+        application/json:
+          schema:
+            oneOf:
+              - type: object
+                properties: { text: { type: string } }
+              - type: object
+                properties:
+                  task: { type: string, enum: [transcribe, translate] }
+                  language: { type: string, description: "Always empty — not detected on-device." }
+                  duration: { type: integer, description: "Always 0 — not measured on-device." }
+                  text: { type: string }
+                  segments: { type: array, items: {}, description: "Always empty — no segment-level timing on-device." }
+        text/plain:
+          schema: { type: string }
