@@ -241,7 +241,7 @@ class RelaisHttpServer(
           headerLines++
           headerBytes += line.length
           if (headerLines > MAX_HEADER_LINES || headerBytes > MAX_HEADER_BYTES) {
-            reply(431, JSONObject().put("error", "header too large"))
+            reply(431, RelaisError.json("header too large", RelaisError.INVALID_REQUEST))
             return
           }
           val lower = line.lowercase()
@@ -259,16 +259,22 @@ class RelaisHttpServer(
         // Health is open; everything else needs the API key + is rate-limited per client IP.
         if (!(method == "GET" && path.startsWith("/health"))) {
           if (!authorized(authorization)) {
-            reply(401, JSONObject().put("error", "unauthorized"))
+            reply(401, RelaisError.json("unauthorized", RelaisError.AUTHENTICATION))
             return
           }
           val ip = (sock.inetAddress?.hostAddress) ?: "unknown"
           if (!rateLimiter.allow(ip)) {
-            reply(429, JSONObject().put("error", "rate limit exceeded ($RATE_LIMIT/${RATE_WINDOW_MS / 1000}s)"))
+            reply(
+              429,
+              RelaisError.json(
+                "rate limit exceeded ($RATE_LIMIT/${RATE_WINDOW_MS / 1000}s)",
+                RelaisError.RATE_LIMIT_EXCEEDED,
+              ),
+            )
             return
           }
           if (contentLength > MAX_BODY_BYTES) {
-            reply(413, JSONObject().put("error", "request too large"))
+            reply(413, RelaisError.json("request too large", RelaisError.INVALID_REQUEST))
             return
           }
         }
@@ -288,7 +294,7 @@ class RelaisHttpServer(
             withInferenceAdmission("/generate", ::reply) {
               val json = JSONObject(readBody(reader, contentLength))
               if (PromptTemplateStore.isUnknown(context, parseTemplateId(json))) {
-                reply(400, JSONObject().put("error", "unknown template").put("code", "unknown_template"))
+                reply(400, RelaisError.json("unknown template", RelaisError.INVALID_REQUEST).put("code", "unknown_template"))
                 return
               }
               val request =
@@ -435,13 +441,19 @@ class RelaisHttpServer(
                 val filePart = fileParts.firstOrNull { it.name == "file" }
                 if (filePart == null) {
                   // Return INSIDE the try so the gate release + latency record in finally still run.
-                  reply(400, JSONObject().put("error", "missing 'file' field"))
+                  reply(400, RelaisError.json("missing 'file' field", RelaisError.INVALID_REQUEST))
                   return
                 }
                 // Bound the decoded image below the body cap (transient base64 amplification): a huge
                 // upload would otherwise peak ~5x its size while holding an admission permit.
                 if (filePart.bytes.size > MAX_MULTIPART_IMAGE_BYTES) {
-                  reply(413, JSONObject().put("error", "image too large (max ${MAX_MULTIPART_IMAGE_BYTES / (1024 * 1024)}MB)"))
+                  reply(
+                    413,
+                    RelaisError.json(
+                      "image too large (max ${MAX_MULTIPART_IMAGE_BYTES / (1024 * 1024)}MB)",
+                      RelaisError.INVALID_REQUEST,
+                    ),
+                  )
                   return
                 }
                 fun textField(name: String): String? =
@@ -467,13 +479,13 @@ class RelaisHttpServer(
 
           method == "GET" && path.startsWith("/v1/sessions") -> handleSessionInfo(ctx)
 
-          else -> reply(404, JSONObject().put("error", "not found"))
+          else -> reply(404, RelaisError.json("not found", RelaisError.NOT_FOUND))
         }
       } catch (e: Exception) {
         Log.e(TAG, "Request handling error", e)
         RelaisMetrics.recordRequest(endpoint, 500)
         // Generic client message; detail stays in logcat (don't leak internals to the caller).
-        runCatching { respond(sock, 500, JSONObject().put("error", "internal error")) }
+        runCatching { respond(sock, 500, RelaisError.json("internal error", RelaisError.INTERNAL_ERROR)) }
       }
     }
   }
@@ -513,7 +525,8 @@ class RelaisHttpServer(
     val retry = ThermalGovernor.retryAfterSeconds() + (0..4).random() // jitter avoids retry stampede
     reply(
       503,
-      JSONObject().put("error", "thermal backpressure; retry later").put("retry_after_seconds", retry),
+      RelaisError.json("thermal backpressure; retry later", RelaisError.SERVICE_UNAVAILABLE)
+        .put("retry_after_seconds", retry),
       listOf("Retry-After: $retry"),
     )
     return true
@@ -542,8 +555,7 @@ class RelaisHttpServer(
     RelaisMetrics.recordQueueReject()
     reply(
       429,
-      JSONObject()
-        .put("error", "admission queue full; retry later")
+      RelaisError.json("admission queue full; retry later", RelaisError.RATE_LIMIT_EXCEEDED)
         .put("code", "queue_full")
         .put("retry_after_seconds", retryAfter),
       listOf("Retry-After: $retryAfter"),
@@ -596,14 +608,14 @@ class RelaisHttpServer(
     withInferenceAdmission(endpoint, reply) {
       val boundary = contentType?.let { parseMultipartBoundary(it) }
       if (boundary == null) {
-        reply(400, JSONObject().put("error", "expected multipart/form-data"), emptyList())
+        reply(400, RelaisError.json("expected multipart/form-data", RelaisError.INVALID_REQUEST), emptyList())
         return
       }
       val bodyBytes = reader.readBodyBytes(contentLength)
       val fileParts = parseMultipartFormData(bodyBytes, boundary)
       val filePart = fileParts.firstOrNull { it.name == "file" }
       if (filePart == null) {
-        reply(400, JSONObject().put("error", "missing 'file' field"), emptyList())
+        reply(400, RelaisError.json("missing 'file' field", RelaisError.INVALID_REQUEST), emptyList())
         return
       }
       // Optional text fields. `model`/temperature/language/prompt are accepted and ignored (v1);
@@ -613,11 +625,15 @@ class RelaisHttpServer(
         ?.ifBlank { null } ?: "json"
       // Audio-support guard: a non-multimodal model would silently produce garbage, so fail clearly.
       if (!RelaisEngine.isReady) {
-        reply(503, JSONObject().put("error", "engine not ready"), emptyList())
+        reply(503, RelaisError.json("engine not ready", RelaisError.SERVICE_UNAVAILABLE), emptyList())
         return
       }
       if (!RelaisEngine.isMultimodal) {
-        reply(400, JSONObject().put("error", "resident model does not support audio input"), emptyList())
+        reply(
+          400,
+          RelaisError.json("resident model does not support audio input", RelaisError.INVALID_REQUEST),
+          emptyList(),
+        )
         return
       }
       // Bridge to the resident engine reusing the SAME audio wiring as /generate: the raw WAV bytes
@@ -902,8 +918,14 @@ class RelaisHttpServer(
     // feature is off so the surface area doesn't exist by default.
     val key = if (ctx.sessionEnabled) resolveSessionKey(ctx.sock, ctx.sessionHeader) else null
     if (key == null) {
-      ctx.send(if (ctx.sessionEnabled) 400 else 404,
-        JSONObject().put("error", if (ctx.sessionEnabled) "no session key" else "not found"))
+      ctx.send(
+        if (ctx.sessionEnabled) 400 else 404,
+        if (ctx.sessionEnabled) {
+          RelaisError.json("no session key", RelaisError.INVALID_REQUEST)
+        } else {
+          RelaisError.json("not found", RelaisError.NOT_FOUND)
+        },
+      )
     } else {
       runBlocking { RelaisSessionStore.clear(context, key) }
       ctx.send(200, JSONObject().put("status", "cleared"))
@@ -914,8 +936,14 @@ class RelaisHttpServer(
     // Returns the caller's own turn count only — never another session's data.
     val key = if (ctx.sessionEnabled) resolveSessionKey(ctx.sock, ctx.sessionHeader) else null
     if (key == null) {
-      ctx.send(if (ctx.sessionEnabled) 400 else 404,
-        JSONObject().put("error", if (ctx.sessionEnabled) "no session key" else "not found"))
+      ctx.send(
+        if (ctx.sessionEnabled) 400 else 404,
+        if (ctx.sessionEnabled) {
+          RelaisError.json("no session key", RelaisError.INVALID_REQUEST)
+        } else {
+          RelaisError.json("not found", RelaisError.NOT_FOUND)
+        },
+      )
     } else {
       val turns = runBlocking { RelaisSessionStore.count(context, key) }
       ctx.send(200, JSONObject().put("turns", turns).put("session_memory", true))
@@ -1074,7 +1102,7 @@ class RelaisHttpServer(
     // default persona when it asked for a specific one.
     if (PromptTemplateStore.isUnknown(context, parseTemplateId(body))) {
       RelaisMetrics.recordRequest("/v1/chat/completions", 400)
-      respond(sock, 400, JSONObject().put("error", "unknown template").put("code", "unknown_template"))
+      respond(sock, 400, RelaisError.json("unknown template", RelaisError.INVALID_REQUEST).put("code", "unknown_template"))
       return
     }
     val parsed = parseOpenAiRequest(body)
@@ -1117,7 +1145,7 @@ class RelaisHttpServer(
     val format = RelaisStructuredOutput.parseResponseFormat(body)
     if (format == null) {
       RelaisMetrics.recordRequest("/v1/chat/completions", 400)
-      respond(sock, 400, JSONObject().put("error", "unsupported response_format"))
+      respond(sock, 400, RelaisError.json("unsupported response_format", RelaisError.INVALID_REQUEST))
       return
     }
     if (format !is RelaisStructuredOutput.ResponseFormat.Text) {
@@ -1386,7 +1414,11 @@ class RelaisHttpServer(
   ) {
     if (stream) {
       RelaisMetrics.recordRequest("/v1/chat/completions", 400)
-      respond(sock, 400, JSONObject().put("error", "stream and response_format cannot be combined"))
+      respond(
+        sock,
+        400,
+        RelaisError.json("stream and response_format cannot be combined", RelaisError.INVALID_REQUEST),
+      )
       return
     }
     val isSchema = format is RelaisStructuredOutput.ResponseFormat.JsonSchema
@@ -1448,9 +1480,10 @@ class RelaisHttpServer(
         respond(
           sock,
           422,
-          JSONObject()
-            .put("error", "model failed to produce valid JSON after ${MAX_STRUCTURED_OUTPUT_RETRIES + 1} attempts")
-            .put("last_output", lastCandidate ?: ""),
+          RelaisError.json(
+            "model failed to produce valid JSON after ${MAX_STRUCTURED_OUTPUT_RETRIES + 1} attempts",
+            RelaisError.INVALID_REQUEST,
+          ).put("last_output", lastCandidate ?: ""),
         )
         return
       }
@@ -1870,7 +1903,7 @@ internal fun buildEmbeddingsResponse(vectors: List<FloatArray>, model: String, p
 
 /**
  * The OpenAI error envelope `{error:{message,type}}` used by the embeddings route for its 400/501
- * paths. Pure — unit-testable on the JVM.
+ * paths. Thin wrapper over [RelaisError.json] (#173) — kept as a named function so the embeddings
+ * call sites read `buildEmbeddingsError(msg, type)` rather than the more generic `RelaisError.json`.
  */
-internal fun buildEmbeddingsError(message: String, type: String): JSONObject =
-  JSONObject().put("error", JSONObject().put("message", message).put("type", type))
+internal fun buildEmbeddingsError(message: String, type: String): JSONObject = RelaisError.json(message, type)

@@ -179,7 +179,6 @@ internal fun buildImagesResponse(pngs: List<ByteArray>, createdSec: Long): JSONO
 
 /**
  * The OpenAI error envelope `{error:{message,type}}` used by the images route for its 400/501 paths.
- * Pure — unit-testable on the JVM.
+ * Thin wrapper over [RelaisError.json] (#173).
  */
-internal fun buildImagesError(message: String, type: String): JSONObject =
-  JSONObject().put("error", JSONObject().put("message", message).put("type", type))
+internal fun buildImagesError(message: String, type: String): JSONObject = RelaisError.json(message, type)

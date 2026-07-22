@@ -12,6 +12,7 @@
 
 package cc.grepon.relais.rerank
 
+import cc.grepon.relais.RelaisError
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -115,5 +116,4 @@ fun buildRerankResponse(
 }
 
 /** OpenAI-style error envelope for the rerank route's 400/501/503 paths. */
-fun buildRerankError(message: String, type: String): JSONObject =
-  JSONObject().put("error", JSONObject().put("message", message).put("type", type))
+fun buildRerankError(message: String, type: String): JSONObject = RelaisError.json(message, type)
