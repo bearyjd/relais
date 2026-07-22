@@ -81,16 +81,19 @@ by `sendMessage`/`sendMessageAsync`/`renderMessageIntoString`.
 - `enableSpeculativeDecoding: Boolean?` — Relais sets this **false** deliberately (measured a regression on E4B/G4; no draft model bundled).
 - `enableBenchmark: Boolean` — populates `BenchmarkInfo` on the normal path.
 
-**Verified on-device (`StructuredOutputProbe`, E2B):**
+**Verified on-device (`StructuredOutputProbe`):**
 - A single **tool whose `parameters` ARE the requested JSON schema** reliably yields clean,
   schema-conforming arguments (4/4 runs: `{name:"John Smith", age:42.0}`, correctly typed, no nesting).
   → The strong path for `response_format: json_schema` is a forced schema-tool whose call arguments
   become the response content (serialize via `JsonConvertersKt.toJsonObject`). For `json_object`
   (no schema) there is no tool to build from → prompt + validate.
 - **`enableConversationConstrainedDecoding` made NO observable difference** (ON ≡ OFF; `age` came back
-  `42.0` for an `"integer"` schema in both). It is **not** a strict token-level grammar enforcer in
-  0.11.0 — do **not** rely on it for hard guarantees. **Always validate** model output against the
+  `42.0` for an `"integer"` schema in both). It is **not** a strict token-level grammar enforcer —
+  do **not** rely on it for hard guarantees. **Always validate** model output against the
   schema and repair/retry; treat the schema-tool as a high-hit-rate generator, not a guarantee.
+- **Re-verified 2026-07-21 against litertlm 0.12.0** (E4B, rango): identical result, 4/4 clean
+  (`{age=42.0, name=John Smith}`), ON≡OFF unchanged. `RelaisStructuredOutput.kt` (feature-05,
+  shipped PR #29, wired into `handleStructuredCompletion`) needed no changes for the 0.12.0 bump.
 
 ## 6. Channels — reasoning / thinking separation `[USED: feature-10a, verified on-device]`
 
