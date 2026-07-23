@@ -12,6 +12,7 @@
 
 package cc.grepon.relais.tts
 
+import cc.grepon.relais.RelaisError
 import org.json.JSONObject
 
 // OpenAI POST /v1/audio/speech helpers (issue #168). Pure (no Android types) so parsing + limits are
@@ -71,8 +72,7 @@ fun parseSpeechRequest(body: JSONObject, limits: TtsLimits = TTS_LIMITS): Speech
 }
 
 /** OpenAI-style error envelope for the speech route's 400/501/503 paths. */
-fun buildTtsError(message: String, type: String): String =
-  JSONObject().put("error", JSONObject().put("message", message).put("type", type)).toString()
+fun buildTtsError(message: String, type: String): String = RelaisError.json(message, type).toString()
 
 /** Content-Type header value for a produced audio [format] at [sampleRate] Hz (rate param aids PCM clients). */
 fun ttsContentType(format: TtsFormat, sampleRate: Int): String =

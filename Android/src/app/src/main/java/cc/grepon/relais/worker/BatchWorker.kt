@@ -91,6 +91,7 @@ class BatchWorker(context: Context, params: WorkerParameters) : CoroutineWorker(
   private fun process(ctx: Context, job: BatchJob): Pair<String, String> =
     try {
       val req = BatchChat.extract(JSONObject(job.requestJson))
+        // Flat `{"error":"str"}` on purpose: this is the stored BatchJob.resultJson, nested under "result" in a 200 batch-status response, not a top-level HTTP error envelope — outside the #173 unification.
         ?: return BatchStatus.FAILED to
           JSONObject().put("error", "batch v1 needs a chat 'messages' body with a text user turn").toString()
       val result = RelaisEngine.generate(
@@ -103,6 +104,7 @@ class BatchWorker(context: Context, params: WorkerParameters) : CoroutineWorker(
       throw e // structured-concurrency contract: never swallow cancellation
     } catch (e: Exception) {
       Log.w(TAG, "batch job ${job.jobId} failed: ${e.message}")
+      // Same stored-record shape as above (not a client-facing top-level error envelope).
       BatchStatus.FAILED to JSONObject().put("error", "job failed: ${e.message}").toString()
     }
 
@@ -115,6 +117,7 @@ class BatchWorker(context: Context, params: WorkerParameters) : CoroutineWorker(
     // comfortably above the engine's per-request timeout (~120s) so a legitimately in-flight job is
     // never reaped; if that timeout is ever raised toward this value, raise this too.
     private const val STALE_RUNNING_MS = 5L * 60 * 1000
+    // Same stored-record shape as `process()` above — not a client-facing top-level error envelope.
     private const val STALE_ERROR_JSON = """{"error":"job interrupted (worker stopped before completion)"}"""
     private const val TTL_MS = 7L * 24 * 60 * 60 * 1000 // keep results 7 days
     private const val UNIQUE = "relais-batch-drain"
