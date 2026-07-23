@@ -625,7 +625,11 @@ class RelaisHttpServer(
         ?.ifBlank { null } ?: "json"
       // Audio-support guard: a non-multimodal model would silently produce garbage, so fail clearly.
       if (!RelaisEngine.isReady) {
-        reply(503, RelaisError.json("engine not ready", RelaisError.SERVICE_UNAVAILABLE), emptyList())
+        // Mirror /v1/embeddings' + /v1/images'  shape: kick a background reload (idempotent no-op if
+        // one's already dispatching, e.g. the engine was idle-TTL-unloaded, #178) and 503-retry,
+        // rather than a terminal 503 with nothing that ever brings the engine back up on this path.
+        RelaisEngine.ensureInitializedInBackground(context)
+        reply(503, RelaisError.json("engine not ready; retry shortly", RelaisError.SERVICE_UNAVAILABLE), listOf("Retry-After: 10"))
         return
       }
       if (!RelaisEngine.isMultimodal) {

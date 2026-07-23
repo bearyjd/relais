@@ -176,7 +176,7 @@ data class RelaisResult(
    * [generate] sets it to [RelaisFinishReason.LENGTH] when a thermal cooperative-cancel truncated the
    * decode (issue #22). Best-effort: LENGTH is reported only when a decode callback observes the
    * cancel before the native run's natural end (the decode is not natively interruptible) — see
-   * [RelaisFinishReason]. The blocking tool path ([generateWithTools]) leaves the default — it has no
+   * [RelaisFinishReason]. The blocking tool path ([generateWithToolsLocked]) leaves the default — it has no
    * per-token truncation seam; the HTTP layer derives `"tool_calls"` from [toolCalls] when present.
    */
   val finishReason: String = RelaisFinishReason.STOP,
@@ -221,11 +221,44 @@ object RelaisEngine {
   private val lock = Any()
 
   /**
+   * Wall-clock ms of the last "activity": the engine became ready, or a request finished being
+   * served. Drives idle-TTL auto-unload (#178) — see [releaseIfIdle] / [shouldUnloadIdleEngine].
+   * Written under [lock] on init (in [ensureInitialized]) and unconditionally in [generate]'s outer
+   * `finally` (every outcome — success, timeout, error — counts as activity, matching how
+   * [RelaisMetrics.recordLatency] already treats "every outcome" elsewhere in this file).
+   */
+  @Volatile private var lastActivityAtMs: Long = System.currentTimeMillis()
+
+  /**
    * True while the node is provisioning/initializing in this process (e.g. a first-run multi-GB
    * model download). The watchdog uses this to distinguish "still coming up" from "dead", so a slow
    * first start is not mistaken for a failure (no backoff escalation, no premature alarm).
    */
   @Volatile var startupInProgress: Boolean = false
+
+  /**
+   * True iff the engine's current not-ready state is a graceful idle-TTL unload ([releaseIfIdle],
+   * #178), not a crash. [RelaisWatchdogReceiver] checks this BEFORE treating `!isReady` as a
+   * failure — without it, the watchdog's own ~60s heartbeat would see the freshly-unloaded engine,
+   * conclude the node is dead, escalate its failure-backoff step, and force a restart, undoing the
+   * idle-unload within about one poll cycle (discovered auditing every [isReady] call site; see
+   * #178 review). Set true by [releaseIfIdle] right after a successful [shutdown]; cleared by
+   * [ensureInitialized] on the next successful init (any reason — idle-TTL, watchdog, an ordinary
+   * request — restores normal "not ready" semantics once a real init attempt is underway).
+   */
+  @Volatile var wasIdleUnloaded: Boolean = false
+
+  /** Guards [ensureInitializedInBackground] so a burst of requests during an idle-reload dispatches at most one thread. */
+  private val backgroundReloadDispatching = java.util.concurrent.atomic.AtomicBoolean(false)
+
+  /**
+   * Consecutive [shutdown] failures ([Engine.close] threw). Read by [shouldUnloadIdleEngine] as a
+   * circuit breaker: after repeated close failures, idle-TTL stops attempting further auto-unloads
+   * rather than silently repeating a possibly-leaking teardown forever (#178 review). Reset to 0 on
+   * any successful close.
+   */
+  @Volatile var consecutiveCloseFailures: Int = 0
+    private set
 
   /**
    * True when the most recent init attempt threw (set by [RelaisNodeService]'s init thread). Lets
@@ -289,6 +322,36 @@ object RelaisEngine {
       // ~5.63 tok/s off (draft overhead > gains, no draft model bundled). Left OFF deliberately.
       ExperimentalFlags.enableSpeculativeDecoding = false
       engine = buildResidentEngine(modelPath, cacheDir, context.applicationInfo.nativeLibraryDir)
+      lastActivityAtMs = System.currentTimeMillis() // idle-TTL clock (#178): init counts as activity
+      wasIdleUnloaded = false // a real init attempt is underway; restore normal not-ready semantics
+    }
+  }
+
+  /**
+   * Kicks a background reload if the engine isn't already ready or already coming up — an idempotent
+   * no-op otherwise, and safe to call from any thread without blocking it on the reload itself.
+   *
+   * Exists for request paths recovering from an idle-TTL unload (#178) that must not cold-start a
+   * multi-GB model synchronously on the calling thread: [RelaisHttpServer]'s audio-to-text handler
+   * (mirrors the async-provisioning-kick shape `/v1/embeddings` already uses) and
+   * [cc.grepon.relais.core.RelaisInference] (only safe to call when [wasIdleUnloaded] is true — that
+   * specifically proves the foreground service is alive right now, since idle-TTL only runs from
+   * within it; [RelaisInference]'s own contract must still never blind-cold-start when the engine was
+   * simply never initialized, since then the service might not be running at all).
+   */
+  fun ensureInitializedInBackground(context: Context) {
+    if (isReady || startupInProgress) return
+    if (!backgroundReloadDispatching.compareAndSet(false, true)) return // a reload is already dispatching
+    thread(name = "relais-idle-reload") {
+      try {
+        startupInProgress = true // tell the watchdog "coming up", not "dead"
+        ensureInitialized(context)
+      } catch (e: Exception) {
+        Log.w(TAG, "background idle-reload failed: ${e.message}")
+      } finally {
+        startupInProgress = false
+        backgroundReloadDispatching.set(false)
+      }
     }
   }
 
@@ -415,19 +478,6 @@ object RelaisEngine {
         return RelaisResult(text = text, backend = requested, decodeTokensPerSec = 0.0, completionTokens = 0)
       }
 
-      ensureInitialized(context)
-      val e = engine ?: error("Engine not initialized")
-      // The resident engine's TRUE lane: after init, a Google-Tensor AOT model on the bundled
-      // dispatcher reports TPU_LITERTLM (T-4) — the selector can't know this before init.
-      val backend = if (residentIsTpu) RelaisBackend.TPU_LITERTLM else requested
-
-      // Tool path: a request advertising tools OR carrying tool results round-trips through the
-      // BLOCKING sendMessage API (not streaming) so reply.toolCalls is populated. Same lock +
-      // thermal-cooldown + RelaisMetrics scaffolding as the streaming path below.
-      if (request.tools.isNotEmpty() || request.toolResults.isNotEmpty()) {
-        return generateWithTools(e, request, backend)
-      }
-
       val contents = buildList {
         request.imagePng?.let { add(Content.ImageBytes(it)) }
         request.audioWav?.let { add(Content.AudioBytes(it)) }
@@ -435,6 +485,30 @@ object RelaisEngine {
       }
 
       synchronized(lock) {
+        // Resolve (and, if needed, lazily re-init) the resident engine INSIDE the same [lock] that
+        // idle-TTL unload ([releaseIfIdle], #178) holds while releasing it. This is what makes the
+        // unload race-free: [releaseIfIdle] can only null out `engine` while holding `lock`, so a
+        // request either (a) is already past this point, holding a live `e` for the rest of this
+        // block — in which case RelaisMetrics.queueDepth() (bumped by incInFlight() above, BEFORE
+        // this block) is already >0 and releaseIfIdle's own re-check under `lock` aborts the unload
+        // before it ever nulls `engine`; or (b) hasn't reached this point yet, in which case it just
+        // blocks on `lock` until any in-progress unload finishes, then re-inits lazily right here
+        // (ensureInitialized() below is idempotent/cheap when already ready, and does a real —
+        // cold-start — init when not). Either way no request ever observes/uses a closed `engine`.
+        ensureInitialized(context)
+        val e = engine ?: error("Engine not initialized")
+        // The resident engine's TRUE lane: after init, a Google-Tensor AOT model on the bundled
+        // dispatcher reports TPU_LITERTLM (T-4) — the selector can't know this before init.
+        val backend = if (residentIsTpu) RelaisBackend.TPU_LITERTLM else requested
+
+        // Tool path: a request advertising tools OR carrying tool results round-trips through the
+        // BLOCKING sendMessage API (not streaming) so reply.toolCalls is populated. Already holding
+        // `lock` (caller, not this callee, per the #178 restructure above) + same thermal-cooldown +
+        // RelaisMetrics scaffolding as the streaming path below.
+        if (request.tools.isNotEmpty() || request.toolResults.isNotEmpty()) {
+          return generateWithToolsLocked(e, request, backend)
+        }
+
         // Thermal cool-down spaces *actual* decode runs: applied under the lock, not per-request on
         // the worker pool, so concurrent requests don't all sleep in parallel and then serialize.
         ThermalGovernor.cooldownMs().takeIf { it > 0 }?.let { runCatching { Thread.sleep(it) } }
@@ -612,6 +686,7 @@ object RelaisEngine {
     } finally {
       RelaisMetrics.recordLatency((System.nanoTime() - reqStartNs) / 1e9) // every outcome (HIGH-2)
       RelaisMetrics.decInFlight()
+      lastActivityAtMs = System.currentTimeMillis() // idle-TTL clock (#178): every outcome counts
     }
   }
 
@@ -623,89 +698,91 @@ object RelaisEngine {
    *    where the model integrates tool output into a final answer);
    *  - otherwise -> the live USER message (the first turn, where the model may request a tool).
    *
-   * Returns the reply text plus any [ParsedToolCall]s the model emitted. Uses the same lock +
-   * thermal-cooldown discipline as the streaming path; runs no per-token callback (the blocking
-   * sendMessage returns the full reply Message at once). Throughput is not measured here (no
-   * per-token wall clock), so decodeTokensPerSec/completionTokens are 0.
+   * Returns the reply text plus any [ParsedToolCall]s the model emitted. CALLER MUST HOLD [lock] —
+   * see [generate], which resolves `e` and dispatches here from inside its own `synchronized(lock)`
+   * block (the #178 restructure that makes idle-TTL unload race-free); this function no longer takes
+   * the lock itself (it would be redundant — Kotlin/JVM monitors are reentrant, but a single lock
+   * scope covering "resolve engine -> use engine" is the actual safety property, not merely "some
+   * lock is held somewhere"). Runs no per-token callback (the blocking sendMessage returns the full
+   * reply Message at once). Throughput is not measured here (no per-token wall clock), so
+   * decodeTokensPerSec/completionTokens are 0.
    */
   @OptIn(ExperimentalApi::class)
-  private fun generateWithTools(
+  private fun generateWithToolsLocked(
     e: Engine,
     request: RelaisRequest,
     backend: RelaisBackend,
   ): RelaisResult {
-    synchronized(lock) {
-      ThermalGovernor.cooldownMs().takeIf { it > 0 }?.let { runCatching { Thread.sleep(it) } }
-      // TPU lane: same no-custom-sampler rule as the streaming path (NPU executor limitation, T-3).
-      val tpuLane = backend == RelaisBackend.TPU_LITERTLM
-      if (tpuLane && RelaisTpuLane.requestUsesCustomSampler(request.temperature, request.topP, request.seed)) {
-        Log.w(TAG, "TPU lane (tools): explicit sampler params unsupported by the NPU executor — using engine defaults")
-      }
-      val providers = request.tools.map { tool(openApiToolOf(it.functionJson)) }
-      val initialMessages = request.history.mapNotNull { it.toResidentMessage() }
-      val config =
-        when {
-          tpuLane && request.systemPrompt != null ->
-            ConversationConfig(
-              systemInstruction = Contents.of(request.systemPrompt),
-              initialMessages = initialMessages,
-              tools = providers,
-              automaticToolCalling = false,
-            )
-          tpuLane ->
-            ConversationConfig(initialMessages = initialMessages, tools = providers, automaticToolCalling = false)
-          request.systemPrompt != null ->
-            ConversationConfig(
-              systemInstruction = Contents.of(request.systemPrompt),
-              initialMessages = initialMessages,
-              tools = providers,
-              automaticToolCalling = false,
-              samplerConfig = request.samplerConfig(),
-            )
-          else ->
-            ConversationConfig(
-              initialMessages = initialMessages,
-              tools = providers,
-              automaticToolCalling = false,
-              samplerConfig = request.samplerConfig(),
-            )
-        }
-      val conversation = e.createConversation(config)
-      return try {
-        val liveMessage =
-          if (request.toolResults.isNotEmpty()) {
-            Message.tool(Contents.of(request.toolResults.map { Content.ToolResponse(it.name, it.content) }))
-          } else {
-            val items = buildList {
-              request.imagePng?.let { add(Content.ImageBytes(it)) }
-              request.audioWav?.let { add(Content.AudioBytes(it)) }
-              if (request.text.isNotBlank()) add(Content.Text(request.text))
-            }
-            Message.user(Contents.of(items))
-          }
-        val reply = conversation.sendMessage(liveMessage, emptyMap())
-        val mapped = reply.toolCalls.mapIndexed { index, tc ->
-          val argumentsJson = runCatching { JSONObject(tc.arguments).toString() }.getOrElse { ex ->
-            Log.w(TAG, "Failed to serialize arguments for tool '${tc.name}'; using {}: $ex")
-            "{}"
-          }
-          ParsedToolCall(
-            id = "call_" + java.util.UUID.randomUUID().toString().replace("-", "").take(24),
-            name = tc.name,
-            argumentsJson = argumentsJson,
+    ThermalGovernor.cooldownMs().takeIf { it > 0 }?.let { runCatching { Thread.sleep(it) } }
+    // TPU lane: same no-custom-sampler rule as the streaming path (NPU executor limitation, T-3).
+    val tpuLane = backend == RelaisBackend.TPU_LITERTLM
+    if (tpuLane && RelaisTpuLane.requestUsesCustomSampler(request.temperature, request.topP, request.seed)) {
+      Log.w(TAG, "TPU lane (tools): explicit sampler params unsupported by the NPU executor — using engine defaults")
+    }
+    val providers = request.tools.map { tool(openApiToolOf(it.functionJson)) }
+    val initialMessages = request.history.mapNotNull { it.toResidentMessage() }
+    val config =
+      when {
+        tpuLane && request.systemPrompt != null ->
+          ConversationConfig(
+            systemInstruction = Contents.of(request.systemPrompt),
+            initialMessages = initialMessages,
+            tools = providers,
+            automaticToolCalling = false,
           )
-        }
-        val text = reply.contents.contents.filterIsInstance<Content.Text>().joinToString("") { it.text }
-        RelaisResult(
-          text = text,
-          backend = backend,
-          decodeTokensPerSec = 0.0,
-          completionTokens = 0,
-          toolCalls = mapped,
-        )
-      } finally {
-        conversation.close()
+        tpuLane ->
+          ConversationConfig(initialMessages = initialMessages, tools = providers, automaticToolCalling = false)
+        request.systemPrompt != null ->
+          ConversationConfig(
+            systemInstruction = Contents.of(request.systemPrompt),
+            initialMessages = initialMessages,
+            tools = providers,
+            automaticToolCalling = false,
+            samplerConfig = request.samplerConfig(),
+          )
+        else ->
+          ConversationConfig(
+            initialMessages = initialMessages,
+            tools = providers,
+            automaticToolCalling = false,
+            samplerConfig = request.samplerConfig(),
+          )
       }
+    val conversation = e.createConversation(config)
+    return try {
+      val liveMessage =
+        if (request.toolResults.isNotEmpty()) {
+          Message.tool(Contents.of(request.toolResults.map { Content.ToolResponse(it.name, it.content) }))
+        } else {
+          val items = buildList {
+            request.imagePng?.let { add(Content.ImageBytes(it)) }
+            request.audioWav?.let { add(Content.AudioBytes(it)) }
+            if (request.text.isNotBlank()) add(Content.Text(request.text))
+          }
+          Message.user(Contents.of(items))
+        }
+      val reply = conversation.sendMessage(liveMessage, emptyMap())
+      val mapped = reply.toolCalls.mapIndexed { index, tc ->
+        val argumentsJson = runCatching { JSONObject(tc.arguments).toString() }.getOrElse { ex ->
+          Log.w(TAG, "Failed to serialize arguments for tool '${tc.name}'; using {}: $ex")
+          "{}"
+        }
+        ParsedToolCall(
+          id = "call_" + java.util.UUID.randomUUID().toString().replace("-", "").take(24),
+          name = tc.name,
+          argumentsJson = argumentsJson,
+        )
+      }
+      val text = reply.contents.contents.filterIsInstance<Content.Text>().joinToString("") { it.text }
+      RelaisResult(
+        text = text,
+        backend = backend,
+        decodeTokensPerSec = 0.0,
+        completionTokens = 0,
+        toolCalls = mapped,
+      )
+    } finally {
+      conversation.close()
     }
   }
 
@@ -729,11 +806,60 @@ object RelaisEngine {
     synchronized(lock) {
       try {
         engine?.close()
+        consecutiveCloseFailures = 0
       } catch (e: Exception) {
         Log.e(TAG, "Error closing engine", e)
+        consecutiveCloseFailures++
       } finally {
         engine = null
       }
+    }
+  }
+
+  /**
+   * Idle-TTL auto-unload (#178): releases the resident engine iff [shouldUnloadIdleEngine] says so —
+   * i.e. it's ready, [ttlMs] is enabled (`> 0`), nothing is in flight, [lastActivityAtMs] is older
+   * than [ttlMs], AND [consecutiveCloseFailures] hasn't tripped the circuit breaker (repeated
+   * [Engine.close] failures stop further auto-unload attempts rather than risking a repeated native
+   * resource leak — see [shouldUnloadIdleEngine]'s KDoc). Called periodically by [RelaisNodeService]
+   * (see its idle-TTL ticker); a subsequent request reloads the engine lazily via [ensureInitialized]
+   * (a short cold-start, as intended by #178 — see [shouldUnloadIdleEngine]'s KDoc). Sets
+   * [wasIdleUnloaded] on a successful release so [RelaisWatchdogReceiver] doesn't mistake the
+   * graceful unload for a crash.
+   *
+   * RACE SAFETY (the highest-risk part of #178): this takes the SAME [lock] that [generate] now
+   * holds for its entire "resolve the resident engine -> use it" span (see the comment there). Two
+   * checks:
+   *  1. A cheap pre-check with no lock, so a poll tick that's obviously a no-op (not ready, disabled,
+   *     or [RelaisMetrics.queueDepth] already nonzero) never contends for [lock].
+   *  2. A re-check performed AFTER acquiring [lock], immediately before [shutdown]. This is not
+   *     redundant: [RelaisMetrics.incInFlight] (in [generate]) is called before that function
+   *     acquires [lock], so a request that started between the pre-check and the lock acquisition
+   *     shows up in the re-check's queue depth and aborts the release — closing the exact TOCTOU
+   *     window a naive single-check implementation would have.
+   *  3. Conversely, if this function wins the race and closes the engine first, any request already
+   *     blocked on [lock] simply proceeds once this returns and re-initializes lazily inside its own
+   *     locked section — it can never observe or use a half-closed `engine`, because [generate] does
+   *     not capture the `engine` field until it too is inside [lock].
+   *
+   * This composition is a lock-ordering argument, not something a hermetic pure-JVM test can
+   * exercise (it needs the real, native, AAR-provided `Engine`) — see [shouldUnloadIdleEngine]'s
+   * KDoc for why the decision itself IS unit-tested but this interleaving needs an on-device probe.
+   *
+   * @return true iff the engine was actually released by this call.
+   */
+  fun releaseIfIdle(ttlMs: Long, nowMs: Long = System.currentTimeMillis()): Boolean {
+    if (!shouldUnloadIdleEngine(isReady, RelaisMetrics.queueDepth(), lastActivityAtMs, nowMs, ttlMs, consecutiveCloseFailures)) {
+      return false
+    }
+    synchronized(lock) {
+      if (!shouldUnloadIdleEngine(isReady, RelaisMetrics.queueDepth(), lastActivityAtMs, nowMs, ttlMs, consecutiveCloseFailures)) {
+        return false
+      }
+      Log.i(TAG, "idle TTL exceeded (${nowMs - lastActivityAtMs}ms >= ${ttlMs}ms) — releasing resident engine")
+      shutdown()
+      wasIdleUnloaded = true // tell RelaisWatchdogReceiver this is a graceful unload, not a crash
+      return true
     }
   }
 

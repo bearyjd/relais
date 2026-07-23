@@ -28,12 +28,24 @@ import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
 import android.util.Log
+import java.util.concurrent.Executors
+import java.util.concurrent.ScheduledExecutorService
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.concurrent.thread
 
 private const val TAG = "RelaisNodeService"
 private const val CHANNEL_ID = "relais_node"
 private const val NOTIFICATION_ID = 4242
+
+// Idle-TTL poll cadence (#178). Independent of the configured TTL: a short, fixed poll interval
+// (vs. e.g. AlarmManager/WorkManager, whose granularity — 15 min minimum for periodic WorkManager —
+// is coarser than a sensible idle TTL) so the engine is released reasonably close to the TTL
+// deadline rather than up to one whole scheduling period late. Cheap: each tick is a couple of
+// volatile reads (RelaisEngine.isReady / RelaisMetrics.queueDepth) unless it actually decides to
+// unload, so polling every minute is negligible overhead for a foreground service that's already
+// resident and holding a wake lock.
+private const val IDLE_TTL_POLL_INTERVAL_MS = 60_000L
 
 /**
  * Pure decision behind [RelaisNodeService]'s startup dispatch guard: should a new init attempt be
@@ -57,6 +69,7 @@ class RelaisNodeService : Service() {
   private var httpServer: RelaisHttpServer? = null
   private var httpsServer: RelaisHttpServer? = null
   private var wakeLock: PowerManager.WakeLock? = null
+  private var idleTtlExecutor: ScheduledExecutorService? = null
 
   // Guards the single init path (delta review: onStartCommand used to be a bare START_STICKY, so a
   // retry START against an already-alive-but-failed service — gated-repo 401, bad model id, process
@@ -89,7 +102,42 @@ class RelaisNodeService : Service() {
     RelaisConfig.incrementRestartCount(applicationContext) // process/service starts; via /metrics (Gate 3)
     ThermalGovernor.register(applicationContext) // thermal-aware backpressure (Gate 3)
 
+    startIdleTtlTicker() // idle-TTL auto-unload (#178) — safe to start before the engine exists;
+    // each tick just no-ops via RelaisEngine.releaseIfIdle's own isReady check until there's an
+    // engine resident to release.
+
     dispatchStartupIfNeeded()
+  }
+
+  /**
+   * Idle-TTL auto-unload (#178): polls [RelaisEngine.releaseIfIdle] on a fixed cadence
+   * ([IDLE_TTL_POLL_INTERVAL_MS]) for the lifetime of this service instance. A dedicated
+   * single-thread [ScheduledExecutorService] (mirrors [ThermalGovernor]'s own executor) rather than
+   * [RelaisWatchdog]'s AlarmManager approach: the watchdog must survive process death (it re-launches
+   * a killed service), but the resident engine dies WITH the process anyway, so there is nothing to
+   * poll for once this service instance is gone — a plain in-process ticker is sufficient and avoids
+   * both AlarmManager's exact-alarm permission dance and WorkManager's 15-minute periodic-work floor
+   * (coarser than a sensible idle TTL).
+   */
+  private fun startIdleTtlTicker() {
+    val executor = Executors.newSingleThreadScheduledExecutor { Thread(it, "relais-idle-ttl") }
+    idleTtlExecutor = executor
+    executor.scheduleWithFixedDelay(
+      { runCatching { checkIdleUnload() }.onFailure { Log.w(TAG, "idle-TTL tick failed", it) } },
+      IDLE_TTL_POLL_INTERVAL_MS,
+      IDLE_TTL_POLL_INTERVAL_MS,
+      TimeUnit.MILLISECONDS,
+    )
+  }
+
+  private fun checkIdleUnload() {
+    val ttlMinutes = RelaisConfig.idleTtlMinutes(applicationContext)
+    if (ttlMinutes <= IDLE_TTL_DISABLED_MINUTES) return // operator disabled auto-unload (0 = never)
+    val released = RelaisEngine.releaseIfIdle(ttlMs = ttlMinutes.toLong() * 60_000L)
+    if (released) {
+      Log.i(TAG, "idle TTL: released resident engine after ${ttlMinutes}m of inactivity")
+      updateNotification("Idle — engine released (reloads automatically on the next request)")
+    }
   }
 
   /**
@@ -179,6 +227,7 @@ class RelaisNodeService : Service() {
   }
 
   override fun onDestroy() {
+    idleTtlExecutor?.shutdownNow()
     ThermalGovernor.unregister()
     RelaisDiscovery.unregister()
     httpServer?.stop()

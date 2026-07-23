@@ -56,6 +56,7 @@ object RelaisConfig {
   private const val KEY_SESSION_GLOBAL_MAX_TURNS = "session_global_max_turns"
   private const val KEY_WEBHOOK_HMAC_SECRET = "webhook_hmac_secret"
   private const val KEY_WEBHOOK_ALLOWLIST = "webhook_allowlist"
+  private const val KEY_IDLE_TTL_MINUTES = "idle_ttl_minutes"
 
   // Server-side session memory (Feature #5) — DEFAULT-OFF. When disabled the HTTP path never reads
   // the header, opens the DB, or persists anything (zero behavior change). TTL + per-session turn
@@ -87,6 +88,11 @@ object RelaisConfig {
   private const val COOLDOWN_DEFAULT = 1_500L
   private const val COOLDOWN_MIN = 0L
   private const val COOLDOWN_MAX = 10_000L
+
+  // Idle-TTL auto-unload (#178). IDLE_TTL_DISABLED_MINUTES (0) is a valid, in-band value (the "never
+  // unload" opt-out) — unlike the shed thresholds above, disabling this signal is a legitimate
+  // operator choice, not a device-safety hazard. Clamp band excludes the disabled sentinel from
+  // coerceIn (0 is below IDLE_TTL_MIN_MINUTES) so it needs its own pass-through check on read+write.
 
   @Volatile private var securePrefsCache: SharedPreferences? = null
 
@@ -384,6 +390,24 @@ object RelaisConfig {
       .putLong(KEY_MODERATE_COOLDOWN_MS, value.coerceIn(COOLDOWN_MIN, COOLDOWN_MAX))
       .apply()
   }
+
+  /**
+   * Idle-TTL auto-unload window in minutes (#178): [RelaisEngine.releaseIfIdle] releases the
+   * resident engine after this many minutes with no request; the next request reloads it lazily.
+   * [IDLE_TTL_DISABLED_MINUTES] (0) disables auto-unload — the engine then stays resident until the
+   * node is stopped, matching pre-#178 behavior. Any other value is clamped to
+   * [IDLE_TTL_MIN_MINUTES]..[IDLE_TTL_MAX_MINUTES] on read+write.
+   */
+  fun idleTtlMinutes(context: Context): Int =
+    sanitizeIdleTtlMinutes(prefs(context).getInt(KEY_IDLE_TTL_MINUTES, IDLE_TTL_DEFAULT_MINUTES))
+
+  fun setIdleTtlMinutes(context: Context, value: Int) {
+    prefs(context).edit().putInt(KEY_IDLE_TTL_MINUTES, sanitizeIdleTtlMinutes(value)).apply()
+  }
+
+  private fun sanitizeIdleTtlMinutes(v: Int): Int =
+    if (v <= IDLE_TTL_DISABLED_MINUTES) IDLE_TTL_DISABLED_MINUTES
+    else v.coerceIn(IDLE_TTL_MIN_MINUTES, IDLE_TTL_MAX_MINUTES)
 
   /**
    * Optional canned-prompt template id run on a QS-tile tap (Feature #2). Null (the default) =
