@@ -14,23 +14,12 @@ package cc.grepon.relais.embed
 
 import android.content.Context
 import android.util.Log
+import cc.grepon.relais.ModelDownloader
 import cc.grepon.relais.RelaisConfig
 import java.io.File
-import java.net.HttpURLConnection
-import java.net.URL
 
 /** On-disk locations of the two assets the embedder needs. */
 data class EmbeddingAssets(val modelFile: File, val tokenizerFile: File)
-
-/**
- * Whether the bearer token may still be sent after a manual redirect hop (issue #174). Pure so the
- * one-way-drop invariant is unit-tested without network. Auth is kept ONLY while [currentlyAuthing]
- * and the [nextHost] equals the [originalHost] — comparing to the ORIGINAL host (not the previous
- * hop) and AND-ing with the running flag means once auth is dropped on a cross-host hop it can never
- * be re-attached to a later same-CDN redirect. (`ImageModelProvisioner` uses the same rule.)
- */
-internal fun redirectKeepsAuth(currentlyAuthing: Boolean, nextHost: String, originalHost: String): Boolean =
-  currentlyAuthing && nextHost.equals(originalHost, ignoreCase = true)
 
 /**
  * Downloads the EmbeddingGemma `.tflite` + paired `sentencepiece.model` from the gated HuggingFace
@@ -49,10 +38,6 @@ object EmbeddingModelProvisioner {
 
   /** Published size of `sentencepiece.model` in the repo (used for reuse-if-complete checks). */
   private const val TOKENIZER_BYTES = 4_683_319L
-
-  private const val MAX_REDIRECTS = 5
-  private const val CONNECT_TIMEOUT_MS = 20_000
-  private const val READ_TIMEOUT_MS = 60_000
 
   /** App-scoped directory holding the embedding assets. */
   fun embedDir(context: Context): File {
@@ -136,79 +121,13 @@ object EmbeddingModelProvisioner {
       return
     }
     Log.d(TAG, "downloading ${target.name} from $url")
-    val tmp = File(target.parentFile, "${target.name}.part")
-    tmp.delete()
-    streamTo(url, tmp, token, expectedBytes, onProgress)
-    if (expectedBytes > 0 && tmp.length() != expectedBytes) {
-      tmp.delete()
-      throw IllegalStateException("download of ${target.name} truncated: ${tmp.length()} != $expectedBytes")
-    }
-    if (!tmp.renameTo(target)) {
-      tmp.delete()
-      throw IllegalStateException("could not finalize ${target.name}")
-    }
-  }
-
-  /**
-   * Streams [url] into [target]. HuggingFace `resolve` URLs 302-redirect to a signed CDN URL that
-   * needs no auth, so redirects are followed MANUALLY and the bearer token is sent ONLY to the
-   * huggingface.co host — never forwarded to the CDN.
-   */
-  private fun streamTo(url: String, target: File, token: String, expectedBytes: Long, onProgress: (Int) -> Unit) {
-    var current = url
-    val originalHost = URL(url).host
-    var sendAuth = true
-    var hops = 0
-    while (true) {
-      val conn = (URL(current).openConnection() as HttpURLConnection).apply {
-        instanceFollowRedirects = false
-        connectTimeout = CONNECT_TIMEOUT_MS
-        readTimeout = READ_TIMEOUT_MS
-        requestMethod = "GET"
-        if (sendAuth) setRequestProperty("Authorization", "Bearer $token")
-      }
-      try {
-        val code = conn.responseCode
-        if (code in 300..399) {
-          val location = conn.getHeaderField("Location")
-            ?: throw IllegalStateException("redirect ($code) with no Location for $target")
-          if (++hops > MAX_REDIRECTS) throw IllegalStateException("too many redirects fetching $target")
-          // One-way auth drop: the bearer token is sent ONLY while we stay on the ORIGINAL host.
-          // Compare to originalHost (not the previous hop) and never re-enable once dropped, so a
-          // chain huggingface.co -> cdn -> cdn/... can't re-attach the token to the CDN host (#174).
-          val nextHost = URL(URL(current), location).host
-          sendAuth = redirectKeepsAuth(sendAuth, nextHost, originalHost)
-          current = URL(URL(current), location).toString()
-          continue
-        }
-        if (code != HttpURLConnection.HTTP_OK) {
-          throw IllegalStateException("HTTP $code fetching $target (gated repo needs a valid HF token)")
-        }
-        val contentLen = if (expectedBytes > 0) expectedBytes else conn.contentLengthLong
-        conn.inputStream.buffered().use { input ->
-          target.outputStream().buffered().use { output ->
-            val buf = ByteArray(64 * 1024)
-            var read: Int
-            var written = 0L
-            var lastPct = -1
-            while (input.read(buf).also { read = it } != -1) {
-              output.write(buf, 0, read)
-              written += read
-              if (contentLen > 0) {
-                val pct = ((written * 100) / contentLen).toInt().coerceIn(0, 100)
-                if (pct != lastPct) {
-                  lastPct = pct
-                  onProgress(pct)
-                }
-              }
-            }
-          }
-        }
-        onProgress(100)
-        return
-      } finally {
-        conn.disconnect()
-      }
-    }
+    ModelDownloader.fetch(
+      url = url,
+      dst = target,
+      token = token,
+      expectedBytes = expectedBytes,
+      sha256 = null,
+      onProgress = onProgress,
+    )
   }
 }

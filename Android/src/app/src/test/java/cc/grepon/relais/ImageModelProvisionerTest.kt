@@ -14,7 +14,6 @@ package cc.grepon.relais
 
 import cc.grepon.relais.imagegen.ImageModelProvisioner
 import java.io.File
-import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -36,21 +35,5 @@ class ImageModelProvisionerTest {
     assertTrue(ImageModelProvisioner.isComplete(tmp(ByteArray(1)), -1))
     assertFalse(ImageModelProvisioner.isComplete(tmp(ByteArray(0)), -1))
     assertFalse(ImageModelProvisioner.isComplete(tmp(ByteArray(0)), 0))
-  }
-
-  @Test fun `sha256Hex matches the known vector for abc`() {
-    val f = tmp("abc".toByteArray())
-    assertEquals(
-      "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
-      ImageModelProvisioner.sha256Hex(f),
-    )
-  }
-
-  @Test fun `sha256Hex of an empty file is the known empty digest`() {
-    val f = tmp(ByteArray(0))
-    assertEquals(
-      "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-      ImageModelProvisioner.sha256Hex(f),
-    )
   }
 }

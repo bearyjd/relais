@@ -20,10 +20,8 @@ package cc.grepon.relais.imagegen
 
 import android.content.Context
 import android.util.Log
+import cc.grepon.relais.ModelDownloader
 import java.io.File
-import java.net.HttpURLConnection
-import java.net.URL
-import java.security.MessageDigest
 
 /**
  * Downloads + SHA-verifies an [ImageModel] `.gguf` into app storage, reusing an already-complete file.
@@ -39,10 +37,6 @@ import java.security.MessageDigest
 object ImageModelProvisioner {
 
   private const val TAG = "RelaisImageProvision"
-
-  private const val MAX_REDIRECTS = 5
-  private const val CONNECT_TIMEOUT_MS = 20_000
-  private const val READ_TIMEOUT_MS = 60_000
 
   /** App-scoped directory holding the image-gen models (sibling of the embedder's `relais/embed`). */
   fun modelDir(context: Context): File {
@@ -77,29 +71,19 @@ object ImageModelProvisioner {
       onProgress(100)
       return target
     }
-    val tmp = File(target.parentFile, "${target.name}.part")
-    tmp.delete()
-    streamTo(model.url, tmp, token?.takeIf { it.isNotBlank() }, model.sizeBytes, onProgress)
-
-    if (model.sizeBytes > 0 && tmp.length() != model.sizeBytes) {
-      tmp.delete()
-      throw IllegalStateException("download of ${model.fileName} truncated: ${tmp.length()} != ${model.sizeBytes}")
-    }
-    if (model.sha256.isNotBlank()) {
-      val actual = sha256Hex(tmp)
-      if (!actual.equals(model.sha256, ignoreCase = true)) {
-        tmp.delete()
-        throw IllegalStateException("SHA-256 mismatch for ${model.fileName}: got $actual, expected ${model.sha256}")
-      }
-    } else if (model.sizeBytes <= 0) {
-      // A custom URL with neither a pinned size nor SHA: the server Content-Length check above is the
+    if (model.sha256.isBlank() && model.sizeBytes <= 0) {
+      // A custom URL with neither a pinned size nor SHA: the server Content-Length check is the
       // only guard. Flag it so an operator knows the artifact is unverified (and can pin a SHA).
-      Log.w(TAG, "provisioned ${model.fileName} with no pinned size or SHA — integrity unverified (custom URL)")
+      Log.w(TAG, "provisioning ${model.fileName} with no pinned size or SHA — integrity unverified (custom URL)")
     }
-    if (!tmp.renameTo(target)) {
-      tmp.delete()
-      throw IllegalStateException("could not finalize ${model.fileName}")
-    }
+    ModelDownloader.fetch(
+      url = model.url,
+      dst = target,
+      token = token?.takeIf { it.isNotBlank() },
+      expectedBytes = model.sizeBytes,
+      sha256 = model.sha256.ifBlank { null },
+      onProgress = onProgress,
+    )
     Log.i(TAG, "Image model provisioned: ${target.path}")
     return target
   }
@@ -107,86 +91,5 @@ object ImageModelProvisioner {
   /** Deletes [model]'s on-disk file so a later [ensure] re-downloads (e.g. after a failed load). */
   fun clearModel(context: Context, model: ImageModel) {
     modelFile(context, model).delete()
-  }
-
-  /** Streaming SHA-256 of [file] as lowercase hex. Reads in chunks so a multi-GB file isn't buffered. */
-  internal fun sha256Hex(file: File): String {
-    val digest = MessageDigest.getInstance("SHA-256")
-    file.inputStream().buffered().use { input ->
-      val buf = ByteArray(64 * 1024)
-      while (true) {
-        val r = input.read(buf)
-        if (r == -1) break
-        digest.update(buf, 0, r)
-      }
-    }
-    return digest.digest().joinToString("") { "%02x".format(it) }
-  }
-
-  /**
-   * Streams [url] into [target]. HuggingFace `resolve` URLs 302-redirect to a signed CDN that needs no
-   * auth, so redirects are followed MANUALLY and [token] (if any) is sent ONLY to the original host —
-   * never forwarded to the CDN. Identical posture to the embedder's provisioner.
-   */
-  private fun streamTo(url: String, target: File, token: String?, expectedBytes: Long, onProgress: (Int) -> Unit) {
-    val originalHost = URL(url).host
-    var current = url
-    var sendAuth = token != null
-    var hops = 0
-    while (true) {
-      val conn = (URL(current).openConnection() as HttpURLConnection).apply {
-        instanceFollowRedirects = false
-        connectTimeout = CONNECT_TIMEOUT_MS
-        readTimeout = READ_TIMEOUT_MS
-        requestMethod = "GET"
-        if (sendAuth && token != null) setRequestProperty("Authorization", "Bearer $token")
-      }
-      try {
-        val code = conn.responseCode
-        if (code in 300..399) {
-          val location = conn.getHeaderField("Location")
-            ?: throw IllegalStateException("redirect ($code) with no Location for $target")
-          if (++hops > MAX_REDIRECTS) throw IllegalStateException("too many redirects fetching $target")
-          val nextHost = URL(URL(current), location).host
-          // One-way drop: once auth is dropped on a cross-host hop it never comes back, even on a
-          // later same-host CDN→CDN redirect. Compare to the ORIGINAL host, not the previous hop.
-          sendAuth = sendAuth && token != null && nextHost.equals(originalHost, ignoreCase = true)
-          current = URL(URL(current), location).toString()
-          continue
-        }
-        if (code != HttpURLConnection.HTTP_OK) {
-          throw IllegalStateException("HTTP $code fetching $target")
-        }
-        val contentLen = if (expectedBytes > 0) expectedBytes else conn.contentLengthLong
-        var written = 0L
-        conn.inputStream.buffered().use { input ->
-          target.outputStream().buffered().use { output ->
-            val buf = ByteArray(64 * 1024)
-            var read: Int
-            var lastPct = -1
-            while (input.read(buf).also { read = it } != -1) {
-              output.write(buf, 0, read)
-              written += read
-              if (contentLen > 0) {
-                val pct = ((written * 100) / contentLen).toInt().coerceIn(0, 100)
-                if (pct != lastPct) {
-                  lastPct = pct
-                  onProgress(pct)
-                }
-              }
-            }
-          }
-        }
-        // Enforce the server-declared length on EVERY path (incl. a custom URL with no pinned size):
-        // a clean early-EOF mid-body otherwise looks like a successful download.
-        if (contentLen > 0 && written != contentLen) {
-          throw IllegalStateException("download of $target truncated: $written != $contentLen")
-        }
-        onProgress(100)
-        return
-      } finally {
-        conn.disconnect()
-      }
-    }
   }
 }

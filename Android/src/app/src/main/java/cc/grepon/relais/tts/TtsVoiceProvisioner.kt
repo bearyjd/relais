@@ -14,10 +14,8 @@ package cc.grepon.relais.tts
 
 import android.content.Context
 import android.util.Log
+import cc.grepon.relais.ModelDownloader
 import java.io.File
-import java.net.HttpURLConnection
-import java.net.URL
-import java.security.MessageDigest
 import org.apache.commons.compress.archivers.tar.TarArchiveInputStream
 import org.apache.commons.compress.compressors.bzip2.BZip2CompressorInputStream
 
@@ -58,19 +56,15 @@ object TtsVoiceProvisioner {
       return dir
     }
     ttsRoot(context).mkdirs()
-    val tmp = File(ttsRoot(context), "${voice.id}.tar.bz2.part")
-    tmp.delete()
-    download(voice.url, tmp, voice.sizeBytes, onProgress)
-
-    if (voice.sizeBytes > 0 && tmp.length() != voice.sizeBytes) {
-      tmp.delete()
-      throw IllegalStateException("voice ${voice.id} truncated: ${tmp.length()} != ${voice.sizeBytes}")
-    }
-    val actual = sha256Hex(tmp)
-    if (!actual.equals(voice.sha256, ignoreCase = true)) {
-      tmp.delete()
-      throw IllegalStateException("SHA-256 mismatch for ${voice.id}: got $actual, expected ${voice.sha256}")
-    }
+    val tmp = File(ttsRoot(context), "${voice.id}.tar.bz2")
+    ModelDownloader.fetch(
+      url = voice.url,
+      dst = tmp,
+      token = null,
+      expectedBytes = voice.sizeBytes,
+      sha256 = voice.sha256,
+      onProgress = onProgress,
+    )
 
     // Extract into a staging dir, then atomically swap in — a crash mid-extract never leaves a
     // half-populated voiceDir that isProvisioned() would wrongly accept.
@@ -101,43 +95,6 @@ object TtsVoiceProvisioner {
     voiceDir(context, voice).deleteRecursively()
   }
 
-  /** Streams [url] to [dst], reporting 0..100 progress against [expectedBytes] when known. */
-  private fun download(url: String, dst: File, expectedBytes: Long, onProgress: (Int) -> Unit) {
-    val conn = (URL(url).openConnection() as HttpURLConnection).apply {
-      connectTimeout = 30_000
-      readTimeout = 60_000
-      instanceFollowRedirects = true
-    }
-    try {
-      val total = if (expectedBytes > 0) expectedBytes else conn.contentLengthLong
-      // Abort if the server streams materially more than the pinned size (a redirect/compromised host
-      // shouldn't be able to fill the phone's storage before the post-hoc length/SHA check rejects it).
-      val cap = if (expectedBytes > 0) expectedBytes + 1_048_576L else 512L * 1024 * 1024
-      conn.inputStream.use { input ->
-        dst.outputStream().use { out ->
-          val buf = ByteArray(64 * 1024)
-          var read = 0L
-          var lastPct = -1
-          while (true) {
-            val n = input.read(buf)
-            if (n < 0) break
-            out.write(buf, 0, n)
-            read += n
-            if (read > cap) {
-              throw IllegalStateException("download exceeded size cap ($read > $cap) — aborting")
-            }
-            if (total > 0) {
-              val pct = (read * 100 / total).toInt().coerceIn(0, 100)
-              if (pct != lastPct) { lastPct = pct; onProgress(pct) }
-            }
-          }
-        }
-      }
-    } finally {
-      conn.disconnect()
-    }
-  }
-
   /** Decompress + untar [tarBz2] into [destDir], rejecting entries that escape it (zip-slip guard). */
   private fun extractTarBz2(tarBz2: File, destDir: File) {
     val destCanonical = destDir.canonicalFile
@@ -160,19 +117,5 @@ object TtsVoiceProvisioner {
         }
       }
     }
-  }
-
-  /** Streaming SHA-256 of [file] as lowercase hex. */
-  private fun sha256Hex(file: File): String {
-    val digest = MessageDigest.getInstance("SHA-256")
-    file.inputStream().use { input ->
-      val buf = ByteArray(64 * 1024)
-      while (true) {
-        val n = input.read(buf)
-        if (n < 0) break
-        digest.update(buf, 0, n)
-      }
-    }
-    return digest.digest().joinToString("") { "%02x".format(it) }
   }
 }
