@@ -1188,19 +1188,15 @@ class RelaisHttpServer(
     // failure must NOT unwind to the outer catch (that would write a second HTTP status into the
     // stream and double-count the request) — post-commit errors become an SSE error event (HIGH-1).
     RelaisMetrics.recordRequest("/v1/chat/completions", 200)
-    val out = sock.getOutputStream()
-    out.write(
-      ("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\n" +
-          "Connection: close\r\n\r\n").toByteArray()
-    )
-    out.flush()
+    val sse = SseWriter(sock.getOutputStream())
+    sse.commitHeader()
     fun emitDelta(delta: JSONObject, finish: String?) {
       val choice = JSONObject().put("index", 0)
         .put("delta", delta)
         .put("finish_reason", finish ?: JSONObject.NULL)
       val chunk = JSONObject().put("id", id).put("object", "chat.completion.chunk")
         .put("model", model).put("choices", JSONArray().put(choice))
-      out.write("data: $chunk\n\n".toByteArray()); out.flush()
+      sse.send(chunk)
     }
     fun sendChunk(delta: String?, finish: String?) =
       emitDelta(if (delta != null) JSONObject().put("content", delta) else JSONObject(), finish)
@@ -1229,22 +1225,22 @@ class RelaisHttpServer(
       // Backward-compat: usage stays on the finish chunk UNLESS the client opted into the spec form
       // (stream_options.include_usage), where usage is a SEPARATE empty-choices terminal chunk (#175).
       if (!includeUsage) finalChunk.put("usage", usageObj).put("x_relais_usage_note", "prompt_tokens_estimated")
-      out.write("data: $finalChunk\n\n".toByteArray()); out.flush()
+      sse.send(finalChunk)
       if (includeUsage) {
         val usageChunk = JSONObject().put("id", id).put("object", "chat.completion.chunk")
           .put("created", created).put("model", model)
           .put("choices", JSONArray()) // empty choices per the OpenAI include_usage spec
           .put("usage", usageObj)
           .put("x_relais_usage_note", "prompt_tokens_estimated")
-        out.write("data: $usageChunk\n\n".toByteArray()); out.flush()
+        sse.send(usageChunk)
       }
-      out.write("data: [DONE]\n\n".toByteArray()); out.flush()
+      sse.done()
       // Session memory: persist on stream completion using the captured full result text (the engine
       // returns the whole reply alongside the deltas). Best-effort; never affects the stream.
       recordSessionTurn(recordKey, request.text, result.text)
     } catch (e: Exception) {
       Log.e(TAG, "stream error after headers committed", e)
-      runCatching { out.write("data: {\"error\":\"stream aborted\"}\n\n".toByteArray()); out.flush() }
+      sse.abort()
     }
   }
 
@@ -1376,12 +1372,8 @@ class RelaisHttpServer(
     // full assistant message (with tool_calls when present), then [DONE]. Post-header errors become
     // an SSE error event (the outer catch would double-count + double-write a status otherwise).
     RelaisMetrics.recordRequest("/v1/chat/completions", 200)
-    val out = sock.getOutputStream()
-    out.write(
-      ("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\n" +
-          "Connection: close\r\n\r\n").toByteArray()
-    )
-    out.flush()
+    val sse = SseWriter(sock.getOutputStream())
+    sse.commitHeader()
     try {
       val result = generateWithNodeTools(request)
       val (message, finishReason) = buildToolAssistantMessage(result, streaming = true)
@@ -1392,11 +1384,11 @@ class RelaisHttpServer(
           JSONObject().put("index", 0)
             .put("delta", message)
             .put("finish_reason", finishReason)))
-      out.write("data: $chunk\n\n".toByteArray()); out.flush()
-      out.write("data: [DONE]\n\n".toByteArray()); out.flush()
+      sse.send(chunk)
+      sse.done()
     } catch (e: Exception) {
       Log.e(TAG, "tool stream error after headers committed", e)
-      runCatching { out.write("data: {\"error\":\"stream aborted\"}\n\n".toByteArray()); out.flush() }
+      sse.abort()
     }
   }
 
