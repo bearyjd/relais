@@ -127,6 +127,19 @@ class RelaisWatchdogReceiver : BroadcastReceiver() {
       RelaisWatchdog.schedule(context)
       return
     }
+    if (RelaisEngine.wasIdleUnloaded) {
+      // Gracefully released by idle-TTL auto-unload (#178), not a crash — the process/service is
+      // alive, the engine is just intentionally not resident right now. Without this check the
+      // watchdog's own ~60s heartbeat would see !isReady, conclude the node is dead, escalate the
+      // failure-backoff step, and force a restart via RelaisNodeService.start() below — undoing the
+      // idle-unload within about one poll cycle and eventually firing a false "needs attention"
+      // notification after sustained normal idling. Treat exactly like the healthy path: reset
+      // backoff, keep the heartbeat at base, and let the NEXT REQUEST reload the engine lazily
+      // (RelaisEngine.ensureInitialized), not the watchdog.
+      RelaisWatchdog.reset(context)
+      RelaisWatchdog.schedule(context)
+      return
+    }
     // Not ready and not starting: escalate backoff, reschedule FIRST so a failed start never stops the heartbeat,
     // then (re)start. Warn (once past threshold) instead of hammering silently forever.
     val step = RelaisWatchdog.bumpStep(context)

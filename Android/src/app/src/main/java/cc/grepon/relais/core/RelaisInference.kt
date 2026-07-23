@@ -37,6 +37,15 @@ private const val TAG = "RelaisInference"
  * foreground service behind it (which the OS would OOM-kill). When the engine isn't ready it fails
  * fast and **eagerly** with [NodeNotReadyException] (thrown by the call itself, before the Flow is
  * returned), so callers surface "node not running" instead of hanging or provisioning.
+ *
+ * EXCEPTION to "never cold-start": [RelaisEngine.wasIdleUnloaded] being true PROVES the foreground
+ * service is alive right now — idle-TTL auto-unload (#178) only ever runs from a ticker owned by
+ * [cc.grepon.relais.RelaisNodeService] itself, so if the engine was idle-unloaded, the OOM-kill
+ * concern above (no service behind the reload) cannot apply. In that specific case this still fails
+ * fast with [NodeNotReadyException] on THIS call (never blocks a UI tap on a multi-second reload),
+ * but also kicks a background reload so the tap that follows self-heals instead of surfacing "not
+ * running" indefinitely until the caller happens to hit a text endpoint (#178 review finding — before
+ * this, tile/share/Tasker/NFC/widget callers had no path back to ready after an idle-unload).
  */
 object RelaisInference {
 
@@ -56,7 +65,10 @@ object RelaisInference {
     system: String? = null,
     images: List<Uri> = emptyList(),
   ): Flow<String> {
-    if (!RelaisEngine.isReady) throw NodeNotReadyException() // EAGER: before returning the Flow
+    if (!RelaisEngine.isReady) {
+      if (RelaisEngine.wasIdleUnloaded) RelaisEngine.ensureInitializedInBackground(context) // self-heal (#178)
+      throw NodeNotReadyException() // EAGER: before returning the Flow — this call still fails fast
+    }
     val request = RelaisRequest(
       text = prompt,
       systemPrompt = system,
@@ -67,7 +79,10 @@ object RelaisInference {
         try {
           // Re-assert readiness after the dispatch gap: if the node shut down between the eager guard
           // and here, fail fast instead of letting generate() cold-start the engine from a UI tap.
-          if (!RelaisEngine.isReady) throw NodeNotReadyException()
+          if (!RelaisEngine.isReady) {
+            if (RelaisEngine.wasIdleUnloaded) RelaisEngine.ensureInitializedInBackground(context) // self-heal (#178)
+            throw NodeNotReadyException()
+          }
           RelaisEngine.generate(
             context = context,
             request = request,

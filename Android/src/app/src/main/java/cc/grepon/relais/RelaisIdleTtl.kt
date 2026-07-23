@@ -52,6 +52,16 @@ const val IDLE_TTL_MIN_MINUTES = 1
 const val IDLE_TTL_MAX_MINUTES = 24 * 60
 
 /**
+ * Circuit-breaker threshold for [RelaisEngine.consecutiveCloseFailures]: after this many consecutive
+ * [com.google.ai.edge.litertlm.Engine.close] failures, idle-TTL stops attempting further auto-unloads
+ * (leaving the engine resident) rather than risk repeating a possibly-leaking native teardown forever
+ * on a fully-automatic, 60s-polled path (#178 review — a rare `close()` bug that was tolerable at
+ * shutdown()'s pre-#178 call frequency — process teardown, explicit model switch — becomes a repeated
+ * leak once shutdown() is on a recurring idle-triggered cadence).
+ */
+const val IDLE_TTL_MAX_CONSECUTIVE_CLOSE_FAILURES = 3
+
+/**
  * Pure idle-unload decision: should the resident engine be released *right now*?
  *
  * @param ready true iff a resident engine is actually loaded ([RelaisEngine.isReady]); nothing to
@@ -63,6 +73,8 @@ const val IDLE_TTL_MAX_MINUTES = 24 * 60
  *   a request ([RelaisEngine]'s activity clock).
  * @param nowMs current wall-clock ms.
  * @param ttlMs configured idle window in ms; `<= 0` means disabled (never unload).
+ * @param consecutiveCloseFailures [RelaisEngine.consecutiveCloseFailures] — at or past
+ *   [IDLE_TTL_MAX_CONSECUTIVE_CLOSE_FAILURES], auto-unload stops trying (circuit breaker).
  */
 fun shouldUnloadIdleEngine(
   ready: Boolean,
@@ -70,9 +82,11 @@ fun shouldUnloadIdleEngine(
   lastActivityAtMs: Long,
   nowMs: Long,
   ttlMs: Long,
+  consecutiveCloseFailures: Int = 0,
 ): Boolean {
   if (!ready) return false // nothing resident to release
   if (ttlMs <= 0L) return false // disabled (0 = never), matches the codebase's "0 = never" convention
   if (inFlightDepth > 0) return false // NEVER unload mid-inference — the highest-risk invariant (#178)
+  if (consecutiveCloseFailures >= IDLE_TTL_MAX_CONSECUTIVE_CLOSE_FAILURES) return false // circuit breaker
   return nowMs - lastActivityAtMs >= ttlMs
 }

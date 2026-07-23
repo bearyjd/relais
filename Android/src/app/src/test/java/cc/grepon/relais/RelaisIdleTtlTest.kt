@@ -181,4 +181,68 @@ class RelaisIdleTtlTest {
     assertTrue(IDLE_TTL_MIN_MINUTES > IDLE_TTL_DISABLED_MINUTES)
     assertTrue(IDLE_TTL_MAX_MINUTES >= IDLE_TTL_MIN_MINUTES)
   }
+
+  // -------------------------------------------------------------------------
+  // 7. circuit breaker: repeated engine.close() failures stop further auto-unload
+  // -------------------------------------------------------------------------
+
+  @Test
+  fun `does not unload once consecutive close failures hit the circuit-breaker threshold`() {
+    val now = 1_000_000_000L
+    assertFalse(
+      shouldUnloadIdleEngine(
+        ready = true,
+        inFlightDepth = 0,
+        lastActivityAtMs = 0L, // well past the ttl window
+        nowMs = now,
+        ttlMs = ttlMs,
+        consecutiveCloseFailures = IDLE_TTL_MAX_CONSECUTIVE_CLOSE_FAILURES,
+      )
+    )
+  }
+
+  @Test
+  fun `does not unload past the circuit-breaker threshold either`() {
+    val now = 1_000_000_000L
+    assertFalse(
+      shouldUnloadIdleEngine(
+        ready = true,
+        inFlightDepth = 0,
+        lastActivityAtMs = 0L,
+        nowMs = now,
+        ttlMs = ttlMs,
+        consecutiveCloseFailures = IDLE_TTL_MAX_CONSECUTIVE_CLOSE_FAILURES + 5,
+      )
+    )
+  }
+
+  @Test
+  fun `still unloads one failure under the circuit-breaker threshold`() {
+    val now = 1_000_000_000L
+    assertTrue(
+      shouldUnloadIdleEngine(
+        ready = true,
+        inFlightDepth = 0,
+        lastActivityAtMs = 0L,
+        nowMs = now,
+        ttlMs = ttlMs,
+        consecutiveCloseFailures = IDLE_TTL_MAX_CONSECUTIVE_CLOSE_FAILURES - 1,
+      )
+    )
+  }
+
+  @Test
+  fun `zero consecutive failures (the default, no-arg call) still unloads normally`() {
+    val now = 1_000_000_000L
+    assertTrue(
+      shouldUnloadIdleEngine(
+        ready = true,
+        inFlightDepth = 0,
+        lastActivityAtMs = 0L,
+        nowMs = now,
+        ttlMs = ttlMs,
+        // consecutiveCloseFailures omitted — defaults to 0, must not itself trip the breaker
+      )
+    )
+  }
 }

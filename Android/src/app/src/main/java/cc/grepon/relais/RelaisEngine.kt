@@ -237,6 +237,30 @@ object RelaisEngine {
   @Volatile var startupInProgress: Boolean = false
 
   /**
+   * True iff the engine's current not-ready state is a graceful idle-TTL unload ([releaseIfIdle],
+   * #178), not a crash. [RelaisWatchdogReceiver] checks this BEFORE treating `!isReady` as a
+   * failure — without it, the watchdog's own ~60s heartbeat would see the freshly-unloaded engine,
+   * conclude the node is dead, escalate its failure-backoff step, and force a restart, undoing the
+   * idle-unload within about one poll cycle (discovered auditing every [isReady] call site; see
+   * #178 review). Set true by [releaseIfIdle] right after a successful [shutdown]; cleared by
+   * [ensureInitialized] on the next successful init (any reason — idle-TTL, watchdog, an ordinary
+   * request — restores normal "not ready" semantics once a real init attempt is underway).
+   */
+  @Volatile var wasIdleUnloaded: Boolean = false
+
+  /** Guards [ensureInitializedInBackground] so a burst of requests during an idle-reload dispatches at most one thread. */
+  private val backgroundReloadDispatching = java.util.concurrent.atomic.AtomicBoolean(false)
+
+  /**
+   * Consecutive [shutdown] failures ([Engine.close] threw). Read by [shouldUnloadIdleEngine] as a
+   * circuit breaker: after repeated close failures, idle-TTL stops attempting further auto-unloads
+   * rather than silently repeating a possibly-leaking teardown forever (#178 review). Reset to 0 on
+   * any successful close.
+   */
+  @Volatile var consecutiveCloseFailures: Int = 0
+    private set
+
+  /**
    * True when the most recent init attempt threw (set by [RelaisNodeService]'s init thread). Lets
    * [cc.grepon.relais.core.computeNodeState] surface ERROR rather than an indefinite STARTING when
    * provisioning/init fails. Cleared on a successful init.
@@ -299,6 +323,35 @@ object RelaisEngine {
       ExperimentalFlags.enableSpeculativeDecoding = false
       engine = buildResidentEngine(modelPath, cacheDir, context.applicationInfo.nativeLibraryDir)
       lastActivityAtMs = System.currentTimeMillis() // idle-TTL clock (#178): init counts as activity
+      wasIdleUnloaded = false // a real init attempt is underway; restore normal not-ready semantics
+    }
+  }
+
+  /**
+   * Kicks a background reload if the engine isn't already ready or already coming up — an idempotent
+   * no-op otherwise, and safe to call from any thread without blocking it on the reload itself.
+   *
+   * Exists for request paths recovering from an idle-TTL unload (#178) that must not cold-start a
+   * multi-GB model synchronously on the calling thread: [RelaisHttpServer]'s audio-to-text handler
+   * (mirrors the async-provisioning-kick shape `/v1/embeddings` already uses) and
+   * [cc.grepon.relais.core.RelaisInference] (only safe to call when [wasIdleUnloaded] is true — that
+   * specifically proves the foreground service is alive right now, since idle-TTL only runs from
+   * within it; [RelaisInference]'s own contract must still never blind-cold-start when the engine was
+   * simply never initialized, since then the service might not be running at all).
+   */
+  fun ensureInitializedInBackground(context: Context) {
+    if (isReady || startupInProgress) return
+    if (!backgroundReloadDispatching.compareAndSet(false, true)) return // a reload is already dispatching
+    thread(name = "relais-idle-reload") {
+      try {
+        startupInProgress = true // tell the watchdog "coming up", not "dead"
+        ensureInitialized(context)
+      } catch (e: Exception) {
+        Log.w(TAG, "background idle-reload failed: ${e.message}")
+      } finally {
+        startupInProgress = false
+        backgroundReloadDispatching.set(false)
+      }
     }
   }
 
@@ -753,8 +806,10 @@ object RelaisEngine {
     synchronized(lock) {
       try {
         engine?.close()
+        consecutiveCloseFailures = 0
       } catch (e: Exception) {
         Log.e(TAG, "Error closing engine", e)
+        consecutiveCloseFailures++
       } finally {
         engine = null
       }
@@ -763,10 +818,14 @@ object RelaisEngine {
 
   /**
    * Idle-TTL auto-unload (#178): releases the resident engine iff [shouldUnloadIdleEngine] says so —
-   * i.e. it's ready, [ttlMs] is enabled (`> 0`), nothing is in flight, and [lastActivityAtMs] is
-   * older than [ttlMs]. Called periodically by [RelaisNodeService] (see its idle-TTL ticker); a
-   * subsequent request reloads the engine lazily via [ensureInitialized] (a short cold-start, as
-   * intended by #178 — see [shouldUnloadIdleEngine]'s KDoc).
+   * i.e. it's ready, [ttlMs] is enabled (`> 0`), nothing is in flight, [lastActivityAtMs] is older
+   * than [ttlMs], AND [consecutiveCloseFailures] hasn't tripped the circuit breaker (repeated
+   * [Engine.close] failures stop further auto-unload attempts rather than risking a repeated native
+   * resource leak — see [shouldUnloadIdleEngine]'s KDoc). Called periodically by [RelaisNodeService]
+   * (see its idle-TTL ticker); a subsequent request reloads the engine lazily via [ensureInitialized]
+   * (a short cold-start, as intended by #178 — see [shouldUnloadIdleEngine]'s KDoc). Sets
+   * [wasIdleUnloaded] on a successful release so [RelaisWatchdogReceiver] doesn't mistake the
+   * graceful unload for a crash.
    *
    * RACE SAFETY (the highest-risk part of #178): this takes the SAME [lock] that [generate] now
    * holds for its entire "resolve the resident engine -> use it" span (see the comment there). Two
@@ -790,15 +849,16 @@ object RelaisEngine {
    * @return true iff the engine was actually released by this call.
    */
   fun releaseIfIdle(ttlMs: Long, nowMs: Long = System.currentTimeMillis()): Boolean {
-    if (!shouldUnloadIdleEngine(isReady, RelaisMetrics.queueDepth(), lastActivityAtMs, nowMs, ttlMs)) {
+    if (!shouldUnloadIdleEngine(isReady, RelaisMetrics.queueDepth(), lastActivityAtMs, nowMs, ttlMs, consecutiveCloseFailures)) {
       return false
     }
     synchronized(lock) {
-      if (!shouldUnloadIdleEngine(isReady, RelaisMetrics.queueDepth(), lastActivityAtMs, nowMs, ttlMs)) {
+      if (!shouldUnloadIdleEngine(isReady, RelaisMetrics.queueDepth(), lastActivityAtMs, nowMs, ttlMs, consecutiveCloseFailures)) {
         return false
       }
       Log.i(TAG, "idle TTL exceeded (${nowMs - lastActivityAtMs}ms >= ${ttlMs}ms) — releasing resident engine")
       shutdown()
+      wasIdleUnloaded = true // tell RelaisWatchdogReceiver this is a graceful unload, not a crash
       return true
     }
   }
