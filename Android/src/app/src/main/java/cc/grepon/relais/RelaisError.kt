@@ -51,6 +51,9 @@ object RelaisError {
   /** Unexpected server-side failure; detail stays in logcat, never leaks to the caller (500). */
   const val INTERNAL_ERROR = "internal_error"
 
+  /** RAG corpus is at its chunk-count cap; caller must delete documents before adding more (413). */
+  const val CORPUS_FULL = "corpus_full"
+
   /** `{"error":{"message":[message],"type":[type]}}` — the OpenAI-compatible error envelope. */
   fun json(message: String, type: String): JSONObject =
     JSONObject().put("error", JSONObject().put("message", message).put("type", type))

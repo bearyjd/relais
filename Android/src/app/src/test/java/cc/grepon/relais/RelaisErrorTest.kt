@@ -62,5 +62,6 @@ class RelaisErrorTest {
     assertEquals("not_implemented", RelaisError.NOT_IMPLEMENTED)
     assertEquals("service_unavailable", RelaisError.SERVICE_UNAVAILABLE)
     assertEquals("internal_error", RelaisError.INTERNAL_ERROR)
+    assertEquals("corpus_full", RelaisError.CORPUS_FULL)
   }
 }

@@ -348,12 +348,12 @@ class RelaisHttpServer(
             val body = JSONObject(readBody(reader, contentLength))
             when (val parsed = parseSpeechRequest(body, TTS_LIMITS)) {
               is SpeechRequestResult.Invalid ->
-                reply(400, JSONObject(buildTtsError(parsed.message, "invalid_request_error")))
+                reply(400, JSONObject(buildTtsError(parsed.message, RelaisError.INVALID_REQUEST)))
               is SpeechRequestResult.Valid -> {
                 val engine = RelaisTtsEngineProvider.get()
                 when (engine?.availability(context) ?: TtsAvailability.UNAVAILABLE) {
                   TtsAvailability.UNAVAILABLE ->
-                    reply(501, JSONObject(buildTtsError("text-to-speech not available on this node", "not_implemented")))
+                    reply(501, JSONObject(buildTtsError("text-to-speech not available on this node", RelaisError.NOT_IMPLEMENTED)))
 
                   TtsAvailability.PROVISIONING -> {
                     // Kick a one-time background voice download; tell the client to retry, so the request
@@ -361,7 +361,7 @@ class RelaisHttpServer(
                     engine?.ensureProvisioningStarted(context)
                     reply(
                       503,
-                      JSONObject(buildTtsError("tts voice is provisioning; retry shortly", "service_unavailable")),
+                      JSONObject(buildTtsError("tts voice is provisioning; retry shortly", RelaisError.SERVICE_UNAVAILABLE)),
                       listOf("Retry-After: 20"),
                     )
                   }
@@ -580,7 +580,7 @@ class RelaisHttpServer(
     val retryAfter = MAX_RETRY_AFTER + (0..4).random() // a multi-minute op; ask the client to wait a while
     reply(
       503,
-      buildImagesError("node busy; image generation needs exclusive device access — retry shortly", "service_unavailable"),
+      buildImagesError("node busy; image generation needs exclusive device access — retry shortly", RelaisError.SERVICE_UNAVAILABLE),
       listOf("Retry-After: $retryAfter"),
     )
     return true
@@ -769,10 +769,10 @@ class RelaisHttpServer(
     val body = JSONObject(readBody(ctx.reader, ctx.contentLength))
     val text = body.optString("text")
     if (text.isBlank()) {
-      ctx.send(400, buildEmbeddingsError("missing 'text'", "invalid_request_error")); return
+      ctx.send(400, buildEmbeddingsError("missing 'text'", RelaisError.INVALID_REQUEST)); return
     }
     if (text.length > RAG_MAX_DOCUMENT_CHARS) {
-      ctx.send(400, buildEmbeddingsError("document too large (max $RAG_MAX_DOCUMENT_CHARS chars)", "invalid_request_error")); return
+      ctx.send(400, buildEmbeddingsError("document too large (max $RAG_MAX_DOCUMENT_CHARS chars)", RelaisError.INVALID_REQUEST)); return
     }
     val embedder = availableEmbedderOrReject(ctx.reply) ?: return
     val title = (body.optString("title").takeIf { it.isNotBlank() } ?: "untitled").take(RAG_MAX_TITLE_CHARS)
@@ -780,9 +780,9 @@ class RelaisHttpServer(
       is RagStore.IngestOutcome.Stored ->
         ctx.send(200, JSONObject().put("object", "rag.document").put("document_id", res.documentId).put("chunks", res.chunkCount))
       RagStore.IngestOutcome.Empty ->
-        ctx.send(400, buildEmbeddingsError("no embeddable content in 'text'", "invalid_request_error"))
+        ctx.send(400, buildEmbeddingsError("no embeddable content in 'text'", RelaisError.INVALID_REQUEST))
       is RagStore.IngestOutcome.OverCapacity ->
-        ctx.send(413, buildEmbeddingsError("RAG corpus is at capacity (${res.cap} chunks); delete documents first", "corpus_full"))
+        ctx.send(413, buildEmbeddingsError("RAG corpus is at capacity (${res.cap} chunks); delete documents first", RelaisError.CORPUS_FULL))
     }
   }
 
@@ -800,7 +800,7 @@ class RelaisHttpServer(
     val body = if (ctx.contentLength > 0) JSONObject(readBody(ctx.reader, ctx.contentLength)) else JSONObject()
     val id = if (body.has("document_id")) body.optLong("document_id", -1L) else -1L
     if (id < 0) {
-      ctx.send(400, buildEmbeddingsError("missing 'document_id'", "invalid_request_error")); return
+      ctx.send(400, buildEmbeddingsError("missing 'document_id'", RelaisError.INVALID_REQUEST)); return
     }
     runBlocking { RagStore.delete(context, id) }
     ctx.send(200, JSONObject().put("object", "rag.document.deleted").put("document_id", id))
@@ -811,10 +811,10 @@ class RelaisHttpServer(
     val body = JSONObject(readBody(ctx.reader, ctx.contentLength))
     val q = body.optString("query")
     if (q.isBlank()) {
-      ctx.send(400, buildEmbeddingsError("missing 'query'", "invalid_request_error")); return
+      ctx.send(400, buildEmbeddingsError("missing 'query'", RelaisError.INVALID_REQUEST)); return
     }
     if (q.length > RAG_MAX_QUERY_CHARS) {
-      ctx.send(400, buildEmbeddingsError("query too long (max $RAG_MAX_QUERY_CHARS chars)", "invalid_request_error")); return
+      ctx.send(400, buildEmbeddingsError("query too long (max $RAG_MAX_QUERY_CHARS chars)", RelaisError.INVALID_REQUEST)); return
     }
     val embedder = availableEmbedderOrReject(ctx.reply) ?: return
     val topK = body.optInt("top_k", RAG_DEFAULT_TOP_K).coerceIn(1, RAG_MAX_TOP_K)
@@ -831,20 +831,20 @@ class RelaisHttpServer(
   private fun handleBatchSubmit(ctx: RequestContext) {
     val raw = readBody(ctx.reader, ctx.contentLength)
     if (raw.length > BATCH_MAX_BODY_CHARS) {
-      ctx.send(400, buildEmbeddingsError("batch body too large (max $BATCH_MAX_BODY_CHARS chars)", "invalid_request_error")); return
+      ctx.send(400, buildEmbeddingsError("batch body too large (max $BATCH_MAX_BODY_CHARS chars)", RelaisError.INVALID_REQUEST)); return
     }
     val body = JSONObject(raw)
     if (body.optJSONArray("messages") == null) {
-      ctx.send(400, buildEmbeddingsError("missing 'messages'", "invalid_request_error")); return
+      ctx.send(400, buildEmbeddingsError("missing 'messages'", RelaisError.INVALID_REQUEST)); return
     }
     val webhook = body.optString("webhook").takeIf { it.isNotBlank() }
     if (webhook != null) {
       if (webhook.length > BATCH_MAX_WEBHOOK_URL_CHARS) {
-        ctx.send(400, buildEmbeddingsError("webhook URL too long", "invalid_request_error")); return
+        ctx.send(400, buildEmbeddingsError("webhook URL too long", RelaisError.INVALID_REQUEST)); return
       }
       val verdict = WebhookGuard.check(webhook, RelaisConfig.webhookAllowlist(context))
       if (verdict is WebhookGuard.Verdict.Blocked) {
-        ctx.send(400, buildEmbeddingsError("webhook rejected: ${verdict.reason}", "invalid_request_error")); return
+        ctx.send(400, buildEmbeddingsError("webhook rejected: ${verdict.reason}", RelaisError.INVALID_REQUEST)); return
       }
     }
     val dao = RelaisDatabase.get(context).batchDao()
@@ -860,7 +860,7 @@ class RelaisHttpServer(
       )
     }
     if (!enqueued) {
-      ctx.send(429, buildEmbeddingsError("batch queue full (max $BATCH_MAX_QUEUED queued)", "rate_limit_exceeded")); return
+      ctx.send(429, buildEmbeddingsError("batch queue full (max $BATCH_MAX_QUEUED queued)", RelaisError.RATE_LIMIT_EXCEEDED)); return
     }
     BatchWorker.kick(context)
     ctx.send(202, JSONObject().put("object", "batch.job").put("job_id", jobId).put("status", BatchStatus.QUEUED))
@@ -869,11 +869,11 @@ class RelaisHttpServer(
   private fun handleBatchStatus(ctx: RequestContext) {
     val jobId = ctx.path.removePrefix("/v1/batch/").substringBefore("?").trim()
     if (jobId.isEmpty()) {
-      ctx.send(400, buildEmbeddingsError("missing job id (GET /v1/batch/{job_id})", "invalid_request_error")); return
+      ctx.send(400, buildEmbeddingsError("missing job id (GET /v1/batch/{job_id})", RelaisError.INVALID_REQUEST)); return
     }
     val job = runBlocking { RelaisDatabase.get(context).batchDao().byJobId(jobId) }
     if (job == null) {
-      ctx.send(404, buildEmbeddingsError("batch job not found", "not_found"))
+      ctx.send(404, buildEmbeddingsError("batch job not found", RelaisError.NOT_FOUND))
     } else {
       val resp = JSONObject().put("object", "batch.job").put("job_id", job.jobId)
         .put("status", job.status).put("created", job.createdAt / 1000)
@@ -958,20 +958,20 @@ class RelaisHttpServer(
     val body = JSONObject(readBody(ctx.reader, ctx.contentLength))
     val inputs = parseEmbeddingInputs(body)
     if (inputs == null) {
-      ctx.send(400, buildEmbeddingsError("invalid 'input' (expected a non-empty string or string[])", "invalid_request_error")); return
+      ctx.send(400, buildEmbeddingsError("invalid 'input' (expected a non-empty string or string[])", RelaisError.INVALID_REQUEST)); return
     }
     when (validateEmbeddingInputs(inputs, EMBEDDINGS_MAX_INPUTS, EMBEDDINGS_MAX_INPUT_CHARS)) {
       EmbeddingValidation.TooMany ->
-        ctx.send(400, buildEmbeddingsError("too many inputs (max $EMBEDDINGS_MAX_INPUTS)", "invalid_request_error"))
+        ctx.send(400, buildEmbeddingsError("too many inputs (max $EMBEDDINGS_MAX_INPUTS)", RelaisError.INVALID_REQUEST))
       EmbeddingValidation.TooLong ->
-        ctx.send(400, buildEmbeddingsError("an input exceeds the per-item limit ($EMBEDDINGS_MAX_INPUT_CHARS chars)", "invalid_request_error"))
+        ctx.send(400, buildEmbeddingsError("an input exceeds the per-item limit ($EMBEDDINGS_MAX_INPUT_CHARS chars)", RelaisError.INVALID_REQUEST))
       EmbeddingValidation.Ok -> {
         // Retrieval-asymmetry selector: query vs document use different EmbeddingGemma prefixes.
         // Absent/blank → DOCUMENT default; unrecognized → 400. `x_relais_` is the namespaced alias.
         val taskSel = body.optString("embedding_task").ifBlank { body.optString("x_relais_embedding_task") }
         val task = EmbeddingTask.fromRequest(taskSel)
         if (task == null) {
-          ctx.send(400, buildEmbeddingsError("unknown 'embedding_task' (expected 'query' or 'document')", "invalid_request_error"))
+          ctx.send(400, buildEmbeddingsError("unknown 'embedding_task' (expected 'query' or 'document')", RelaisError.INVALID_REQUEST))
         } else {
           val embedder = RelaisEmbedderProvider.get()
           if (embedder == null || !embedder.isAvailable(context)) {
@@ -979,9 +979,9 @@ class RelaisHttpServer(
             // so the request thread never blocks on the ~180 MB fetch; else genuinely unavailable → 501.
             if (embedder is EmbeddingGemmaEmbedder && embedder.canProvision(context)) {
               embedder.ensureProvisioningStarted(context)
-              ctx.reply(503, buildEmbeddingsError("embeddings model is provisioning; retry shortly", "service_unavailable"), listOf("Retry-After: 10"))
+              ctx.reply(503, buildEmbeddingsError("embeddings model is provisioning; retry shortly", RelaisError.SERVICE_UNAVAILABLE), listOf("Retry-After: 10"))
             } else {
-              ctx.send(501, buildEmbeddingsError("embeddings model not provisioned", "not_implemented"))
+              ctx.send(501, buildEmbeddingsError("embeddings model not provisioned", RelaisError.NOT_IMPLEMENTED))
             }
           } else {
             val model = resolveEmbeddingModel(body.optString("model"), embedder.modelId)
@@ -1008,7 +1008,7 @@ class RelaisHttpServer(
     val body = JSONObject(readBody(ctx.reader, ctx.contentLength))
     when (val parsed = parseRerankRequest(body, RERANK_LIMITS)) {
       is RerankRequestResult.Invalid ->
-        ctx.send(400, buildRerankError(parsed.message, "invalid_request_error"))
+        ctx.send(400, buildRerankError(parsed.message, RelaisError.INVALID_REQUEST))
       is RerankRequestResult.Valid -> {
         val req = parsed.request
         val embedder = RelaisEmbedderProvider.get()
@@ -1016,9 +1016,9 @@ class RelaisHttpServer(
           // Mirror /v1/embeddings: kick a one-time background load + 503-retry if provisionable, else 501.
           if (embedder is EmbeddingGemmaEmbedder && embedder.canProvision(context)) {
             embedder.ensureProvisioningStarted(context)
-            ctx.reply(503, buildRerankError("rerank model is provisioning; retry shortly", "service_unavailable"), listOf("Retry-After: 10"))
+            ctx.reply(503, buildRerankError("rerank model is provisioning; retry shortly", RelaisError.SERVICE_UNAVAILABLE), listOf("Retry-After: 10"))
           } else {
-            ctx.send(501, buildRerankError("rerank model not provisioned", "not_implemented"))
+            ctx.send(501, buildRerankError("rerank model not provisioned", RelaisError.NOT_IMPLEMENTED))
           }
         } else {
           val model = resolveEmbeddingModel(body.optString("model"), embedder.modelId)
@@ -1050,18 +1050,18 @@ class RelaisHttpServer(
     )?.steps ?: IMAGE_GEN_LIMITS.defaultSteps
     when (val parsed = parseImageRequest(body, IMAGE_GEN_LIMITS, modelSteps)) {
       is ImageRequestResult.Invalid ->
-        ctx.send(400, buildImagesError(parsed.message, "invalid_request_error"))
+        ctx.send(400, buildImagesError(parsed.message, RelaisError.INVALID_REQUEST))
       is ImageRequestResult.Valid -> {
         val generator = RelaisImageGeneratorProvider.get()
         // Single atomic snapshot so a provision completing mid-request can't yield a spurious 501;
         // a null provider (degoogled/unregistered) → 501.
         when (generator?.availability(context) ?: ImageGenAvailability.UNAVAILABLE) {
           ImageGenAvailability.UNAVAILABLE ->
-            ctx.send(501, buildImagesError("image generation model not provisioned", "not_implemented"))
+            ctx.send(501, buildImagesError("image generation model not provisioned", RelaisError.NOT_IMPLEMENTED))
 
           ImageGenAvailability.PROVISIONING -> {
             generator?.ensureProvisioningStarted(context)
-            ctx.reply(503, buildImagesError("image generation model is provisioning; retry shortly", "service_unavailable"), listOf("Retry-After: 30"))
+            ctx.reply(503, buildImagesError("image generation model is provisioning; retry shortly", RelaisError.SERVICE_UNAVAILABLE), listOf("Retry-After: 30"))
           }
 
           ImageGenAvailability.READY -> {
@@ -1558,9 +1558,9 @@ class RelaisHttpServer(
     if (e is EmbeddingGemmaEmbedder && e.isAvailable(context)) return e
     if (e is EmbeddingGemmaEmbedder && e.canProvision(context)) {
       e.ensureProvisioningStarted(context)
-      reply(503, buildEmbeddingsError("embeddings model is provisioning; retry shortly", "service_unavailable"), listOf("Retry-After: 10"))
+      reply(503, buildEmbeddingsError("embeddings model is provisioning; retry shortly", RelaisError.SERVICE_UNAVAILABLE), listOf("Retry-After: 10"))
     } else {
-      reply(501, buildEmbeddingsError("embeddings model not provisioned", "not_implemented"), emptyList())
+      reply(501, buildEmbeddingsError("embeddings model not provisioned", RelaisError.NOT_IMPLEMENTED), emptyList())
     }
     return null
   }
