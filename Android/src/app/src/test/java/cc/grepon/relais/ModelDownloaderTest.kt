@@ -10,7 +10,7 @@
  * Affero General Public License for more details.
  */
 
-package cc.grepon.relais.embed
+package cc.grepon.relais
 
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -20,28 +20,28 @@ import org.junit.Test
  * Guards the redirect bearer-token one-way-drop invariant (#174): the HF token must be sent only
  * while on the ORIGINAL host and must NEVER be re-attached once dropped on a cross-host hop.
  */
-class EmbeddingRedirectAuthTest {
+class ModelDownloaderTest {
 
   private val hf = "huggingface.co"
 
   @Test fun `same original host keeps auth`() {
-    assertTrue(redirectKeepsAuth(currentlyAuthing = true, nextHost = "huggingface.co", originalHost = hf))
+    assertTrue(ModelDownloader.redirectKeepsAuth(currentlyAuthing = true, nextHost = "huggingface.co", originalHost = hf))
   }
 
   @Test fun `host match is case-insensitive`() {
-    assertTrue(redirectKeepsAuth(true, "HuggingFace.co", hf))
+    assertTrue(ModelDownloader.redirectKeepsAuth(true, "HuggingFace.co", hf))
   }
 
   @Test fun `cross host drops auth`() {
-    assertFalse(redirectKeepsAuth(true, "cdn-lfs.hf.co", hf))
+    assertFalse(ModelDownloader.redirectKeepsAuth(true, "cdn-lfs.hf.co", hf))
   }
 
   @Test fun `once dropped, a later same-CDN hop does NOT re-attach the token`() {
     // hf.co -> cdn (dropped) -> cdn/signed (must STAY dropped, even though nextHost == prev hop).
-    val afterCrossHost = redirectKeepsAuth(true, "cdn.example", hf) // false
+    val afterCrossHost = ModelDownloader.redirectKeepsAuth(true, "cdn.example", hf) // false
     assertFalse(afterCrossHost)
     // The chained call feeds the running flag back in — the bug was comparing to the previous hop.
-    assertFalse(redirectKeepsAuth(afterCrossHost, "cdn.example", hf))
-    assertFalse(redirectKeepsAuth(afterCrossHost, "huggingface.co", hf)) // even returning to origin
+    assertFalse(ModelDownloader.redirectKeepsAuth(afterCrossHost, "cdn.example", hf))
+    assertFalse(ModelDownloader.redirectKeepsAuth(afterCrossHost, "huggingface.co", hf)) // even returning to origin
   }
 }
