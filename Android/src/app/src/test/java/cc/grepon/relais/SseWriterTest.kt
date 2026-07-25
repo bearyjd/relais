@@ -66,4 +66,39 @@ class SseWriterTest {
     assertTrue(written.contains("data: {\"i\":2}\n\n"))
     assertTrue(written.endsWith("data: [DONE]\n\n"))
   }
+
+  // --- Anthropic-shaped named-event overloads (issue #179) ---
+
+  @Test fun `named send writes an event line before the data line`() {
+    val written = capture { it.send("message_start", JSONObject().put("type", "message_start")) }
+    assertEquals("event: message_start\ndata: {\"type\":\"message_start\"}\n\n", written)
+  }
+
+  @Test fun `multiple named sends compose without a DONE sentinel`() {
+    val written = capture {
+      it.commitHeader()
+      it.send("message_start", JSONObject().put("i", 1))
+      it.send("message_stop", JSONObject().put("i", 2))
+    }
+    assertTrue(written.contains("event: message_start\ndata: {\"i\":1}\n\n"))
+    assertTrue(written.endsWith("event: message_stop\ndata: {\"i\":2}\n\n"))
+    assertTrue("Anthropic stream has no [DONE] sentinel", !written.contains("[DONE]"))
+  }
+
+  @Test fun `sendError writes the Anthropic error envelope as a named error event`() {
+    val written = capture { it.sendError("api_error", "stream aborted") }
+    assertTrue(written.startsWith("event: error\ndata: "))
+    assertTrue(written.endsWith("\n\n"))
+    val json = JSONObject(written.substringAfter("data: ").trim())
+    assertEquals("error", json.getString("type"))
+    assertEquals("api_error", json.getJSONObject("error").getString("type"))
+    assertEquals("stream aborted", json.getJSONObject("error").getString("message"))
+  }
+
+  @Test fun `sendError swallows a write failure instead of throwing`() {
+    val poison = object : java.io.OutputStream() {
+      override fun write(b: Int) = throw java.io.IOException("broken pipe")
+    }
+    SseWriter(poison).sendError("api_error", "stream aborted") // must not throw
+  }
 }

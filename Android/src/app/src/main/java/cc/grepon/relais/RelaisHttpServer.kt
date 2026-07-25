@@ -475,6 +475,15 @@ class RelaisHttpServer(
               }
             }
 
+          method == "POST" && path.startsWith("/v1/messages") ->
+            // Anthropic Messages API (#179). Same admission discipline as /v1/chat/completions;
+            // handleAnthropicMessages may commit the SSE 200 header before returning, so post-commit
+            // errors are handled inside it via sse.sendError, not the outer catch.
+            withInferenceAdmission("/v1/messages", ::reply) {
+              val sessionKey = if (sessionEnabled) resolveSessionKey(sock, sessionHeader) else null
+              handleAnthropicMessages(sock, JSONObject(readBody(reader, contentLength)), sessionKey)
+            }
+
           method == "DELETE" && path.startsWith("/v1/sessions") -> handleSessionClear(ctx)
 
           method == "GET" && path.startsWith("/v1/sessions") -> handleSessionInfo(ctx)
@@ -1244,6 +1253,152 @@ class RelaisHttpServer(
     }
   }
 
+  // --- Anthropic Messages API (issue #179) ---
+
+  /**
+   * Anthropic Messages API (`POST /v1/messages`). Mirrors [handleOpenAi]'s structural shape (session-
+   * memory reuse, tool-path routing to [generateWithNodeTools], streaming vs non-streaming branches)
+   * translated to Anthropic's wire shape: nested content-block arrays in/out, named-event SSE with no
+   * `[DONE]` sentinel (see [SseWriter]), and the Anthropic error envelope (see [buildAnthropicError]).
+   */
+  private fun handleAnthropicMessages(sock: java.net.Socket, body: JSONObject, sessionKey: String? = null) {
+    val model = body.optString("model", DEFAULT_MODEL)
+
+    // Anthropic REQUIRES max_tokens. There is no per-request generation-length knob on the resident
+    // engine today (RelaisRequest has no max-tokens field — the engine's output budget is a fixed
+    // internal constant), so this is parsed ONLY for required-field validation and then dropped, never
+    // threaded into RelaisRequest. Deliberate, documented scope limit (#179), not an oversight.
+    if (!body.has("max_tokens") || body.optInt("max_tokens", -1) <= 0) {
+      RelaisMetrics.recordRequest("/v1/messages", 400)
+      respond(sock, 400, buildAnthropicError("max_tokens: field required", "invalid_request_error"))
+      return
+    }
+
+    val stream = body.optBoolean("stream", false)
+    val messages = body.optJSONArray("messages") ?: JSONArray()
+    val parsed = buildAnthropicPromptParts(system = body.opt("system"), messages = messages, decode = { b64 -> decode(b64) })
+    val toolChoice = parseAnthropicToolChoice(body)
+    // tool_choice resolving to None (no tools present) -> don't advertise anything.
+    val tools = if (toolChoice == ToolChoice.None) emptyList() else parseAnthropicTools(body)
+    // Anthropic `thinking: {"type":"enabled"|"disabled","budget_tokens"?}`. Only the on/off switch is
+    // honored — budget_tokens has no numeric-budget equivalent on the engine today (same scope limit as
+    // max_tokens above; the reasoning-channel capture is not itself token-budgeted).
+    val enableThinking = body.optJSONObject("thinking")?.optString("type") == "enabled"
+
+    val baseRequest =
+      RelaisRequest(
+        text = parsed.lastUserText,
+        imagePng = parsed.lastUserImage,
+        systemPrompt = parsed.systemPrompt,
+        history = parsed.history,
+        tools = tools,
+        toolChoice = toolChoice,
+        toolResults = parsed.liveToolResults,
+        temperature = optDoubleOrNull(body, "temperature"),
+        topP = optDoubleOrNull(body, "top_p"),
+        enableThinking = enableThinking,
+      )
+
+    // Session memory (Feature #5): identical reuse policy to handleOpenAi — a bare turn (client sent no
+    // prior history) on the plain (non-tool) path may recall stored history.
+    val isPlainChat = baseRequest.tools.isEmpty() && baseRequest.toolResults.isEmpty()
+    val request =
+      if (sessionKey != null && isPlainChat &&
+        RelaisSessionPolicy.shouldUseStoredHistory(baseRequest.history.size)) {
+        val stored = runBlocking {
+          RelaisSessionStore.loadHistory(context, sessionKey, RelaisConfig.sessionMaxTurns(context))
+        }
+        val merged = RelaisSessionPolicy.mergeHistory(stored, RelaisConfig.sessionMaxTurns(context))
+        if (merged.isNotEmpty()) {
+          RelaisMetrics.recordSessionHit()
+          baseRequest.copy(history = merged)
+        } else baseRequest
+      } else baseRequest
+    // NOTE: no maybeInjectRag call here on purpose — it is only exercised/shaped against the OpenAI
+    // request body (reads `rag`/`x_relais_rag`, folds into request.systemPrompt); wiring Anthropic RAG
+    // auto-injection is a separate follow-up, not part of #179's core scope.
+    val recordKey = sessionKey?.takeIf { isPlainChat }
+
+    val id = newAnthropicMessageId()
+    val inputTokens = estimatePromptTokens(request.text)
+
+    if (!stream) {
+      val result =
+        if (request.tools.isNotEmpty() || request.toolResults.isNotEmpty()) {
+          generateWithNodeTools(request)
+        } else {
+          RelaisEngine.generate(context, request, shouldCancel = { ThermalGovernor.shouldTruncate() })
+        }
+      val resp = buildAnthropicMessageResponse(id, model, result, inputTokens)
+      // Recorded only AFTER generation succeeds (mirrors handleOpenAi's non-stream branch) — recording
+      // before generate() would spuriously log a 200 if generation throws.
+      RelaisMetrics.recordRequest("/v1/messages", 200)
+      respond(sock, 200, resp)
+      recordSessionTurn(recordKey, request.text, result.text)
+      return
+    }
+
+    // Streaming: Anthropic's named-event SSE sequence (message_start -> content_block* -> message_delta
+    // -> message_stop), no [DONE] sentinel. Post-header failures become an `event: error` pair rather
+    // than an HTTP status (mirrors handleOpenAi's sse.abort() pattern via sse.sendError instead).
+    RelaisMetrics.recordRequest("/v1/messages", 200)
+    val sse = SseWriter(sock.getOutputStream())
+    sse.commitHeader()
+    try {
+      sse.send("message_start", buildMessageStartEvent(id, model, inputTokens))
+
+      if (request.tools.isNotEmpty() || request.toolResults.isNotEmpty()) {
+        // Tool-calling responses are single-shot even when stream:true: the blocking tool branch
+        // (RelaisEngine.generateWithToolsLocked) takes no onToken callback, so there is no incremental
+        // delta to emit — the whole content is already in hand. One start/delta/stop triple per
+        // content block is fine; Anthropic clients handle single-delta blocks correctly.
+        val result = generateWithNodeTools(request)
+        var index = 0
+        result.reasoning?.takeIf { it.isNotBlank() }?.let { reasoning ->
+          sse.send("content_block_start", buildContentBlockStartEvent(index, "thinking"))
+          sse.send("content_block_delta", buildThinkingDeltaEvent(index, reasoning))
+          sse.send("content_block_stop", buildContentBlockStopEvent(index))
+          index++
+        }
+        if (result.text.isNotBlank()) {
+          sse.send("content_block_start", buildContentBlockStartEvent(index, "text"))
+          sse.send("content_block_delta", buildTextDeltaEvent(index, result.text))
+          sse.send("content_block_stop", buildContentBlockStopEvent(index))
+          index++
+        }
+        result.toolCalls.forEach { call ->
+          sse.send("content_block_start", buildContentBlockStartEvent(index, "tool_use", id = call.id, name = call.name))
+          sse.send(
+            "content_block_delta",
+            JSONObject().put("type", "content_block_delta").put("index", index)
+              .put("delta", JSONObject().put("type", "input_json_delta").put("partial_json", call.argumentsJson)),
+          )
+          sse.send("content_block_stop", buildContentBlockStopEvent(index))
+          index++
+        }
+        sse.send("message_delta", buildMessageDeltaEvent(anthropicStopReason(result), result.completionTokens))
+        sse.send("message_stop", buildMessageStopEvent())
+        return
+      }
+
+      // Non-tool streaming: incremental thinking/text deltas via onReasoning/onToken, sequenced by
+      // AnthropicStreamSequencer (extracted from this handler; see RelaisAnthropicParser.kt).
+      val sequencer = AnthropicStreamSequencer(sse)
+      val result = RelaisEngine.generate(
+        context,
+        request,
+        onToken = { delta -> sequencer.onTextDelta(delta) },
+        shouldCancel = { ThermalGovernor.shouldTruncate() },
+        onReasoning = { r -> sequencer.onReasoningDelta(r) },
+      )
+      sequencer.finish(anthropicStopReason(result), result.completionTokens)
+      recordSessionTurn(recordKey, request.text, result.text)
+    } catch (e: Exception) {
+      Log.e(TAG, "anthropic stream error after headers committed", e)
+      sse.sendError("api_error", "stream aborted")
+    }
+  }
+
   /**
    * Best-effort persistence of one live turn (user message + assistant reply) for session memory
    * (Feature #5). No-op when [key] is null (feature off, no key, or a non-plain path). Runs after the
@@ -1603,6 +1758,7 @@ class RelaisHttpServer(
       path.startsWith("/metrics") -> "/metrics"
       path.startsWith("/generate") -> "/generate"
       path.startsWith("/v1/chat/completions") -> "/v1/chat/completions"
+      path.startsWith("/v1/messages") -> "/v1/messages"
       path.startsWith("/v1/audio/transcriptions") -> "/v1/audio/transcriptions"
       path.startsWith("/v1/audio/translations") -> "/v1/audio/translations"
       path.startsWith("/v1/audio/speech") -> "/v1/audio/speech"
