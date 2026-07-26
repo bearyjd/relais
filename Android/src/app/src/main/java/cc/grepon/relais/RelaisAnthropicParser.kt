@@ -229,6 +229,12 @@ internal fun buildAnthropicPromptParts(
             lastUserText = text
             lastUserImage = image
           }
+          // A pure tool_use turn (no visible text) is fully represented by the tool-result turn(s)
+          // that answer it (added above, or by the trailing-tool-run branch) — mirroring OpenAI's
+          // non-trailing role:"tool" handling, which likewise doesn't surface a separate assistant
+          // entry for the call itself. An assistant turn that mixes real text with a tool_use block
+          // still needs to appear in history.
+          role == "assistant" && text.isBlank() && toolCalls.isNotEmpty() -> {}
           role == "assistant" ->
             history.add(ParsedTurn(role = role, text = text, imagePng = image, toolCalls = toolCalls))
           else -> history.add(ParsedTurn(role = role, text = text, imagePng = image))
