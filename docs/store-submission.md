@@ -45,6 +45,23 @@ check, and any webhook/skill URL the user configures). None of that is developer
 > (§"When the app talks to the internet") rather than declared as developer collection. If a reviewer
 > pushes back, point them at that section.
 
+### Modality review — audio generation / TTS (#212)
+
+`POST /v1/audio/speech` (on-device Piper/sherpa-onnx TTS, shipped in #170) adds an **audio-output**
+modality. Reviewed against the form; **the answers above are unchanged — still "collects nothing"**.
+Rationale, to keep on file:
+
+| Question the modality raises | Finding |
+|---|---|
+| Does TTS create a new *collected* data type? | **No.** Input text comes from the operator's own LAN client; synthesis runs entirely on-device (`SherpaTtsEngine`); the WAV/PCM is returned over the LAN socket and never written off-device. |
+| Does it need a new permission? | **No.** TTS is audio *output* — no `RECORD_AUDIO` involvement. The manifest's existing microphone permission belongs to the pre-existing audio *input* (transcription) path and is already disclosed. |
+| Does it add network egress? | **Yes — one new host.** The voice bundle (`vits-piper-en_US-lessac-medium`, SHA-256-pinned, ~64 MB) downloads from the sherpa-onnx project's GitHub releases (`github.com/k2-fsa/sherpa-onnx`), a public unauthenticated HTTPS fetch. Every other model download is Hugging Face / `dl.google.com`, so this host was **not** previously covered — now disclosed in `privacy-policy.md` §"When the app talks to the internet" item 1 (both `.md` and `.html` copies, effective date bumped to 2026-07-26). |
+| Does "Audio files → Voice or sound recordings" apply? | **No.** That type covers recordings *collected from the user and sent to the developer*. Relais neither collects nor transmits; generated speech is a local computation result. |
+
+> If the reviewer asks about audio specifically: the app both transcribes (input, mic-permissioned,
+> on-device) and synthesizes (output, no permission, on-device). Neither leaves the device, and there
+> is no developer server to receive it.
+
 Privacy-policy URL for the console: **https://bearyjd.github.io/relais/privacy-policy.html**
 (the hosted copy of `docs/privacy-policy.html`; confirm GitHub Pages serves it before submitting).
 

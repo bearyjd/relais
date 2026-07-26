@@ -36,7 +36,7 @@
 <main>
   <div class="wordmark">RELAIS</div>
   <h1>Privacy Policy</h1>
-  <p class="meta">Effective 2026-07-07 · Publisher: VentouxLabs · App: Relais
+  <p class="meta">Effective 2026-07-26 · Publisher: VentouxLabs · App: Relais
      (<code>com.ventouxlabs.relais</code> and its IzzyOnDroid/GitHub variants)</p>
 
   <p>Relais turns a phone you own into a private AI inference node: it runs language models
@@ -47,8 +47,9 @@
   <h2>The short version</h2>
   <ul class="lead">
     <li><strong>All AI processing happens on your device.</strong> Prompts, chat history,
-        transcribed audio, analyzed images, generated images, and retrieval documents are processed
-        by models running locally. None of it is sent to us or to any cloud AI service.</li>
+        transcribed audio, analyzed images, generated images, generated speech, and retrieval
+        documents are processed by models running locally. None of it is sent to us or to any cloud
+        AI service.</li>
     <li><strong>We collect nothing.</strong> Relais has no analytics, no telemetry, no crash
         reporting, no ads, no tracking, and no account system. There is no VentouxLabs server; we
         never see your data.</li>
@@ -72,8 +73,10 @@
   <ul>
     <li><strong>Downloading models.</strong> When you pick a model, the app fetches it from
         <a href="https://huggingface.co">Hugging Face</a> (<code>huggingface.co</code>) or, for the
-        built-in Gallery catalog, from Google's model hosting (<code>dl.google.com</code>). Model
-        searches you type in the model selector are sent to Hugging Face as search queries.</li>
+        built-in Gallery catalog, from Google's model hosting (<code>dl.google.com</code>). The
+        optional text-to-speech voice is fetched from the sherpa-onnx project's GitHub releases
+        (<code>github.com</code>). Model searches you type in the model selector are sent to Hugging
+        Face as search queries.</li>
     <li><strong>Your Hugging Face token</strong> (optional, for license-gated models) is sent
         <strong>only</strong> to <code>huggingface.co</code> as authentication on those downloads,
         and nowhere else.</li>
