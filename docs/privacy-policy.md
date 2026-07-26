@@ -1,6 +1,6 @@
 # Relais Privacy Policy
 
-**Effective date:** 2026-07-07 · **Publisher:** VentouxLabs · **App:** Relais (`com.ventouxlabs.relais` and its IzzyOnDroid/GitHub variants)
+**Effective date:** 2026-07-26 · **Publisher:** VentouxLabs · **App:** Relais (`com.ventouxlabs.relais` and its IzzyOnDroid/GitHub variants)
 
 Relais turns a phone you own into a private AI inference node: it runs language models **on the
 device** and serves an OpenAI-compatible API **on your local network**. It is built so that your
@@ -9,8 +9,8 @@ prompts, documents, audio, and images never leave hardware you control.
 ## The short version
 
 - **All AI processing happens on your device.** Prompts, chat history, transcribed audio, analyzed
-  images, generated images, and retrieval documents are processed by models running locally. None
-  of it is sent to us or to any cloud AI service.
+  images, generated images, generated speech, and retrieval documents are processed by models
+  running locally. None of it is sent to us or to any cloud AI service.
 - **We collect nothing.** Relais has no analytics, no telemetry, no crash reporting, no ads, no
   tracking, and no account system. There is no VentouxLabs server; we never see your data.
 - **You control the network surface.** The API is served only on your local network, protected by
@@ -32,8 +32,9 @@ internet only for these specific, user-visible purposes:
 
 1. **Downloading models.** When you pick a model, the app fetches it from
    [Hugging Face](https://huggingface.co) (`huggingface.co`) or, for the built-in Gallery catalog,
-   from Google's model hosting (`dl.google.com`). Model searches you type in the model selector are
-   sent to Hugging Face as search queries.
+   from Google's model hosting (`dl.google.com`). The optional text-to-speech voice is fetched from
+   the sherpa-onnx project's GitHub releases (`github.com`). Model searches you type in the model
+   selector are sent to Hugging Face as search queries.
 2. **Your Hugging Face token** (optional, for license-gated models) is sent **only** to
    `huggingface.co` as authentication on those downloads, and nowhere else.
 3. **Model catalog + update check.** The app fetches its curated model list from the upstream
