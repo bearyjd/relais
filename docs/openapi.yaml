@@ -221,6 +221,54 @@ paths:
         "429": { $ref: "#/components/responses/QueueFull" }
         "503": { $ref: "#/components/responses/ThermalShed" }
 
+  /v1/messages:
+    post:
+      tags: [chat]
+      summary: "Anthropic-compatible Messages API (issue #179)"
+      description: |
+        Serves the Anthropic Messages wire format alongside `/v1/chat/completions`, translating
+        to/from the same resident engine. Supports text + image content blocks (`image` blocks
+        with inline base64 `source.data` — never a `data:` URI), streaming (Anthropic's named-event
+        SSE: `event: <type>` before each `data:` line, terminated by a `message_stop` event with
+        *no* `[DONE]` sentinel), and native tool-calling (`tools`/`tool_choice`/`tool_use`/
+        `tool_result`, mapped onto the same native LiteRT-LM tool path `/v1/chat/completions` uses).
+
+        Caveats:
+        - `max_tokens` is REQUIRED (Anthropic's own contract) and validated (400 if missing/non-
+          positive), but NOT enforced — this node has no per-request generation-length knob today;
+          the engine's output budget is a fixed internal constant. Likewise `thinking.budget_tokens`
+          is accepted and ignored (only `thinking.type` on/off is honored).
+        - No audio-input equivalent — Anthropic's content-block vocabulary has no audio type.
+        - No server-side RAG auto-injection on this endpoint yet (the OpenAI path's `rag`/
+          `x_relais_rag` opt-in is a follow-up here, not implemented in this release).
+        - The shared `401`/`429`/`503` responses below are server-level gating (auth, admission
+          queue, thermal shedding) that runs identically for every endpoint on this node and is
+          therefore still shaped as the legacy flat/OpenAI envelope (`ErrorFlat`), NOT the
+          Anthropic error envelope used by this endpoint's own `400` response — a pre-existing,
+          documented inconsistency shared with every other domain handler on this node.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AnthropicMessagesRequest" }
+      responses:
+        "200":
+          description: Non-streaming Anthropic message, or a named-event SSE stream when `stream:true`.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AnthropicMessagesResponse" }
+            text/event-stream:
+              schema:
+                type: string
+                description: "Anthropic named-event SSE (message_start, content_block_start/delta/stop, message_delta, message_stop). No [DONE] sentinel; a post-header failure is delivered as an `event: error` / `data: {...}` pair rather than an HTTP error status."
+        "400":
+          description: Malformed request, or `max_tokens` missing/non-positive.
+          content:
+            application/json: { schema: { $ref: "#/components/schemas/AnthropicErrorEnvelope" } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "429": { $ref: "#/components/responses/QueueFull" }
+        "503": { $ref: "#/components/responses/ThermalShed" }
+
   /v1/embeddings:
     post:
       tags: [embeddings]
@@ -870,6 +918,98 @@ components:
             completion_tokens: { type: integer, description: "Exact engine token counter; 0 on the AICore backend." }
             total_tokens: { type: integer }
         x_relais_usage_note: { type: string, enum: [prompt_tokens_estimated] }
+
+    AnthropicMessagesRequest:
+      type: object
+      required: [model, messages, max_tokens]
+      properties:
+        model: { type: string, default: gemma-4-e4b-it }
+        messages:
+          type: array
+          items:
+            type: object
+            required: [role, content]
+            properties:
+              role: { type: string, enum: [user, assistant] }
+              content:
+                description: "A string, or an array of content blocks (text / image / tool_use (assistant only) / tool_result (user only))."
+                oneOf:
+                  - type: string
+                  - type: array
+                    items: { type: object }
+        system:
+          description: "A string, or an array of {type: text, text} blocks."
+          oneOf:
+            - type: string
+            - type: array
+              items: { type: object }
+        max_tokens:
+          type: integer
+          minimum: 1
+          description: "Required by the Anthropic contract; validated (400 if missing/non-positive) but NOT enforced — no per-request generation-length knob exists on this node."
+        stream: { type: boolean, default: false }
+        temperature: { type: number }
+        top_p: { type: number }
+        tools:
+          type: array
+          items:
+            type: object
+            required: [name, input_schema]
+            properties:
+              name: { type: string }
+              description: { type: string }
+              input_schema: { type: object }
+        tool_choice:
+          type: object
+          properties:
+            type: { type: string, enum: [auto, any, tool] }
+            name: { type: string, description: "Required when type:tool." }
+        thinking:
+          type: object
+          properties:
+            type: { type: string, enum: [enabled, disabled] }
+            budget_tokens: { type: integer, description: "Accepted and ignored — no numeric reasoning budget knob on this node." }
+
+    AnthropicContentBlock:
+      type: object
+      required: [type]
+      properties:
+        type: { type: string, enum: [text, thinking, tool_use] }
+        text: { type: string }
+        thinking: { type: string }
+        id: { type: string, description: "Present on tool_use blocks." }
+        name: { type: string, description: "Present on tool_use blocks." }
+        input: { type: object, description: "Present on tool_use blocks." }
+
+    AnthropicMessagesResponse:
+      type: object
+      properties:
+        id: { type: string }
+        type: { type: string, enum: [message] }
+        role: { type: string, enum: [assistant] }
+        model: { type: string }
+        content:
+          type: array
+          items: { $ref: "#/components/schemas/AnthropicContentBlock" }
+          description: "Ordered: an optional leading thinking block, then an optional text block, then zero or more tool_use blocks."
+        stop_reason: { type: string, enum: [end_turn, max_tokens, tool_use] }
+        stop_sequence: { type: [string, "null"] }
+        usage:
+          type: object
+          properties:
+            input_tokens: { type: integer, description: "Word-boundary ESTIMATE, same estimator as the OpenAI path's prompt_tokens." }
+            output_tokens: { type: integer, description: "Exact engine token counter; 0 on the AICore backend." }
+
+    AnthropicErrorEnvelope:
+      type: object
+      description: "Anthropic's error envelope — distinct from ErrorFlat/ErrorEnvelope used elsewhere on this node."
+      properties:
+        type: { type: string, enum: [error] }
+        error:
+          type: object
+          properties:
+            type: { type: string, description: "e.g. invalid_request_error, authentication_error, not_found_error, rate_limit_error, api_error." }
+            message: { type: string }
 
     AudioToTextRequest:
       type: object
