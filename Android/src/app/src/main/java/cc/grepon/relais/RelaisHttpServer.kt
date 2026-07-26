@@ -1120,22 +1120,26 @@ class RelaisHttpServer(
    * [shouldSwapModel]'s KDoc for the narrow-scope guard) and it differs from what's actually
    * resident, kick a background swap and tell the client to retry rather than silently serving from
    * the wrong (stale) resident model. Returns true iff a 503 was sent (caller must return immediately
-   * without generating).
-   *
-   * TODO(#180 follow-up): wire the same check into an Anthropic-shaped handler once #179 (which adds
-   * one) merges — this worktree branched before #179 landed, so only [handleOpenAi] is wired here.
+   * without generating). [endpoint] labels the metric correctly per caller; [errorBody] lets each
+   * caller use its own error envelope shape (OpenAI's flat `RelaisError.json` vs Anthropic's nested
+   * `buildAnthropicError`) rather than leaking one shape onto the other's wire format.
    */
-  private fun rejectAndSwapIfModelMismatched(sock: java.net.Socket, requestedModel: String?): Boolean {
+  private fun rejectAndSwapIfModelMismatched(
+    sock: java.net.Socket,
+    endpoint: String,
+    requestedModel: String?,
+    errorBody: (message: String) -> JSONObject,
+  ): Boolean {
     if (!RelaisEngine.isReady) return false // let the normal not-ready path (503 elsewhere) handle this
     if (!shouldSwapModel(RelaisEngine.residentModelId, requestedModel, RelaisConfig.modelId(context), RelaisEngine.isReady)) {
       return false
     }
     RelaisEngine.ensureModelSwapInBackground(context)
-    RelaisMetrics.recordRequest("/v1/chat/completions", 503)
+    RelaisMetrics.recordRequest(endpoint, 503)
     respond(
       sock,
       503,
-      RelaisError.json("resident model differs from the requested model; swapping — retry shortly", RelaisError.SERVICE_UNAVAILABLE),
+      errorBody("resident model differs from the requested model; swapping — retry shortly"),
       listOf("Retry-After: 25"),
     )
     return true
@@ -1143,7 +1147,12 @@ class RelaisHttpServer(
 
   private fun handleOpenAi(sock: java.net.Socket, body: JSONObject, sessionKey: String? = null) {
     val model = body.optString("model", DEFAULT_MODEL)
-    if (rejectAndSwapIfModelMismatched(sock, model)) return
+    if (rejectAndSwapIfModelMismatched(sock, "/v1/chat/completions", model) { message ->
+        RelaisError.json(message, RelaisError.SERVICE_UNAVAILABLE)
+      }
+    ) {
+      return
+    }
     val stream = body.optBoolean("stream", false)
     // Reject an unknown template id up front (all sub-paths) so a client never silently gets the
     // default persona when it asked for a specific one.
@@ -1297,6 +1306,9 @@ class RelaisHttpServer(
    */
   private fun handleAnthropicMessages(sock: java.net.Socket, body: JSONObject, sessionKey: String? = null) {
     val model = body.optString("model", DEFAULT_MODEL)
+    if (rejectAndSwapIfModelMismatched(sock, "/v1/messages", model) { message -> buildAnthropicError(message, "overloaded_error") }) {
+      return
+    }
 
     // Anthropic REQUIRES max_tokens. There is no per-request generation-length knob on the resident
     // engine today (RelaisRequest has no max-tokens field — the engine's output budget is a fixed
