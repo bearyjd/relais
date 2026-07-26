@@ -77,6 +77,12 @@ internal const val MAX_BODY_BYTES = 32 * 1024 * 1024 // 32 MB cap (base64 image/
 private const val MAX_MULTIPART_IMAGE_BYTES = 12 * 1024 * 1024 // 12 MB decoded image
 private const val MAX_HEADER_LINES = 64 // bound header parsing (slowloris / header-flood)
 private const val MAX_HEADER_BYTES = 16 * 1024
+// INVARIANT (#180 review, MEDIUM finding 3): this must never be normalized to equal
+// RelaisConfig.DEFAULT_MODEL_ID / any real configured model id. shouldSwapModel() (RelaisModelSwap.kt)
+// does exact string equality between a request's `model` field and RelaisConfig.modelId/
+// residentModelId (full HF-style ids); today DEFAULT_MODEL is a short cosmetic alias that can never
+// equal one of those, so an omitted-`model` request correctly never triggers a swap — but that safety
+// is accidental, not enforced anywhere, and silently depends on this constant staying a short alias.
 private const val DEFAULT_MODEL = "gemma-4-e4b-it"
 private const val RATE_LIMIT = 30 // requests
 private const val RATE_WINDOW_MS = 60_000L // per 60s, per client IP
@@ -1108,8 +1114,36 @@ class RelaisHttpServer(
 
   // --- OpenAI-compatible chat completions ---
 
+  /**
+   * Issue #180 (single-slot swap-on-mismatch, first cut): if the request's `model` field names the
+   * operator's currently-configured model (not just any client-supplied string — see
+   * [shouldSwapModel]'s KDoc for the narrow-scope guard) and it differs from what's actually
+   * resident, kick a background swap and tell the client to retry rather than silently serving from
+   * the wrong (stale) resident model. Returns true iff a 503 was sent (caller must return immediately
+   * without generating).
+   *
+   * TODO(#180 follow-up): wire the same check into an Anthropic-shaped handler once #179 (which adds
+   * one) merges — this worktree branched before #179 landed, so only [handleOpenAi] is wired here.
+   */
+  private fun rejectAndSwapIfModelMismatched(sock: java.net.Socket, requestedModel: String?): Boolean {
+    if (!RelaisEngine.isReady) return false // let the normal not-ready path (503 elsewhere) handle this
+    if (!shouldSwapModel(RelaisEngine.residentModelId, requestedModel, RelaisConfig.modelId(context), RelaisEngine.isReady)) {
+      return false
+    }
+    RelaisEngine.ensureModelSwapInBackground(context)
+    RelaisMetrics.recordRequest("/v1/chat/completions", 503)
+    respond(
+      sock,
+      503,
+      RelaisError.json("resident model differs from the requested model; swapping — retry shortly", RelaisError.SERVICE_UNAVAILABLE),
+      listOf("Retry-After: 25"),
+    )
+    return true
+  }
+
   private fun handleOpenAi(sock: java.net.Socket, body: JSONObject, sessionKey: String? = null) {
     val model = body.optString("model", DEFAULT_MODEL)
+    if (rejectAndSwapIfModelMismatched(sock, model)) return
     val stream = body.optBoolean("stream", false)
     // Reject an unknown template id up front (all sub-paths) so a client never silently gets the
     // default persona when it asked for a specific one.

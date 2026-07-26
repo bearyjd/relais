@@ -290,6 +290,21 @@ object RelaisEngine {
     private set
 
   /**
+   * The model id actually resolved/loaded by the most recent successful [ensureInitialized] — null
+   * before any successful init. The source of truth for "is the resident engine serving what a
+   * request just asked for" (#180): compared against an inbound request's `model` field via
+   * [shouldSwapModel] to decide whether a single-slot swap is needed. Set unconditionally on every
+   * successful init (idle-reload, an ordinary request, or [ensureModelSwapInBackground]) — never
+   * assumed.
+   */
+  @Volatile
+  var residentModelId: String? = null
+    private set
+
+  /** Guards [ensureModelSwapInBackground] so a burst of mismatched requests dispatches at most one swap thread. */
+  private val swapDispatching = java.util.concurrent.atomic.AtomicBoolean(false)
+
+  /**
    * Legacy hardcoded model location from the spike (manually side-loaded; see SPIKE-FINDINGS.md).
    * Now only a fallback — the node self-provisions to [Model.getPath]'s layout via
    * [RelaisModelProvisioner], and [ensureInitialized] defaults to that resolved path.
@@ -308,6 +323,7 @@ object RelaisEngine {
   fun ensureInitialized(
     context: Context,
     modelPath: String = RelaisModelProvisioner.cachedPathOrDefault(context),
+    modelId: String = RelaisConfig.modelId(context),
   ) {
     if (isReady) return
     synchronized(lock) {
@@ -322,6 +338,7 @@ object RelaisEngine {
       // ~5.63 tok/s off (draft overhead > gains, no draft model bundled). Left OFF deliberately.
       ExperimentalFlags.enableSpeculativeDecoding = false
       engine = buildResidentEngine(modelPath, cacheDir, context.applicationInfo.nativeLibraryDir)
+      residentModelId = modelId // #180: the source of truth for what the resident engine is serving
       lastActivityAtMs = System.currentTimeMillis() // idle-TTL clock (#178): init counts as activity
       wasIdleUnloaded = false // a real init attempt is underway; restore normal not-ready semantics
     }
@@ -351,6 +368,66 @@ object RelaisEngine {
       } finally {
         startupInProgress = false
         backgroundReloadDispatching.set(false)
+      }
+    }
+  }
+
+  /**
+   * Kicks a background swap to the operator's currently-configured model when it differs from what's
+   * resident (#180, single-slot swap-on-mismatch, first cut). Single-flight (a burst of mismatched
+   * requests dispatches at most one swap thread) — mirrors [ensureInitializedInBackground]'s
+   * [backgroundReloadDispatching] pattern with its own dedicated guard, since the two can legitimately
+   * race independently (an idle-reload and a swap are different triggers).
+   *
+   * Reuses [startupInProgress] for watchdog safety rather than inventing a parallel flag: it's the
+   * same "still coming up, not dead" signal every existing not-ready window already relies on (see
+   * [RelaisWatchdogReceiver]), and the swap's not-ready window — between [shutdown] and the next
+   * successful [ensureInitialized] — IS exactly that case. Exhaustively grepped every call site of
+   * `isReady`/`startupInProgress`/`wasIdleUnloaded` before adding this (#180 handoff); none of them
+   * distinguish "coming up from a cold start" from "coming up from a swap" and none need to.
+   *
+   * Resolves the swap target BEFORE closing the old engine: a failed/offline resolve (e.g. the
+   * allowlist fetch in [RelaisModelProvisioner.resolveModel] fails, or the resolved file isn't on
+   * disk) leaves the OLD engine resident and serving, rather than tearing it down speculatively on a
+   * request that turns out to name an unresolvable model — this node must never end up with ZERO
+   * resident engine because one bad request triggered a swap attempt. Only [shutdown] + the actual
+   * reload happen once the new model is confirmed present on disk.
+   */
+  fun ensureModelSwapInBackground(context: Context) {
+    if (!swapDispatching.compareAndSet(false, true)) return // a swap is already dispatching
+    thread(name = "relais-model-swap") {
+      try {
+        startupInProgress = true // tell the watchdog "coming up", not "dead" (same signal as any init)
+        // Captured ONCE, before resolveModel runs, so the id stamped on the reloaded engine can never
+        // drift from an operator config change happening mid-swap (#180 review, MEDIUM finding 2):
+        // resolveModel() internally re-reads RelaisConfig.modelId(context) itself (its signature only
+        // takes context, so that internal read can't be avoided), but THIS function must not read the
+        // preference a second time after resolveModel() returns — reusing configuredModelId for the
+        // final ensureInitialized() call guarantees at least this function's own view of "which model
+        // id" stays single-sourced for the rest of the swap.
+        val configuredModelId = RelaisConfig.modelId(context)
+        val model = RelaisModelProvisioner.resolveModel(context) // resolves RelaisConfig.modelId(context); blocking, may hit network
+        val path = model.getPath(context)
+        if (!File(path).exists()) {
+          Log.w(TAG, "model swap target not provisioned on disk: $path — leaving resident engine untouched")
+          return@thread
+        }
+        // Atomic swap (#180 review, HIGH finding): close+reload under ONE lock acquisition so no
+        // concurrent generate()/ensureInitialized() call can interleave in the gap between shutdown()
+        // and the reload and observe (or build from) a half-swapped state — e.g. the OLD cached model
+        // path with the NEW model id stamped over it. synchronized(lock) is reentrant on the JVM, and
+        // shutdown()/ensureInitialized() both synchronize on this exact same `lock` field, so nesting
+        // them here is safe: any other caller blocks on `lock` for the FULL close+reload, then sees the
+        // fully-updated engine/residentModelId together.
+        synchronized(lock) {
+          shutdown() // close the OLD engine only now that the NEW one is confirmed present on disk
+          ensureInitialized(context, modelPath = path, modelId = configuredModelId)
+        }
+      } catch (e: Exception) {
+        Log.w(TAG, "model swap failed: ${e.message}")
+      } finally {
+        startupInProgress = false
+        swapDispatching.set(false)
       }
     }
   }
