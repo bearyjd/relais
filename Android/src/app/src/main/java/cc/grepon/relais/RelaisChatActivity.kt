@@ -53,6 +53,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -70,6 +71,9 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.viewmodel.compose.viewModel
 import cc.grepon.relais.chat.ChatConversationList
 import cc.grepon.relais.chat.ChatMessageList
@@ -135,6 +139,22 @@ internal fun ChatScreen() {
   val reloadingModel by vm.reloadingModel.collectAsState()
   val conversations by vm.conversations.collectAsState()
   val activeConversationId by vm.activeConversationId.collectAsState()
+  val speechState by vm.speech.collectAsState()
+  val speechOffered by vm.speechOffered.collectAsState()
+
+  // The TTS engine registers at NODE startup (TtsRegistration ← RelaisNodeService), not app startup,
+  // so whether speech is available can change after this ViewModel was constructed — e.g. the user
+  // starts the node from DASHBOARD and comes back here. Re-check on entering the screen and on every
+  // resume; without this, SPEAK would stay hidden until the app was restarted.
+  val lifecycleOwner = LocalLifecycleOwner.current
+  DisposableEffect(lifecycleOwner) {
+    vm.refreshSpeechOffered()
+    val observer = LifecycleEventObserver { _, event ->
+      if (event == Lifecycle.Event.ON_RESUME) vm.refreshSpeechOffered()
+    }
+    lifecycleOwner.lifecycle.addObserver(observer)
+    onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+  }
 
   var draft by remember { mutableStateOf("") }
   var pending by remember { mutableStateOf<Attachment?>(null) }
@@ -331,6 +351,11 @@ internal fun ChatScreen() {
         onRegenerate = { vm.regenerate(it) },
         onEditResend = { t, s -> vm.editAndResend(t, s) },
         modifier = Modifier.weight(1f).fillMaxWidth().padding(horizontal = 16.dp),
+        speechState = speechState,
+        speechOffered = speechOffered,
+        onSpeak = { vm.speak(it) },
+        onStopSpeaking = { vm.stopSpeaking() },
+        onSpeechNoticeShown = { vm.clearSpeechNotice(it) },
       )
 
       Box(Modifier.fillMaxWidth().height(1.dp).background(Line))

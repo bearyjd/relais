@@ -18,12 +18,19 @@ import androidx.lifecycle.viewModelScope
 import cc.grepon.relais.chat.ChatStreamRequest
 import cc.grepon.relais.chat.ChatTransportSelector
 import cc.grepon.relais.chat.ERROR_BACKEND
+import cc.grepon.relais.chat.SpeechState
 import cc.grepon.relais.chat.historyForRequest
+import cc.grepon.relais.chat.turnId
 import cc.grepon.relais.data.ChatTurn
 import cc.grepon.relais.data.Conversation
 import cc.grepon.relais.data.RelaisDatabase
+import cc.grepon.relais.tts.RelaisTtsEngineProvider
+import cc.grepon.relais.tts.TtsAvailability
+import cc.grepon.relais.tts.TtsPlayer
+import cc.grepon.relais.tts.speakableText
 import java.io.File
 import java.util.concurrent.atomic.AtomicBoolean
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -92,6 +99,125 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
   /** The in-flight reload-observation poll, cancelled and replaced on each model switch. */
   private var reloadJob: kotlinx.coroutines.Job? = null
+
+  // ---- In-app speech playback (#211) -------------------------------------------------------
+  // Synthesis runs on the SAME process-wide engine the HTTP `/v1/audio/speech` route uses, whose
+  // `synthLock` already serializes native generate() calls — so an in-app tap and a concurrent LAN
+  // request queue behind each other rather than racing. No second admission gate is needed here.
+
+  private val ttsPlayer = TtsPlayer()
+
+  private val _speech = MutableStateFlow<SpeechState>(SpeechState.Idle)
+  val speech: StateFlow<SpeechState> = _speech.asStateFlow()
+
+  /** True when a TTS engine is registered and is (or can become) usable — drives showing SPEAK at all. */
+  private val _speechOffered = MutableStateFlow(false)
+  val speechOffered: StateFlow<Boolean> = _speechOffered.asStateFlow()
+
+  /** The in-flight synthesis/playback job, cancelled when superseded or stopped. */
+  private var speechJob: kotlinx.coroutines.Job? = null
+
+  /**
+   * Monotonic token identifying the current speech attempt. An outgoing job only writes state while
+   * it still owns the latest token.
+   *
+   * Comparing turn ids instead is NOT sufficient: stopping and re-tapping the *same* turn gives the
+   * old and new attempts identical ids, and the outgoing job — which resumes after its blocking
+   * playback returns, at a point with no suspension for cancellation to take effect — would reset the
+   * incoming attempt's state to Idle mid-synthesis.
+   */
+  private val speechGeneration = java.util.concurrent.atomic.AtomicLong(0)
+
+  init {
+    refreshSpeechOffered()
+  }
+
+  /**
+   * Re-reads the TTS engine's availability. Cheap, and needed after a provision completes — a voice
+   * that finished downloading should start offering SPEAK without an app restart.
+   */
+  fun refreshSpeechOffered() {
+    val engine = RelaisTtsEngineProvider.get()
+    _speechOffered.value =
+      engine != null && engine.availability(getApplication()) != TtsAvailability.UNAVAILABLE
+  }
+
+  /**
+   * Synthesize [turn]'s prose and play it. Supersedes any current playback (tapping SPEAK on a second
+   * turn switches to it). Markdown is reduced to speakable prose first — see [speakableText].
+   */
+  fun speak(turn: ChatTurn) {
+    val ctx = getApplication<Application>()
+    val engine = RelaisTtsEngineProvider.get()
+    if (engine == null) {
+      _speechOffered.value = false
+      return
+    }
+
+    val text = speakableText(turn.content)
+    if (text.isBlank()) {
+      _speech.value = SpeechState.Failed(turn.id, "nothing to speak")
+      return
+    }
+
+    // Supersede first, synchronously, so the previous audio stops the instant the tap lands.
+    speechJob?.cancel()
+    ttsPlayer.stop()
+    val generation = speechGeneration.incrementAndGet()
+    fun owns() = speechGeneration.get() == generation
+
+    speechJob =
+      viewModelScope.launch {
+        try {
+          when (engine.availability(ctx)) {
+            TtsAvailability.UNAVAILABLE -> {
+              _speechOffered.value = false
+              if (owns()) _speech.value = SpeechState.Failed(turn.id, "speech unavailable")
+            }
+            TtsAvailability.PROVISIONING -> {
+              // The voice isn't on disk yet. Kick the download and say so; the user taps again when
+              // it lands (mirrors the endpoint's 503-while-provisioning branch).
+              engine.ensureProvisioningStarted(ctx)
+              if (owns()) _speech.value = SpeechState.Fetching(turn.id)
+            }
+            TtsAvailability.READY -> {
+              if (owns()) _speech.value = SpeechState.Preparing(turn.id)
+              val audio = withContext(Dispatchers.IO) { engine.synthesize(ctx, text) }
+              if (!owns()) return@launch // superseded while synthesizing — don't start stale audio
+              _speech.value = SpeechState.Speaking(turn.id)
+              withContext(Dispatchers.IO) { ttsPlayer.play(audio) }
+              if (owns()) _speech.value = SpeechState.Idle
+            }
+          }
+        } catch (e: CancellationException) {
+          throw e
+        } catch (e: Throwable) {
+          if (owns()) {
+            _speech.value =
+              SpeechState.Failed(turn.id, e.message ?: e::class.simpleName ?: "speech failed")
+          }
+        }
+      }
+  }
+
+  /** Stops playback and clears speech state. Safe to call when nothing is playing. */
+  fun stopSpeaking() {
+    // Bump the generation too: the outgoing job resumes from blocking playback at a point with no
+    // suspension, so `cancel()` alone would not stop it writing one last state after this Idle.
+    speechGeneration.incrementAndGet()
+    speechJob?.cancel()
+    speechJob = null
+    ttsPlayer.stop()
+    _speech.value = SpeechState.Idle
+  }
+
+  /** Clears a transient [SpeechState.Failed]/[SpeechState.Fetching] notice once the UI has shown it. */
+  fun clearSpeechNotice(turnId: String) {
+    val state = _speech.value
+    if ((state is SpeechState.Failed || state is SpeechState.Fetching) && state.turnId() == turnId) {
+      _speech.value = SpeechState.Idle
+    }
+  }
 
   /** Clears the active conversation; a new one is created lazily on the next [send]. */
   fun newConversation() {
@@ -300,6 +426,9 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
   override fun onCleared() {
     super.onCleared()
     transportSelector.close()
+    // viewModelScope is cancelled by super, but the AudioTrack is native — release it explicitly or
+    // the speaker keeps playing the buffered tail after the screen is gone.
+    ttsPlayer.release()
   }
 
   private companion object {
