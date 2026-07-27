@@ -53,7 +53,6 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -71,12 +70,11 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.LifecycleEventObserver
-import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.viewmodel.compose.viewModel
 import cc.grepon.relais.chat.ChatConversationList
 import cc.grepon.relais.chat.ChatMessageList
+import cc.grepon.relais.chat.RefreshOnResume
+import cc.grepon.relais.chat.SpeakingStopStrip
 import cc.grepon.relais.chat.SpeechState
 import cc.grepon.relais.chat.conversationToMarkdown
 import java.io.ByteArrayOutputStream
@@ -143,19 +141,8 @@ internal fun ChatScreen() {
   val speechState by vm.speech.collectAsState()
   val speechOffered by vm.speechOffered.collectAsState()
 
-  // The TTS engine registers at NODE startup (TtsRegistration ← RelaisNodeService), not app startup,
-  // so whether speech is available can change after this ViewModel was constructed — e.g. the user
-  // starts the node from DASHBOARD and comes back here. Re-check on entering the screen and on every
-  // resume; without this, SPEAK would stay hidden until the app was restarted.
-  val lifecycleOwner = LocalLifecycleOwner.current
-  DisposableEffect(lifecycleOwner) {
-    vm.refreshSpeechOffered()
-    val observer = LifecycleEventObserver { _, event ->
-      if (event == Lifecycle.Event.ON_RESUME) vm.refreshSpeechOffered()
-    }
-    lifecycleOwner.lifecycle.addObserver(observer)
-    onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
-  }
+  // Speech availability changes at NODE startup, not app startup — see RefreshOnResume's KDoc.
+  RefreshOnResume { vm.refreshSpeechOffered() }
 
   var draft by remember { mutableStateOf("") }
   var pending by remember { mutableStateOf<Attachment?>(null) }
@@ -362,28 +349,7 @@ internal fun ChatScreen() {
       Box(Modifier.fillMaxWidth().height(1.dp).background(Line))
       // Screen-level STOP: the speaking turn's own STOP label disappears once that row scrolls out
       // of the lazy list, which would otherwise leave audio playing with no way to stop it.
-      if (speechState is SpeechState.Speaking) {
-        Row(
-          Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
-          verticalAlignment = Alignment.CenterVertically,
-        ) {
-          Text(
-            "speaking…",
-            color = Muted,
-            fontFamily = FontFamily.Monospace,
-            fontSize = 11.sp,
-            modifier = Modifier.weight(1f),
-          )
-          Text(
-            "STOP",
-            color = Amber,
-            fontFamily = FontFamily.Monospace,
-            fontSize = 11.sp,
-            fontWeight = FontWeight.Bold,
-            modifier = Modifier.clickable { vm.stopSpeaking() },
-          )
-        }
-      }
+      SpeakingStopStrip(speechState) { vm.stopSpeaking() }
       // Attach-rejection notice: why the last pick didn't stage (text-only model, bad file, …).
       // Auto-clears so it doesn't linger. Without this the failure is invisible and attach looks broken.
       attachError?.let { msg ->
