@@ -75,10 +75,25 @@ class SpeechTextTest {
     assertEquals("above below", speakableText("above\n\n---\n\nbelow"))
   }
 
-  @Test fun `table pipes become commas so rows do not run together`() {
-    val spoken = speakableText("| a | b |")
-    assertTrue(spoken, spoken.contains(","))
-    assertFalse(spoken.contains("|"))
+  @Test fun `table pipes become commas without stray edge or spaced punctuation`() {
+    // Regression: a bare `|` → `, ` swap used to yield ", a , b ," — leading/trailing commas and a
+    // space before each one, which Piper voices as bare pauses around every row.
+    assertEquals("a, b", speakableText("| a | b |"))
+  }
+
+  @Test fun `table alignment rows are dropped entirely`() {
+    // The divider row vanishes; the comma between "size" and "voice" is the row boundary, which is
+    // wanted — it gives the voice a pause between rows instead of running them together.
+    val md = "| name | size |\n|---|---:|\n| voice | 64 MB |"
+    assertEquals("name, size, voice, 64 MB", speakableText(md))
+  }
+
+  @Test fun `a table divider with colons and spaces is also dropped`() {
+    assertEquals("a", speakableText("| :--- | ---: |\na"))
+  }
+
+  @Test fun `repeated commas from empty table cells collapse`() {
+    assertEquals("a, b", speakableText("| a | | b |"))
   }
 
   @Test fun `snake_case identifiers keep their underscores`() {

@@ -68,9 +68,13 @@ class ChatSpeechTest {
 
   // ---- enablement ----
 
-  @Test fun `in-flight synthesis and provisioning are status, not buttons`() {
+  @Test fun `in-flight synthesis is status, not a button`() {
     assertFalse(speechActionEnabled(SpeechState.Preparing(a), a))
-    assertFalse(speechActionEnabled(SpeechState.Fetching(a), a))
+  }
+
+  @Test fun `fetching stays tappable so a failed voice download is recoverable`() {
+    // A ~64 MB download can fail and give up silently; a disabled label would strand the row.
+    assertTrue(speechActionEnabled(SpeechState.Fetching(a), a))
   }
 
   @Test fun `speaking is tappable so it can be stopped`() {

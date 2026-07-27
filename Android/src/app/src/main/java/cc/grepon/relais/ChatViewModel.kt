@@ -13,6 +13,7 @@
 package cc.grepon.relais
 
 import android.app.Application
+import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import cc.grepon.relais.chat.ChatStreamRequest
@@ -20,7 +21,6 @@ import cc.grepon.relais.chat.ChatTransportSelector
 import cc.grepon.relais.chat.ERROR_BACKEND
 import cc.grepon.relais.chat.SpeechState
 import cc.grepon.relais.chat.historyForRequest
-import cc.grepon.relais.chat.turnId
 import cc.grepon.relais.data.ChatTurn
 import cc.grepon.relais.data.Conversation
 import cc.grepon.relais.data.RelaisDatabase
@@ -31,6 +31,7 @@ import cc.grepon.relais.tts.speakableText
 import java.io.File
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -52,7 +53,15 @@ import kotlinx.coroutines.withTimeoutOrNull
  * Not wired into any UI yet — that lands in Task 7.
  */
 @OptIn(ExperimentalCoroutinesApi::class)
-class ChatViewModel(app: Application) : AndroidViewModel(app) {
+class ChatViewModel(
+  app: Application,
+  /**
+   * Where speech synthesis/playback runs. Injectable so the #211 seam tests can drive it on a test
+   * dispatcher — a hard-coded [Dispatchers.IO] escapes virtual time and makes those tests racy.
+   * Production always takes the default.
+   */
+  private val speechDispatcher: CoroutineDispatcher = Dispatchers.IO,
+) : AndroidViewModel(app) {
 
   private val repo = ChatRepository(app, RelaisDatabase.get(app).chatDao())
 
@@ -105,7 +114,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
   // `synthLock` already serializes native generate() calls — so an in-app tap and a concurrent LAN
   // request queue behind each other rather than racing. No second admission gate is needed here.
 
-  private val ttsPlayer = TtsPlayer()
+  private val ttsPlayer = TtsPlayer(app)
 
   private val _speech = MutableStateFlow<SpeechState>(SpeechState.Idle)
   val speech: StateFlow<SpeechState> = _speech.asStateFlow()
@@ -133,65 +142,104 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
   }
 
   /**
-   * Re-reads the TTS engine's availability. Cheap, and needed after a provision completes — a voice
-   * that finished downloading should start offering SPEAK without an app restart.
+   * Re-reads whether speech can be offered at all.
+   *
+   * Deliberately does NOT call `availability()`: that loads the ~64 MB voice model and reads
+   * encrypted prefs, and this runs on the main thread (from `init` and every `ON_RESUME`). Engine
+   * registration is the cheap proxy — per `SherpaTtsEngine`, a registered engine is only ever READY
+   * or PROVISIONING, and [speak] does the authoritative check and clears this on UNAVAILABLE.
+   *
+   * Also settles a stale [SpeechState.Fetching]: if the voice finished downloading, drop the notice.
    */
   fun refreshSpeechOffered() {
-    val engine = RelaisTtsEngineProvider.get()
-    _speechOffered.value =
-      engine != null && engine.availability(getApplication()) != TtsAvailability.UNAVAILABLE
+    _speechOffered.value = RelaisTtsEngineProvider.get() != null
+
+    val fetching = _speech.value as? SpeechState.Fetching ?: return
+    viewModelScope.launch {
+      val ready =
+        withContext(speechDispatcher) {
+          RelaisTtsEngineProvider.get()?.availability(getApplication()) == TtsAvailability.READY
+        }
+      // Only clear if the very same notice is still showing — a newer attempt may have replaced it.
+      if (ready && _speech.value === fetching) _speech.value = SpeechState.Idle
+    }
   }
 
   /**
    * Synthesize [turn]'s prose and play it. Supersedes any current playback (tapping SPEAK on a second
    * turn switches to it). Markdown is reduced to speakable prose first — see [speakableText].
+   *
+   * In-flight native synthesis is **not** abortable — the sherpa-onnx runtime exposes no cancel — so
+   * a superseded attempt still runs to completion under `synthLock`; its result is discarded. The
+   * ownership check before synthesis keeps rapid tapping from queueing work nobody wants.
    */
   fun speak(turn: ChatTurn) {
     val ctx = getApplication<Application>()
-    val engine = RelaisTtsEngineProvider.get()
-    if (engine == null) {
-      _speechOffered.value = false
-      return
-    }
 
-    val text = speakableText(turn.content)
-    if (text.isBlank()) {
-      _speech.value = SpeechState.Failed(turn.id, "nothing to speak")
-      return
-    }
-
-    // Supersede first, synchronously, so the previous audio stops the instant the tap lands.
+    // Supersede FIRST, synchronously, so the previous audio stops the instant the tap lands — and so
+    // that every early return below still leaves prior playback stopped and the generation bumped.
     speechJob?.cancel()
     ttsPlayer.stop()
     val generation = speechGeneration.incrementAndGet()
     fun owns() = speechGeneration.get() == generation
 
+    val engine = RelaisTtsEngineProvider.get()
+    if (engine == null) {
+      _speechOffered.value = false
+      _speech.value = SpeechState.Idle
+      return
+    }
+
     speechJob =
       viewModelScope.launch {
         try {
-          when (engine.availability(ctx)) {
+          // One hop to IO for the whole preamble: availability() can load the voice model and
+          // speakableText() sweeps the full turn with several regexes. Neither belongs on Main.
+          val prepared =
+            withContext(speechDispatcher) { engine.availability(ctx) to speakableText(turn.content) }
+          val (availability, text) = prepared
+          if (!owns()) return@launch
+
+          if (availability == TtsAvailability.READY && text.isBlank()) {
+            // e.g. a turn that was nothing but a code block — there is genuinely nothing to read.
+            _speech.value = SpeechState.Failed(turn.id, "nothing to speak")
+            return@launch
+          }
+
+          when (availability) {
             TtsAvailability.UNAVAILABLE -> {
               _speechOffered.value = false
-              if (owns()) _speech.value = SpeechState.Failed(turn.id, "speech unavailable")
+              _speech.value = SpeechState.Failed(turn.id, "speech unavailable")
             }
             TtsAvailability.PROVISIONING -> {
-              // The voice isn't on disk yet. Kick the download and say so; the user taps again when
-              // it lands (mirrors the endpoint's 503-while-provisioning branch).
-              engine.ensureProvisioningStarted(ctx)
+              // The voice isn't on disk yet. Kick the download and say so; the notice clears when a
+              // later availability re-check sees READY (see refreshSpeechOffered).
+              withContext(speechDispatcher) { engine.ensureProvisioningStarted(ctx) }
               if (owns()) _speech.value = SpeechState.Fetching(turn.id)
             }
             TtsAvailability.READY -> {
-              if (owns()) _speech.value = SpeechState.Preparing(turn.id)
-              val audio = withContext(Dispatchers.IO) { engine.synthesize(ctx, text) }
+              _speech.value = SpeechState.Preparing(turn.id)
+              val audio =
+                withContext(speechDispatcher) {
+                  // Re-check before entering synthLock so a superseded tap doesn't queue native work.
+                  if (owns()) engine.synthesize(ctx, text) else null
+                } ?: return@launch
               if (!owns()) return@launch // superseded while synthesizing — don't start stale audio
               _speech.value = SpeechState.Speaking(turn.id)
-              withContext(Dispatchers.IO) { ttsPlayer.play(audio) }
-              if (owns()) _speech.value = SpeechState.Idle
+              val result = withContext(speechDispatcher) { ttsPlayer.play(audio) }
+              if (!owns()) return@launch
+              _speech.value =
+                if (result == TtsPlayer.PlaybackResult.FAILED) {
+                  SpeechState.Failed(turn.id, "playback failed")
+                } else {
+                  SpeechState.Idle
+                }
             }
           }
         } catch (e: CancellationException) {
           throw e
         } catch (e: Throwable) {
+          Log.w(TAG, "speech failed for turn ${turn.id}", e)
           if (owns()) {
             _speech.value =
               SpeechState.Failed(turn.id, e.message ?: e::class.simpleName ?: "speech failed")
@@ -211,12 +259,16 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     _speech.value = SpeechState.Idle
   }
 
-  /** Clears a transient [SpeechState.Failed]/[SpeechState.Fetching] notice once the UI has shown it. */
+  /**
+   * Clears a transient [SpeechState.Failed] notice once the UI has shown it.
+   *
+   * [SpeechState.Fetching] is deliberately NOT cleared on a timer — a ~64 MB voice download outlasts
+   * any sensible notice delay, so reverting the label to SPEAK mid-download would just invite a
+   * pointless re-tap. It clears when [refreshSpeechOffered] observes the voice became READY.
+   */
   fun clearSpeechNotice(turnId: String) {
     val state = _speech.value
-    if ((state is SpeechState.Failed || state is SpeechState.Fetching) && state.turnId() == turnId) {
-      _speech.value = SpeechState.Idle
-    }
+    if (state is SpeechState.Failed && state.turnId == turnId) _speech.value = SpeechState.Idle
   }
 
   /** Clears the active conversation; a new one is created lazily on the next [send]. */
@@ -432,6 +484,9 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
   }
 
   private companion object {
+    /** Shared with the tts package so all speech logging greps under one tag. */
+    const val TAG = "RelaisTts"
+
     const val TURN_PERSIST_AWAIT_TIMEOUT_MS = 3_000L
   }
 }

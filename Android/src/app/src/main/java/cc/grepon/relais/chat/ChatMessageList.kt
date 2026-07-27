@@ -61,12 +61,14 @@ fun ChatMessageList(
   onCopy: (String) -> Unit,
   onRegenerate: (ChatTurn) -> Unit,
   onEditResend: (ChatTurn, String) -> Unit,
+  // Required, not defaulted: a no-op default would let a caller silently drop speech entirely and
+  // still compile, ship, and pass CI with the feature inert.
+  speechState: SpeechState,
+  speechOffered: Boolean,
+  onSpeak: (ChatTurn) -> Unit,
+  onStopSpeaking: () -> Unit,
+  onSpeechNoticeShown: (String) -> Unit,
   modifier: Modifier = Modifier,
-  speechState: SpeechState = SpeechState.Idle,
-  speechOffered: Boolean = false,
-  onSpeak: (ChatTurn) -> Unit = {},
-  onStopSpeaking: () -> Unit = {},
-  onSpeechNoticeShown: (String) -> Unit = {},
 ) {
   val listState = rememberLazyListState()
 
@@ -229,8 +231,9 @@ private fun SpeakLabel(
   val stops = speechActionStops(state, turn.id)
   val failed = state is SpeechState.Failed && state.turnId == turn.id
 
-  // Transient notices (FETCHING VOICE / SPEECH FAILED) clear themselves, like the COPIED ack.
-  if (failed || (state is SpeechState.Fetching && state.turnId == turn.id)) {
+  // SPEECH FAILED clears itself, like the COPIED ack. FETCHING VOICE does NOT — the download far
+  // outlasts any notice delay, so it clears only when the voice actually becomes ready.
+  if (failed) {
     LaunchedEffect(state) {
       delay(SPEECH_NOTICE_MS)
       onNoticeShown(turn.id)

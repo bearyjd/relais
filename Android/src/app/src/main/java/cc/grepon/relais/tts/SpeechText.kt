@@ -44,6 +44,20 @@ private val BOLD_ITALIC = Regex("\\*{1,3}")
 private val WHITESPACE = Regex("\\s+")
 
 /**
+ * A markdown table's alignment row (`|---|---|`, `|:--|--:|`). It carries no words, so it must be
+ * removed *before* pipes become commas — otherwise it reads out as a run of bare pauses. [RULE]
+ * can't catch it: the pipes stop that pattern matching.
+ */
+private val TABLE_DIVIDER = Regex("(?m)^\\s*\\|?[\\s:|-]*\\|[\\s:|-]*$")
+
+// Turning `|` into `, ` leaves punctuation a human would never write: a space before every comma,
+// and a stray comma at each end of a row. Piper voices those as pauses, so a table row becomes
+// "(pause) a (pause) b (pause)". These three normalise it back to "a, b".
+private val SPACE_BEFORE_PUNCT = Regex("\\s+([,.!?])")
+private val REPEATED_COMMA = Regex("(?:,\\s*){2,}")
+private val EDGE_COMMA = Regex("^\\s*,\\s*|\\s*,\\s*$")
+
+/**
  * Reduce [markdown] to plain prose Piper can read, capped at [maxChars].
  *
  * Fenced code is dropped entirely rather than read aloud; inline-code *content* is kept (identifiers
@@ -62,6 +76,7 @@ fun speakableText(markdown: String, maxChars: Int = SPEECH_TEXT_MAX_CHARS): Stri
       .replace(IMAGE, " ")
       .replace(LINK, "$1")
       .replace(RULE, " ")
+      .replace(TABLE_DIVIDER, " ")
       .replace(HEADING, "")
       .replace(BLOCKQUOTE, "")
       .replace(BULLET, "")
@@ -70,6 +85,10 @@ fun speakableText(markdown: String, maxChars: Int = SPEECH_TEXT_MAX_CHARS): Stri
       .replace("`", "")
       .replace(BOLD_ITALIC, "")
       .replace(WHITESPACE, " ")
+      // Punctuation cleanup runs last, once the text is a single collapsed line.
+      .replace(SPACE_BEFORE_PUNCT, "$1")
+      .replace(REPEATED_COMMA, ", ")
+      .replace(EDGE_COMMA, "")
       .trim()
 
   return truncateForSpeech(stripped, maxChars)

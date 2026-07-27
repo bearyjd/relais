@@ -31,7 +31,14 @@ sealed interface SpeechState {
   /** Audio is playing out the speaker. */
   data class Speaking(val turnId: String) : SpeechState
 
-  /** Synthesis or playback failed for this turn; [message] is shown briefly, then cleared. */
+  /**
+   * Synthesis or playback failed for this turn.
+   *
+   * [message] is **diagnostic only** — the row renders a fixed `SPEECH FAILED` label (see
+   * [speechActionLabel]), so this value reaches logs and tests, never the screen. Keep it that way:
+   * exception text here can carry absolute storage paths, and this row is exactly what a user
+   * screenshots into a bug report.
+   */
   data class Failed(val turnId: String, val message: String) : SpeechState
 }
 
@@ -71,10 +78,17 @@ fun speechActionLabel(state: SpeechState, turnId: String): String {
 fun speechActionStops(state: SpeechState, turnId: String): Boolean =
   state is SpeechState.Speaking && state.turnId == turnId
 
-/** False while this row's own synthesis/provision is in flight — the label is a status, not a button. */
+/**
+ * False only while this row's own synthesis is in flight — there, the label is a status, not a button.
+ *
+ * [SpeechState.Fetching] stays **enabled** on purpose. A voice download is ~64 MB and can fail
+ * (the provisioner logs and gives up), so a disabled FETCHING label would strand the row forever with
+ * no way out. Re-tapping is idempotent — it re-checks availability and no-ops if a fetch is already
+ * running — so leaving it tappable is the recoverable choice.
+ */
 fun speechActionEnabled(state: SpeechState, turnId: String): Boolean {
   if (state.turnId() != turnId) return true
-  return state !is SpeechState.Preparing && state !is SpeechState.Fetching
+  return state !is SpeechState.Preparing
 }
 
 /**

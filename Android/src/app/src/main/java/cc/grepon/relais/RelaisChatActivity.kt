@@ -77,6 +77,7 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.viewmodel.compose.viewModel
 import cc.grepon.relais.chat.ChatConversationList
 import cc.grepon.relais.chat.ChatMessageList
+import cc.grepon.relais.chat.SpeechState
 import cc.grepon.relais.chat.conversationToMarkdown
 import java.io.ByteArrayOutputStream
 import kotlinx.coroutines.Dispatchers
@@ -350,15 +351,39 @@ internal fun ChatScreen() {
         onCopy = { clipboard.setText(AnnotatedString(it)) },
         onRegenerate = { vm.regenerate(it) },
         onEditResend = { t, s -> vm.editAndResend(t, s) },
-        modifier = Modifier.weight(1f).fillMaxWidth().padding(horizontal = 16.dp),
         speechState = speechState,
         speechOffered = speechOffered,
         onSpeak = { vm.speak(it) },
         onStopSpeaking = { vm.stopSpeaking() },
         onSpeechNoticeShown = { vm.clearSpeechNotice(it) },
+        modifier = Modifier.weight(1f).fillMaxWidth().padding(horizontal = 16.dp),
       )
 
       Box(Modifier.fillMaxWidth().height(1.dp).background(Line))
+      // Screen-level STOP: the speaking turn's own STOP label disappears once that row scrolls out
+      // of the lazy list, which would otherwise leave audio playing with no way to stop it.
+      if (speechState is SpeechState.Speaking) {
+        Row(
+          Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
+          verticalAlignment = Alignment.CenterVertically,
+        ) {
+          Text(
+            "speaking…",
+            color = Muted,
+            fontFamily = FontFamily.Monospace,
+            fontSize = 11.sp,
+            modifier = Modifier.weight(1f),
+          )
+          Text(
+            "STOP",
+            color = Amber,
+            fontFamily = FontFamily.Monospace,
+            fontSize = 11.sp,
+            fontWeight = FontWeight.Bold,
+            modifier = Modifier.clickable { vm.stopSpeaking() },
+          )
+        }
+      }
       // Attach-rejection notice: why the last pick didn't stage (text-only model, bad file, …).
       // Auto-clears so it doesn't linger. Without this the failure is invisible and attach looks broken.
       attachError?.let { msg ->
