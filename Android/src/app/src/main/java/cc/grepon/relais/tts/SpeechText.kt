@@ -58,6 +58,13 @@ private val REPEATED_COMMA = Regex("(?:,\\s*){2,}")
 private val EDGE_COMMA = Regex("^\\s*,\\s*|\\s*,\\s*$")
 
 /**
+ * Terminal punctuation immediately followed by a comma, e.g. `…8443., field` — produced when prose
+ * ending in a full stop is followed by a table row. Found on-device (`SpeechPlaybackProbe`): Piper
+ * voices `.,` as a doubled pause. The sentence end already supplies the break, so the comma goes.
+ */
+private val PUNCT_THEN_COMMA = Regex("([.!?])\\s*,")
+
+/**
  * Reduce [markdown] to plain prose Piper can read, capped at [maxChars].
  *
  * Fenced code is dropped entirely rather than read aloud; inline-code *content* is kept (identifiers
@@ -87,6 +94,7 @@ fun speakableText(markdown: String, maxChars: Int = SPEECH_TEXT_MAX_CHARS): Stri
       .replace(WHITESPACE, " ")
       // Punctuation cleanup runs last, once the text is a single collapsed line.
       .replace(SPACE_BEFORE_PUNCT, "$1")
+      .replace(PUNCT_THEN_COMMA, "$1")
       .replace(REPEATED_COMMA, ", ")
       .replace(EDGE_COMMA, "")
       .trim()

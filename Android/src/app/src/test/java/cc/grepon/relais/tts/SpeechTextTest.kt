@@ -92,6 +92,15 @@ class SpeechTextTest {
     assertEquals("a", speakableText("| :--- | ---: |\na"))
   }
 
+  @Test fun `a sentence end followed by a table row does not produce a doubled pause`() {
+    // Found on-device (SpeechPlaybackProbe): prose ending in "." followed by a table row yielded
+    // "…8443., field", which Piper voices as two pauses back to back.
+    assertEquals(
+      "Live on 8443. field, value",
+      speakableText("Live on 8443.\n\n| field | value |"),
+    )
+  }
+
   @Test fun `repeated commas from empty table cells collapse`() {
     assertEquals("a, b", speakableText("| a | | b |"))
   }
