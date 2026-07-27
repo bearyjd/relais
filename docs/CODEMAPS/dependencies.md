@@ -11,7 +11,7 @@
 | **commons-compress** | **1.27.1 [NEW]** | decompress TTS voice `.tar.bz2` bundle | all |
 | **kotlinx-coroutines-test** | **1.10.2 [NEW]** | virtual-time testing (polling-pause regression) | test |
 | mlkit-genai-prompt | 1.0.0-beta2 | AICore/Gemini Nano (NPU) | full |
-| llmedge | 0.3.9 | sd.cpp/Vulkan image-gen | full |
+| llmedge | **0.4.7.2** | sd.cpp image-gen (CPU on Pixel 10 — see `ImageGenBackendPolicy`) | full |
 | room | 2.7.1 | SQLite ORM (schema now v5) | all |
 | hilt-android | 2.58 | DI | all |
 | bcpkix-jdk15to18 | 1.78.1 | self-signed TLS for LAN server | all |
