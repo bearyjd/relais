@@ -200,8 +200,10 @@ class ChatViewModel(
           val (availability, text) = prepared
           if (!owns()) return@launch
 
-          if (availability == TtsAvailability.READY && text.isBlank()) {
-            // e.g. a turn that was nothing but a code block — there is genuinely nothing to read.
+          // Emptiness is a property of the TURN, not of the engine — check it before availability.
+          // Gating this on READY would make a code-only turn kick a ~64 MB voice download first and
+          // only then report there was never anything to read.
+          if (text.isBlank()) {
             _speech.value = SpeechState.Failed(turn.id, "nothing to speak")
             return@launch
           }

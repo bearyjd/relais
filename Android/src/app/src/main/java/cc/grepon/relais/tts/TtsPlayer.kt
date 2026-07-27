@@ -77,18 +77,42 @@ class TtsPlayer(context: Context) {
 
     val track = buildTrack(audio.sampleRate)
     if (track == null) {
+      // Uphold the supersede contract even on the failure path: a caller that relied on this play()
+      // replacing the previous one must not be left with the old audio still running.
+      stop()
       Log.w(TAG, "no AudioTrack for ${audio.sampleRate} Hz — playback unavailable on this device")
       return PlaybackResult.FAILED
     }
 
-    // Supersede any in-flight playback, take focus, then publish this track as the live one. All
-    // under the lock so a concurrent stop() can never act on a half-installed track.
-    synchronized(lock) {
-      stopLocked()
-      current = track
-      if (focusHolder == null) focusHolder = requestFocusLocked()
+    // Focus is taken BEFORE the lock: requestAudioFocus is a binder round-trip to system_server, and
+    // `lock` is what a main-thread stop() needs — holding it across IPC would block the UI.
+    val focus = synchronized(lock) { focusHolder } ?: requestFocus()
+    if (focus == null) {
+      // Denied — something more important owns audio (typically a call). The platform contract is
+      // to not play, and playing anyway would be worse here: a denied request registers no listener,
+      // so nothing could tell us to stop.
+      stop()
+      Log.i(TAG, "audio focus denied — not playing")
+      runCatching { track.release() }
+      return PlaybackResult.FAILED
     }
 
+    // Publish this track as the live one. A concurrent play() may have installed focus first; if so
+    // ours is surplus and must be handed back rather than dropped.
+    val surplusFocus =
+      synchronized(lock) {
+        stopLocked()
+        current = track
+        if (focusHolder == null) {
+          focusHolder = focus
+          null
+        } else {
+          focus.takeIf { it !== focusHolder }
+        }
+      }
+    surplusFocus?.let { abandon(it) }
+
+    val startedAt = System.nanoTime()
     return try {
       track.play()
       var offset = 0
@@ -107,7 +131,7 @@ class TtsPlayer(context: Context) {
         }
         offset += n
       }
-      drain(track, totalFrames = bytes.size / BYTES_PER_FRAME, expectedMs = audio.durationMs)
+      drain(track, bytes.size / BYTES_PER_FRAME, audio.durationMs, startedAt)
       if (isCurrent(track)) PlaybackResult.COMPLETED else PlaybackResult.CANCELLED
     } catch (t: IllegalStateException) {
       // The track was stopped/released underneath us by stop() — routine cancellation, not a failure.
@@ -120,7 +144,7 @@ class TtsPlayer(context: Context) {
           if (current === track) current = null
           if (current == null) focusHolder.also { focusHolder = null } else null
         }
-      toAbandon?.let { req -> runCatching { audioManager?.abandonAudioFocusRequest(req) } }
+      toAbandon?.let { abandon(it) }
       runCatching { track.stop() }
       runCatching { track.release() }
     }
@@ -146,8 +170,11 @@ class TtsPlayer(context: Context) {
    * route change, underrun) `playbackHeadPosition` stops advancing, and an unbounded wait would pin
    * this thread and leave the UI showing STOP with nothing playing.
    */
-  private fun drain(track: AudioTrack, totalFrames: Int, expectedMs: Long) {
-    val deadline = System.nanoTime() + (expectedMs + DRAIN_GRACE_MS) * NANOS_PER_MS
+  private fun drain(track: AudioTrack, totalFrames: Int, expectedMs: Long, startedAt: Long) {
+    // Deadline is measured from PLAYBACK start, not from here: the blocking writes above have
+    // already consumed most of the audio's duration, so anchoring it here would grant a stalled
+    // clip a second full duration of slack instead of the intended grace period.
+    val deadline = startedAt + (expectedMs + DRAIN_GRACE_MS) * NANOS_PER_MS
     while (isCurrent(track)) {
       val played = runCatching { track.playbackHeadPosition }.getOrDefault(totalFrames)
       if (played >= totalFrames) return
@@ -164,9 +191,11 @@ class TtsPlayer(context: Context) {
   /**
    * Take transient audio focus so speech doesn't talk over music or through a call. Any loss stops
    * playback outright rather than ducking-and-resuming: resuming a spoken sentence from the middle
-   * after an interruption is worse than simply stopping. Callers hold [lock].
+   * after an interruption is worse than simply stopping.
+   *
+   * Returns null when focus was denied. Callers must NOT hold [lock] — this is a binder call.
    */
-  private fun requestFocusLocked(): AudioFocusRequest? {
+  private fun requestFocus(): AudioFocusRequest? {
     val manager = audioManager ?: return null
     val request =
       AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT)
@@ -175,16 +204,15 @@ class TtsPlayer(context: Context) {
           if (change != AudioManager.AUDIOFOCUS_GAIN) stop()
         }
         .build()
-    return if (
-      manager.requestAudioFocus(request) == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
-    ) {
-      request
-    } else {
-      // Denied (e.g. an active call). Play anyway at the system's discretion rather than silently
-      // dropping the user's explicit tap; the OS still arbitrates the actual mix.
-      Log.i(TAG, "audio focus denied — playing without it")
-      null
-    }
+    val granted =
+      runCatching { manager.requestAudioFocus(request) }
+        .getOrDefault(AudioManager.AUDIOFOCUS_REQUEST_FAILED) ==
+        AudioManager.AUDIOFOCUS_REQUEST_GRANTED
+    return request.takeIf { granted }
+  }
+
+  private fun abandon(request: AudioFocusRequest) {
+    runCatching { audioManager?.abandonAudioFocusRequest(request) }
   }
 
   /**

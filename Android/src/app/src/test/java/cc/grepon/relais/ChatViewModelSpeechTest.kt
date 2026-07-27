@@ -13,6 +13,9 @@
 package cc.grepon.relais
 
 import android.content.Context
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.ViewModelProvider
+import androidx.lifecycle.ViewModelStore
 import cc.grepon.relais.chat.SpeechState
 import cc.grepon.relais.data.ChatTurn
 import cc.grepon.relais.tts.RelaisTtsEngine
@@ -53,19 +56,35 @@ class ChatViewModelSpeechTest {
   private val dispatcher = StandardTestDispatcher()
   private lateinit var vm: ChatViewModel
 
+  /**
+   * Owns the ViewModel so [tearDown] can clear it: `onCleared()` is protected, and going through a
+   * store is the only way to trigger it. Without this each test leaks a Ktor HttpClient and an
+   * un-released TtsPlayer.
+   */
+  private val store = ViewModelStore()
+
   /** Records what the engine was asked to do, so "did we skip stale work?" is assertable. */
   private class FakeTtsEngine(
-    @Volatile var availability: TtsAvailability = TtsAvailability.READY,
+    // Named *Result, not `availability`: it would otherwise shadow the interface method one line
+    // below, which gets actively confusing now that the method counts its calls.
+    @Volatile var availabilityResult: TtsAvailability = TtsAvailability.READY,
     private val onSynthesize: (() -> Unit)? = null,
   ) : RelaisTtsEngine {
     val synthesizeCalls = AtomicInteger(0)
     val provisionCalls = AtomicInteger(0)
 
-    override fun isAvailable(context: Context) = availability == TtsAvailability.READY
+    /** Counted because `availability()` is the expensive call — it loads the ~64 MB voice model. */
+    val availabilityCalls = AtomicInteger(0)
 
-    override fun canProvision(context: Context) = availability == TtsAvailability.PROVISIONING
+    override fun isAvailable(context: Context) = availabilityResult == TtsAvailability.READY
 
-    override fun availability(context: Context) = availability
+    override fun canProvision(context: Context) =
+      availabilityResult == TtsAvailability.PROVISIONING
+
+    override fun availability(context: Context): TtsAvailability {
+      availabilityCalls.incrementAndGet()
+      return availabilityResult
+    }
 
     override fun ensureProvisioningStarted(context: Context) {
       provisionCalls.incrementAndGet()
@@ -97,11 +116,19 @@ class ChatViewModelSpeechTest {
   fun setUp() {
     Dispatchers.setMain(dispatcher)
     // Speech work runs on the test dispatcher too, so advanceUntilIdle() actually drains it.
-    vm = ChatViewModel(RuntimeEnvironment.getApplication(), dispatcher)
+    val app = RuntimeEnvironment.getApplication()
+    val factory =
+      object : ViewModelProvider.Factory {
+        @Suppress("UNCHECKED_CAST")
+        override fun <T : ViewModel> create(modelClass: Class<T>): T =
+          ChatViewModel(app, dispatcher) as T
+      }
+    vm = ViewModelProvider(store, factory)[ChatViewModel::class.java]
   }
 
   @After
   fun tearDown() {
+    store.clear() // drives onCleared(): closes the transport client, releases the player
     RelaisTtsEngineProvider.register(null)
     Dispatchers.resetMain()
   }
@@ -123,12 +150,18 @@ class ChatViewModelSpeechTest {
     RelaisTtsEngineProvider.register(engine)
     vm.refreshSpeechOffered()
     assertTrue(vm.speechOffered.value)
-    assertEquals(0, engine.synthesizeCalls.get())
+    // The counter that matters: availability() — NOT synthesize() — is what loads the model, and
+    // this runs on the main thread. Asserting synthesizeCalls here would pass with the fix reverted.
+    assertEquals(
+      "refreshSpeechOffered must not call availability(): it loads a ~64 MB model on the main thread",
+      0,
+      engine.availabilityCalls.get(),
+    )
   }
 
   @Test
   fun `a provisioning engine kicks the download and reports fetching`() = runTest(dispatcher) {
-    val engine = FakeTtsEngine(availability = TtsAvailability.PROVISIONING)
+    val engine = FakeTtsEngine(availabilityResult = TtsAvailability.PROVISIONING)
     RelaisTtsEngineProvider.register(engine)
 
     vm.speak(turn("a", "hello there"))
@@ -141,7 +174,7 @@ class ChatViewModelSpeechTest {
 
   @Test
   fun `an unavailable engine reports failure and stops offering speech`() = runTest(dispatcher) {
-    val engine = FakeTtsEngine(availability = TtsAvailability.UNAVAILABLE)
+    val engine = FakeTtsEngine(availabilityResult = TtsAvailability.UNAVAILABLE)
     RelaisTtsEngineProvider.register(engine)
 
     vm.speak(turn("a", "hello there"))
@@ -183,6 +216,20 @@ class ChatViewModelSpeechTest {
       assertTrue(state.toString(), state is SpeechState.Failed)
       assertEquals("b", (state as SpeechState.Failed).turnId)
     }
+
+  @Test
+  fun `a code-only turn does not trigger a voice download`() = runTest(dispatcher) {
+    // Regression: the blank check used to be gated on READY, so an unprovisioned voice meant a
+    // ~64 MB download completed before the user learned there was nothing to speak.
+    val engine = FakeTtsEngine(availabilityResult = TtsAvailability.PROVISIONING)
+    RelaisTtsEngineProvider.register(engine)
+
+    vm.speak(turn("a", "```\nval x = 1\n```"))
+    advanceUntilIdle()
+
+    assertEquals(0, engine.provisionCalls.get())
+    assertTrue(vm.speech.value is SpeechState.Failed)
+  }
 
   // ---- supersede / ownership ----
 
@@ -241,7 +288,7 @@ class ChatViewModelSpeechTest {
 
   @Test
   fun `clearSpeechNotice clears a failure for the matching turn only`() = runTest(dispatcher) {
-    val engine = FakeTtsEngine(availability = TtsAvailability.UNAVAILABLE)
+    val engine = FakeTtsEngine(availabilityResult = TtsAvailability.UNAVAILABLE)
     RelaisTtsEngineProvider.register(engine)
 
     vm.speak(turn("a", "hello there"))
@@ -257,7 +304,7 @@ class ChatViewModelSpeechTest {
   @Test
   fun `clearSpeechNotice does not clear a fetching notice`() = runTest(dispatcher) {
     // Fetching outlasts any UI timer — only an availability re-check should clear it.
-    val engine = FakeTtsEngine(availability = TtsAvailability.PROVISIONING)
+    val engine = FakeTtsEngine(availabilityResult = TtsAvailability.PROVISIONING)
     RelaisTtsEngineProvider.register(engine)
 
     vm.speak(turn("a", "hello there"))
@@ -270,14 +317,14 @@ class ChatViewModelSpeechTest {
   @Test
   fun `refreshSpeechOffered clears a fetching notice once the voice becomes ready`() =
     runTest(dispatcher) {
-      val engine = FakeTtsEngine(availability = TtsAvailability.PROVISIONING)
+      val engine = FakeTtsEngine(availabilityResult = TtsAvailability.PROVISIONING)
       RelaisTtsEngineProvider.register(engine)
 
       vm.speak(turn("a", "hello there"))
       advanceUntilIdle()
       assertEquals(SpeechState.Fetching("a"), vm.speech.value)
 
-      engine.availability = TtsAvailability.READY
+      engine.availabilityResult = TtsAvailability.READY
       vm.refreshSpeechOffered()
       advanceUntilIdle()
 
