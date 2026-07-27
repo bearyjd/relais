@@ -30,6 +30,19 @@ player, on-device Compose UI) across two SoCs.
 No correctness, security, or completeness defects found in this pass. The three MEDIUM items are
 maintainability/process gaps — one of which (codemap drift) this repo has been bitten by before.
 
+## Resolution — all 3 MEDIUM findings fixed (follow-up commit)
+
+| # | Finding | Outcome |
+|---|---|---|
+| M1 | `speak()` 76 lines | **Fixed** — split into `speak()` (10), `supersedeAndClaim()` (5), `runSpeechAttempt()` (40), `synthesizeAndPlay()` (25). All under the 50-line target; the supersede invariant is now a named function instead of an ordering convention. |
+| M2 | codemap not updated | **Fixed** — `docs/CODEMAPS/frontend.md` §Chat gains a Speech-playback subsection covering all four new files, the generation-token rationale, and the node-startup registration trap. |
+| M3 | a11y: no button role, disabled node still clickable | **Fixed** — `ActionLabel` carries `Role.Button` and attaches **no** click action when disabled; `SpeakingStopStrip`'s STOP likewise. Two new UI assertions: `synthesizingExposesNoClickActionAtAll`, `actionableLabelsAnnounceAsButtons`. |
+
+The 3 LOW items were left as-is (documented deliberate tradeoffs, not defects).
+
+Re-verified after the fixes: JVM gate green on all three flavors; `ChatSpeechUiProbe` **15/15** and
+`SpeechPlaybackProbe` **6/6** on both rango and comet.
+
 ## Findings
 
 ### CRITICAL

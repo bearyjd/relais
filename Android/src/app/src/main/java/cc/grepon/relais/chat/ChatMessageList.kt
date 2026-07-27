@@ -31,6 +31,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -243,22 +246,33 @@ private fun SpeakLabel(
   ActionLabel(
     text = label,
     color = if (failed) StopRed else if (enabled) Amber else Muted,
-    onClick = {
-      if (!enabled) return@ActionLabel
-      if (stops) onStopSpeaking() else onSpeak(turn)
-    },
+    enabled = enabled,
+    onClick = { if (stops) onStopSpeaking() else onSpeak(turn) },
   )
 }
 
+/**
+ * A row action. Carries [Role.Button] so screen readers announce it as a control rather than as
+ * prose, and when [enabled] is false it attaches **no click action at all** — a no-op `onClick`
+ * would still be announced as actionable, offering a control that silently does nothing.
+ */
 @Composable
-private fun ActionLabel(text: String, onClick: () -> Unit, color: Color = Amber) {
+private fun ActionLabel(
+  text: String,
+  onClick: () -> Unit,
+  color: Color = Amber,
+  enabled: Boolean = true,
+) {
   Text(
     text = text,
     color = color,
     fontFamily = FontFamily.Monospace,
     fontSize = 11.sp,
     fontWeight = FontWeight.Bold,
-    modifier = Modifier.clickable(onClick = onClick).padding(vertical = 4.dp),
+    modifier =
+      Modifier.semantics { role = Role.Button }
+        .then(if (enabled) Modifier.clickable(onClick = onClick) else Modifier)
+        .padding(vertical = 4.dp),
   )
 }
 

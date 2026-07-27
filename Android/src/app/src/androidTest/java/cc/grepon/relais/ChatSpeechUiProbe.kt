@@ -17,6 +17,8 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.test.assertHasClickAction
+import androidx.compose.ui.test.assertHasNoClickAction
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
@@ -209,13 +211,21 @@ class ChatSpeechUiProbe {
   }
 
   @Test
-  fun tappingDuringSynthesisIsIgnored() {
-    // SYNTHESIZING is a status, not a button — a tap must not queue a second attempt.
-    var speakCalls = 0
+  fun synthesizingExposesNoClickActionAtAll() {
+    // SYNTHESIZING is a status, not a button. Asserting "the tap does nothing" is not enough: a
+    // no-op onClick would still be announced to TalkBack as an actionable control. It must carry no
+    // click action whatsoever.
     val turn = assistantTurn()
-    setList(listOf(turn), speechState = SpeechState.Preparing(turn.id), onSpeak = { speakCalls++ })
-    compose.onNodeWithText("SYNTHESIZING").performClick()
-    assertEquals(0, speakCalls)
+    setList(listOf(turn), speechState = SpeechState.Preparing(turn.id))
+    compose.onNodeWithText("SYNTHESIZING").assertHasNoClickAction()
+  }
+
+  @Test
+  fun actionableLabelsAnnounceAsButtons() {
+    // Screen readers must hear a control, not prose — this row is the whole speech affordance.
+    val turn = assistantTurn()
+    setList(listOf(turn))
+    compose.onNodeWithText("SPEAK").assertHasClickAction()
   }
 
   @Test
