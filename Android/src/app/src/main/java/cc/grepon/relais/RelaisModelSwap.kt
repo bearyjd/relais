@@ -48,22 +48,61 @@ package cc.grepon.relais
  *   let the normal not-ready path ([RelaisEngine.ensureInitializedInBackground] / lazy
  *   [RelaisEngine.ensureInitialized] on the next request) handle that case instead.
  *
- * INVARIANT this function silently depends on: `RelaisHttpServer.DEFAULT_MODEL` (substituted in for
- * [requestedModelId] when a request omits `model` entirely) must never be normalized to equal a real
- * [configuredModelId]/[residentModelId] — today it's a short cosmetic alias (`"gemma-4-e4b-it"`) that
- * can never match a full HF-style id, so an omitted-`model` request correctly never swaps, but that's
- * accidental unless this stays true. See the comment at `DEFAULT_MODEL`'s definition.
+ * SUPERSEDED BY THE FULL FEATURE: the narrow "only the configured model" guard above was the first
+ * cut's whole safety boundary. It is now carried by [RelaisModelRegistry] instead — a swap target
+ * must be a model already provisioned ON THIS DEVICE, so a client still cannot originate a
+ * download, but it can name any model the operator actually has. See [resolveModelRequest].
  */
-fun shouldSwapModel(
+/**
+ * What to do with a request's `model` field (#180, full feature).
+ *
+ * Replaces the first cut's boolean because the answer is genuinely three-way: serve, swap, or
+ * refuse. A boolean could not express "the client named a model this node does not have", so an
+ * unknown id silently fell through and was answered by whatever happened to be resident — the
+ * drop-in-fidelity gap this issue exists to close.
+ */
+sealed interface ModelRequestOutcome {
+  /** Serve the resident model: no `model` field, not ready yet, or it already matches. */
+  data object ServeResident : ModelRequestOutcome
+
+  /** [targetModelId] is provisioned locally — kick a single-slot swap and have the client retry. */
+  data class SwapThenRetry(val targetModelId: String) : ModelRequestOutcome
+
+  /** The client named a model that is not on this device. Answer 404 `model_not_found`. */
+  data class NotProvisioned(val requestedModelId: String) : ModelRequestOutcome
+}
+
+/**
+ * Decide what a request's `model` field means for this node.
+ *
+ * [requestedModelId] MUST be the RAW field — `null` when the client omitted it. Do **not** pass
+ * `RelaisHttpServer.DEFAULT_MODEL` in its place: that cosmetic alias matches no real id, so
+ * substituting it would turn every omitted-`model` request into a 404. (The first cut tolerated the
+ * substitution because an unmatched id merely meant "don't swap"; under [NotProvisioned] the same
+ * value becomes a hard client-visible error. This is the one behavioural landmine in the change.)
+ *
+ * [provisionedModelIds] comes from [RelaisModelRegistry] — models actually on disk. Membership is
+ * what makes a swap legal, and it is why an arbitrary client string still cannot trigger a
+ * download: the registry only grows on a locally-successful provision. [configuredModelId] stays
+ * swap-eligible on its own so the operator's current selection works before it has been recorded.
+ *
+ * Pure JVM (no Context, no Engine) so the whole matrix is unit-tested in isolation — mirrors
+ * [shouldUnloadIdleEngine] in RelaisIdleTtl.kt.
+ */
+fun resolveModelRequest(
   residentModelId: String?,
   requestedModelId: String?,
   configuredModelId: String,
+  provisionedModelIds: Set<String>,
   isReady: Boolean,
-): Boolean {
-  if (!isReady) return false // nothing resident to swap away from
-  if (requestedModelId.isNullOrBlank()) return false // no explicit ask -> serve whatever is resident
-  if (requestedModelId == residentModelId) return false // already serving the requested model
-  // Narrow-scope guard: only swap TO the operator's currently-configured selection, never to an
-  // arbitrary client-supplied id that isn't what's staged — see this file's KDoc for why.
-  return requestedModelId == configuredModelId
+): ModelRequestOutcome {
+  // Not ready: the normal not-ready path (503) owns this. Refusing here would answer 404 for a
+  // model the node may well have, purely because it hasn't finished coming up.
+  if (!isReady) return ModelRequestOutcome.ServeResident
+  val requested = requestedModelId?.takeIf { it.isNotBlank() } ?: return ModelRequestOutcome.ServeResident
+  if (requested == residentModelId) return ModelRequestOutcome.ServeResident
+  if (requested == configuredModelId || requested in provisionedModelIds) {
+    return ModelRequestOutcome.SwapThenRetry(requested)
+  }
+  return ModelRequestOutcome.NotProvisioned(requested)
 }

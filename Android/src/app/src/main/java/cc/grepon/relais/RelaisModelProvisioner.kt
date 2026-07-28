@@ -217,8 +217,12 @@ object RelaisModelProvisioner {
     RelaisConfig.modelPath(context)?.let { saved ->
       if (File(saved).exists()) {
         Log.i(TAG, "Using persisted model path (no allowlist fetch needed): $saved")
-        cachedPath = saved
-        return saved
+        // Route through remember() rather than assigning cachedPath directly: this is the MOST
+        // common start path (a node booting from an already-provisioned model), and skipping
+        // remember() meant the #180 registry never learned about the resident model — /v1/models
+        // reported it as not-provisioned and a request naming it would 404. Idempotent here: the
+        // path is already persisted, so remember() only refreshes the cache and the registry.
+        return remember(context, saved, persistForId = idAtStart)
       }
     }
     // Offline-safe fast path 2: a model an operator pre-staged at the conventional side-load
@@ -279,8 +283,32 @@ object RelaisModelProvisioner {
    * Pass [persistForId] = the id captured at [ensureModel] entry to enable the drift guard;
    * omit it (null) to always persist (legacy / callers without an id snapshot).
    */
+  /**
+   * Add (or refresh) this model in the provisioned registry (#180), pruning entries whose file has
+   * since disappeared. Best-effort: a registry write must never fail a provision that succeeded —
+   * the model IS on disk either way, and a missing registry entry only costs a swap opportunity.
+   */
+  private fun recordProvisioned(context: Context, path: String) {
+    runCatching {
+        val id = RelaisConfig.modelId(context)
+        val display = RelaisConfig.modelRef(context)?.takeIf { it.modelId == id }?.displayName ?: id
+        val updated =
+          upsertProvisioned(
+            pruneMissingProvisioned(RelaisConfig.provisionedModels(context)) { File(it).exists() },
+            ProvisionedModel(modelId = id, path = path, displayName = display),
+          )
+        RelaisConfig.setProvisionedModels(context, updated)
+        Log.i(TAG, "Registry: ${updated.size} model(s) provisioned on device")
+      }
+      .onFailure { Log.w(TAG, "Could not update provisioned-model registry: ${it.message}") }
+  }
+
   internal fun remember(context: Context, path: String, persistForId: String? = null): String {
     cachedPath = path
+    // #180: the ONE funnel both the already-present and freshly-downloaded paths pass through, so
+    // it is where the provisioned-model registry gains entries. Recording only on local success is
+    // what keeps a per-request swap unable to originate a download.
+    recordProvisioned(context, path)
     // Read the current id once: it drives the gate AND the drift warning, and re-reading risks a
     // TOCTOU mismatch between the decision and the logged value.
     val currentId = RelaisConfig.modelId(context)

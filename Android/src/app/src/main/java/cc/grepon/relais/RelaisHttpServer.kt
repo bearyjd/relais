@@ -906,7 +906,8 @@ class RelaisHttpServer(
   private fun handleModels(ctx: RequestContext) {
     val refs = RelaisModelCatalog.curatedModels()
     val fallback = RelaisConfig.modelId(context)
-    ctx.send(200, buildModelsResponse(refs, fallback))
+    val onDisk = provisionedIds(RelaisConfig.provisionedModels(context))
+    ctx.send(200, buildModelsResponse(refs, fallback, onDisk))
   }
 
   private fun handleClientConfig(ctx: RequestContext) {
@@ -1124,32 +1125,65 @@ class RelaisHttpServer(
    * caller use its own error envelope shape (OpenAI's flat `RelaisError.json` vs Anthropic's nested
    * `buildAnthropicError`) rather than leaking one shape onto the other's wire format.
    */
-  private fun rejectAndSwapIfModelMismatched(
+  private fun rejectIfModelUnavailable(
     sock: java.net.Socket,
     endpoint: String,
     requestedModel: String?,
     errorBody: (message: String) -> JSONObject,
+    notFoundBody: (message: String) -> JSONObject = errorBody,
   ): Boolean {
     if (!RelaisEngine.isReady) return false // let the normal not-ready path (503 elsewhere) handle this
-    if (!shouldSwapModel(RelaisEngine.residentModelId, requestedModel, RelaisConfig.modelId(context), RelaisEngine.isReady)) {
-      return false
+    val outcome =
+      resolveModelRequest(
+        residentModelId = RelaisEngine.residentModelId,
+        requestedModelId = requestedModel,
+        configuredModelId = RelaisConfig.modelId(context),
+        provisionedModelIds = provisionedIds(RelaisConfig.provisionedModels(context)),
+        isReady = RelaisEngine.isReady,
+      )
+    return when (outcome) {
+      is ModelRequestOutcome.ServeResident -> false
+      is ModelRequestOutcome.SwapThenRetry -> {
+        RelaisEngine.ensureModelSwapInBackground(context)
+        RelaisMetrics.recordRequest(endpoint, 503)
+        respond(
+          sock,
+          503,
+          errorBody("resident model differs from the requested model; swapping — retry shortly"),
+          listOf("Retry-After: 25"),
+        )
+        true
+      }
+      is ModelRequestOutcome.NotProvisioned -> {
+        // 404 rather than silently answering from the resident model: the client asked for X and
+        // would otherwise get Y with no way to tell. Matches OpenAI/Ollama/LM Studio.
+        RelaisMetrics.recordRequest(endpoint, 404)
+        respond(
+          sock,
+          404,
+          notFoundBody(
+            "model '${outcome.requestedModelId}' is not provisioned on this node; " +
+              "see GET /v1/models for what is available"
+          ),
+        )
+        true
+      }
     }
-    RelaisEngine.ensureModelSwapInBackground(context)
-    RelaisMetrics.recordRequest(endpoint, 503)
-    respond(
-      sock,
-      503,
-      errorBody("resident model differs from the requested model; swapping — retry shortly"),
-      listOf("Retry-After: 25"),
-    )
-    return true
   }
 
   private fun handleOpenAi(sock: java.net.Socket, body: JSONObject, sessionKey: String? = null) {
     val model = body.optString("model", DEFAULT_MODEL)
-    if (rejectAndSwapIfModelMismatched(sock, "/v1/chat/completions", model) { message ->
-        RelaisError.json(message, RelaisError.SERVICE_UNAVAILABLE)
-      }
+    // RAW field, not `model`: DEFAULT_MODEL is a cosmetic alias substituted when the client omits
+    // `model` entirely, and feeding it to the decision would 404 every omitted-model request.
+    val requestedModel = body.optString("model", "").takeIf { it.isNotBlank() }
+    if (
+      rejectIfModelUnavailable(
+        sock,
+        "/v1/chat/completions",
+        requestedModel,
+        { message -> RelaisError.json(message, RelaisError.SERVICE_UNAVAILABLE) },
+        { message -> RelaisError.json(message, RelaisError.INVALID_REQUEST, "model_not_found") },
+      )
     ) {
       return
     }
@@ -1306,7 +1340,15 @@ class RelaisHttpServer(
    */
   private fun handleAnthropicMessages(sock: java.net.Socket, body: JSONObject, sessionKey: String? = null) {
     val model = body.optString("model", DEFAULT_MODEL)
-    if (rejectAndSwapIfModelMismatched(sock, "/v1/messages", model) { message -> buildAnthropicError(message, "overloaded_error") }) {
+    // RAW field — see the /v1/chat/completions call site for why DEFAULT_MODEL must not be used here.
+    val requestedModel = body.optString("model", "").takeIf { it.isNotBlank() }
+    if (rejectIfModelUnavailable(
+      sock,
+      "/v1/messages",
+      requestedModel,
+      { message -> buildAnthropicError(message, "overloaded_error") },
+      { message -> buildAnthropicError(message, "not_found_error") },
+    )) {
       return
     }
 
@@ -1986,7 +2028,11 @@ private const val MODEL_CREATED_EPOCH = 0L
  * Each entry includes a stable `created` epoch so strict OpenAI clients (older openai-python) that
  * require the field do not reject the response.
  */
-internal fun buildModelsResponse(refs: List<RelaisModelRef>, fallbackId: String): JSONObject {
+internal fun buildModelsResponse(
+  refs: List<RelaisModelRef>,
+  fallbackId: String,
+  provisionedIds: Set<String> = emptySet(),
+): JSONObject {
   val data = JSONArray()
   if (refs.isEmpty()) {
     data.put(
@@ -1995,6 +2041,7 @@ internal fun buildModelsResponse(refs: List<RelaisModelRef>, fallbackId: String)
         .put("object", "model")
         .put("owned_by", "node")
         .put("created", MODEL_CREATED_EPOCH)
+        .put("provisioned", fallbackId in provisionedIds)
     )
   } else {
     refs.forEach { ref ->
@@ -2002,6 +2049,10 @@ internal fun buildModelsResponse(refs: List<RelaisModelRef>, fallbackId: String)
         JSONObject()
           .put("id", ref.modelId)
           .put("object", "model")
+          // #180: non-standard but load-bearing — a request naming a NOT-provisioned model now 404s,
+          // so the catalog must say which entries can actually be served rather than listing all of
+          // them as if interchangeable.
+          .put("provisioned", ref.modelId in provisionedIds)
           .put("owned_by", ref.source)
           .put("created", MODEL_CREATED_EPOCH)
       )

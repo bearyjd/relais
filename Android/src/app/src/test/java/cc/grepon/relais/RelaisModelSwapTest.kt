@@ -12,117 +12,119 @@
 
 package cc.grepon.relais
 
-import org.junit.Assert.assertFalse
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * Hermetic unit tests for the pure swap-on-mismatch decision in [RelaisModelSwap.kt] (#180). No
- * Context, no Android types, no [RelaisEngine] — pure JVM, mirrors [RelaisIdleTtlTest].
+ * Hermetic unit tests for the pure `model`-field decision in [RelaisModelSwap.kt] (#180, full
+ * feature). No Context, no Android types, no [RelaisEngine] — pure JVM, mirrors [RelaisIdleTtlTest].
  *
  * The real concurrency/lock-ordering safety (never swapping mid-inference, the watchdog not
  * mistaking the swap's not-ready window for a crash) is NOT covered here — it lives in
- * [RelaisEngine.ensureModelSwapInBackground] and needs an on-device/instrumented probe instead; see
- * that function's KDoc for the argument.
+ * [RelaisEngine.ensureModelSwapInBackground] and needs an on-device probe instead.
  */
 class RelaisModelSwapTest {
 
   private val resident = "litert-community/gemma-4-E4B-it-litert-lm"
   private val configured = "litert-community/qwen3-4b-it-litert-lm"
+  private val alsoOnDisk = "litert-community/Qwen2.5-1.5B-Instruct"
+  private val onDisk = setOf(resident, configured, alsoOnDisk)
 
-  // -------------------------------------------------------------------------
-  // 1. not ready -> never swap (nothing resident to swap away from)
-  // -------------------------------------------------------------------------
+  private fun outcome(
+    requested: String?,
+    residentId: String? = resident,
+    configuredId: String = configured,
+    provisioned: Set<String> = onDisk,
+    isReady: Boolean = true,
+  ) = resolveModelRequest(residentId, requested, configuredId, provisioned, isReady)
 
-  @Test
-  fun `never swaps when engine is not ready`() {
-    assertFalse(
-      shouldSwapModel(
-        residentModelId = resident,
-        requestedModelId = configured,
-        configuredModelId = configured,
-        isReady = false,
-      )
+  // ---- serve the resident model ----
+
+  @Test fun `an omitted model field serves the resident model`() {
+    // The single most common request shape. Under a 404-on-unknown policy this MUST stay
+    // ServeResident or every client that omits `model` breaks.
+    assertEquals(ModelRequestOutcome.ServeResident, outcome(null))
+    assertEquals(ModelRequestOutcome.ServeResident, outcome(""))
+    assertEquals(ModelRequestOutcome.ServeResident, outcome("   "))
+  }
+
+  @Test fun `requesting the already-resident model serves it without a swap`() {
+    assertEquals(ModelRequestOutcome.ServeResident, outcome(resident))
+  }
+
+  @Test fun `nothing is decided while the engine is not ready`() {
+    // Refusing here would 404 a model the node may well have, purely because it is still coming up —
+    // the existing 503 not-ready path owns this window.
+    assertEquals(ModelRequestOutcome.ServeResident, outcome("anything-at-all", isReady = false))
+    assertEquals(
+      ModelRequestOutcome.ServeResident,
+      outcome(configured, residentId = null, isReady = false),
     )
   }
 
-  // -------------------------------------------------------------------------
-  // 2. requested null or blank -> never swap
-  // -------------------------------------------------------------------------
+  // ---- swap ----
 
-  @Test
-  fun `never swaps when requested model is null`() {
-    assertFalse(
-      shouldSwapModel(
-        residentModelId = resident,
-        requestedModelId = null,
-        configuredModelId = configured,
-        isReady = true,
-      )
+  @Test fun `the operator's configured model is swap-eligible`() {
+    assertEquals(ModelRequestOutcome.SwapThenRetry(configured), outcome(configured))
+  }
+
+  @Test fun `any OTHER model already on disk is swap-eligible`() {
+    // The whole point of the full feature: the first cut could only swap to the configured id, so a
+    // client naming a different downloaded model was silently answered by the wrong one.
+    assertEquals(ModelRequestOutcome.SwapThenRetry(alsoOnDisk), outcome(alsoOnDisk))
+  }
+
+  @Test fun `the configured model is swap-eligible even before it reaches the registry`() {
+    // A fresh selection may not be recorded yet; the operator's own choice must still work.
+    assertEquals(
+      ModelRequestOutcome.SwapThenRetry(configured),
+      outcome(configured, provisioned = emptySet()),
     )
   }
 
-  @Test
-  fun `never swaps when requested model is blank`() {
-    assertFalse(
-      shouldSwapModel(
-        residentModelId = resident,
-        requestedModelId = "   ",
-        configuredModelId = configured,
-        isReady = true,
-      )
+  // ---- refuse ----
+
+  @Test fun `a model that is not on this device is refused, not silently substituted`() {
+    assertEquals(
+      ModelRequestOutcome.NotProvisioned("meta-llama/Llama-3-70B"),
+      outcome("meta-llama/Llama-3-70B"),
     )
   }
 
-  // -------------------------------------------------------------------------
-  // 3. requested == resident -> already serving it, no-op
-  // -------------------------------------------------------------------------
-
-  @Test
-  fun `never swaps when requested model already matches resident`() {
-    assertFalse(
-      shouldSwapModel(
-        residentModelId = resident,
-        requestedModelId = resident,
-        configuredModelId = resident,
-        isReady = true,
-      )
+  @Test fun `an unprovisioned model is refused even when it looks plausible`() {
+    // Near-miss on the resident id: still not on disk, still a refusal. No fuzzy matching.
+    assertEquals(
+      ModelRequestOutcome.NotProvisioned("litert-community/gemma-4-E4B-it"),
+      outcome("litert-community/gemma-4-E4B-it"),
     )
   }
 
-  // -------------------------------------------------------------------------
-  // 4. the swap case: requested == configured, != resident, ready -> true
-  // -------------------------------------------------------------------------
-
-  @Test
-  fun `swaps when requested matches the operator's configured model and differs from resident`() {
-    assertTrue(
-      shouldSwapModel(
-        residentModelId = resident,
-        requestedModelId = configured,
-        configuredModelId = configured,
-        isReady = true,
-      )
+  @Test fun `an empty registry still refuses an unknown model rather than serving the resident one`() {
+    assertEquals(
+      ModelRequestOutcome.NotProvisioned("something-else"),
+      outcome("something-else", provisioned = emptySet()),
     )
   }
 
-  // -------------------------------------------------------------------------
-  // 5. the narrow-scope guard: requested != configured -> never swap, even if != resident.
-  //    This is the most important test: it is what stops an arbitrary client-supplied model id
-  //    (one the operator never staged via the app's Models UI) from forcing the node to load a
-  //    model of the caller's choosing. Without this guard, any LAN client could trigger an
-  //    unattended multi-GB download/load just by naming a model in its request.
-  // -------------------------------------------------------------------------
+  // ---- the security boundary ----
 
-  @Test
-  fun `never swaps to an arbitrary client-named model the operator never configured`() {
-    assertFalse(
-      shouldSwapModel(
-        residentModelId = resident,
-        requestedModelId = "some-untrusted/arbitrary-model-id",
-        configuredModelId = configured,
-        isReady = true,
+  @Test fun `a client-named model never becomes a swap target unless it is already on disk`() {
+    // The safety property the first cut's narrow guard provided, now carried by the registry: an
+    // arbitrary LAN client cannot make the node fetch anything.
+    listOf("../../etc/passwd", "http://evil/model", "org/enormous-70b", "").forEach { id ->
+      val result = outcome(id, provisioned = setOf(resident))
+      assertTrue(
+        "must never swap to unprovisioned id '$id' (got $result)",
+        result !is ModelRequestOutcome.SwapThenRetry,
       )
+    }
+  }
+
+  @Test fun `a null resident id before first init does not break the decision`() {
+    assertEquals(
+      ModelRequestOutcome.SwapThenRetry(configured),
+      outcome(configured, residentId = null),
     )
   }
 }
