@@ -77,10 +77,17 @@ fun computeControlPanelState(
   downloadReceivedBytes: Long,
   downloadTotalBytes: Long,
   initFailed: Boolean = false,
+  stalledStart: Boolean = false,
 ): RelaisControlPanelState {
   // Still "running" (shouldRun=true) but the engine never came up and won't on its own: an honest
   // failed state, not a perpetual "STARTING · resolving model…" with nothing happening behind it.
-  val failed = running && !ready && initFailed
+  //
+  // TWO ways that happens, and [initFailed] only ever covered the first (#217):
+  //  - an init attempt ran and failed (e.g. a gated-repo 401)      -> initFailed
+  //  - no init attempt is running at all: the service was killed   -> stalledStart
+  //    (OS kill, crash, or an APK reinstall under a persisted shouldRun=true). Nothing sets
+  //    lastInitFailed in that case, so the panel used to show indefinite fake progress.
+  val failed = running && !ready && (initFailed || stalledStart)
   val status = when {
     ready -> NodeStatus.LIVE
     failed -> NodeStatus.OFFLINE // OFFLINE-rendered on purpose (§ review M1): retry via START, never CANCEL-locked.
@@ -97,7 +104,7 @@ fun computeControlPanelState(
   return RelaisControlPanelState(
     status = status,
     statusWord = status.name,
-    detailLine = controlPanelDetailLine(status, failed, modelDisplayName, thermalShedding, phase, downloadReceivedBytes, downloadTotalBytes),
+    detailLine = controlPanelDetailLine(status, failed, stalledStart, modelDisplayName, thermalShedding, phase, downloadReceivedBytes, downloadTotalBytes),
     detailLineBright = thermalShed || failed,
     primaryAction = when (status) {
       NodeStatus.LIVE -> PrimaryAction.STOP
@@ -117,6 +124,7 @@ fun computeControlPanelState(
 internal fun controlPanelDetailLine(
   status: NodeStatus,
   failed: Boolean,
+  stalledStart: Boolean,
   modelDisplayName: String,
   thermalShedding: Boolean,
   phase: ProvisionPhase,
@@ -124,6 +132,10 @@ internal fun controlPanelDetailLine(
   downloadTotalBytes: Long,
 ): String =
   when {
+    // A stalled start and a failed init are both "OFFLINE + press START", but they are NOT the same
+    // problem and must not share copy: "check model/token" is actively misleading advice when the
+    // node simply isn't running. Checked before the generic failed arm (#217).
+    status == NodeStatus.OFFLINE && failed && stalledStart -> "node not running · press START"
     // Checked first: an in-flight (still "running") attempt that already failed renders OFFLINE
     // above, but must never be confused with a plain, intentional stop.
     // The "START again" promise is only honest because RelaisNodeService.onStartCommand
@@ -149,7 +161,12 @@ internal fun provisionPhaseLine(phase: ProvisionPhase, downloadReceivedBytes: Lo
         "downloading model…" // total unknown (e.g. HF didn't report a size) — phase name alone, still non-bare.
       }
     ProvisionPhase.LOADING_ENGINE -> "loading engine…"
-    ProvisionPhase.RESOLVING, ProvisionPhase.IDLE -> "resolving model…"
+    ProvisionPhase.RESOLVING -> "resolving model…"
+    // IDLE is NOT folded into RESOLVING (#217): the start has been dispatched but the provisioner
+    // hasn't begun, and borrowing the resolver's copy made "nothing is happening" indistinguishable
+    // from real progress. This is not the bare "starting…" P6 forbids — it names a real phase, and a
+    // start that is dispatched-but-stalled now renders the failed state instead (see [stalledStart]).
+    ProvisionPhase.IDLE -> "starting node…"
   }
 
 internal fun downloadProgressFraction(receivedBytes: Long, totalBytes: Long): Float? {

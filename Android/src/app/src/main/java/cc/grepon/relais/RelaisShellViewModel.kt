@@ -109,17 +109,42 @@ class RelaisShellViewModel(app: Application) : AndroidViewModel(app) {
     return modelRef?.takeIf { it.modelId == modelId }?.displayName ?: modelId
   }
 
+  /**
+   * Consecutive polls that looked stalled. Debounced rather than reported on the first tick: a
+   * legitimate start has a brief window between `shouldRun=true` and `RelaisNodeService` setting
+   * `startupInProgress`, and flashing "node not running" through that window would be its own lie.
+   */
+  private var stalledTicks = 0
+
   private fun snapshotPanelState(): RelaisControlPanelState {
     val ctx = getApplication<Application>()
+    val ready = RelaisEngine.isReady
+    val running = RelaisConfig.shouldRun(ctx)
+
+    // #217: "running" with no init actually in flight means the service died (OS kill, crash, or an
+    // APK reinstall under a persisted shouldRun). `startupInProgress` is the right signal because
+    // RelaisNodeService holds it across the WHOLE init — including a multi-GB download — so a slow
+    // first start can never be mistaken for a stall.
+    stalledTicks =
+      if (running && !ready && !RelaisEngine.startupInProgress) stalledTicks + 1 else 0
+
     return computeControlPanelState(
-      ready = RelaisEngine.isReady,
-      running = RelaisConfig.shouldRun(ctx),
+      ready = ready,
+      running = running,
       modelDisplayName = currentModelDisplay(),
       thermalShedding = ThermalGovernor.shouldShed(),
       phase = RelaisNodeProgress.phase,
       downloadReceivedBytes = RelaisNodeProgress.downloadReceivedBytes,
       downloadTotalBytes = RelaisNodeProgress.downloadTotalBytes,
       initFailed = RelaisEngine.lastInitFailed,
+      stalledStart = isStalledStart(stalledTicks),
     )
   }
 }
+
+/** Polls (~1 Hz) a start must look dead for before the panel says so. */
+internal const val STALLED_START_TICKS = 3
+
+/** Pure so the debounce threshold is unit-testable without a ViewModel or a Context (#217). */
+internal fun isStalledStart(consecutiveStalledPolls: Int): Boolean =
+  consecutiveStalledPolls >= STALLED_START_TICKS
