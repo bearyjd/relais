@@ -259,7 +259,10 @@ class RelaisControlPanelStateTest {
 
   @Test
   fun `provisionPhaseLine covers every phase explicitly`() {
-    assertEquals("resolving model…", provisionPhaseLine(ProvisionPhase.IDLE, 0, 0))
+    // #217: IDLE must NOT borrow the resolver's copy. Folding them together made "nothing is
+    // happening" render identically to real progress, which is how a dead node showed
+    // "resolving model…" indefinitely with no provisioner running behind it.
+    assertEquals("starting node…", provisionPhaseLine(ProvisionPhase.IDLE, 0, 0))
     assertEquals("resolving model…", provisionPhaseLine(ProvisionPhase.RESOLVING, 0, 0))
     assertEquals("loading engine…", provisionPhaseLine(ProvisionPhase.LOADING_ENGINE, 0, 0))
     assertEquals("downloading model…", provisionPhaseLine(ProvisionPhase.DOWNLOADING, 10, 0))
@@ -267,6 +270,97 @@ class RelaisControlPanelStateTest {
       "downloading model · 50% · 1.0/2.0 GB",
       provisionPhaseLine(ProvisionPhase.DOWNLOADING, 1_000_000_000L, 2_000_000_000L),
     )
+  }
+
+  // ---------------------------------------------------------------------------
+  // Stalled start (#217) — "running" with no init in flight is a DEAD node, not progress
+  // ---------------------------------------------------------------------------
+
+  @Test
+  fun `a stalled start renders the honest failed state, not indefinite progress`() {
+    // The regression: service killed (OS, crash, or an APK reinstall) under a persisted
+    // shouldRun=true. Nothing sets lastInitFailed, so the panel used to show STARTING forever.
+    val s =
+      computeControlPanelState(
+        ready = false, running = true, modelDisplayName = "m",
+        thermalShedding = false, phase = ProvisionPhase.IDLE,
+        downloadReceivedBytes = 0, downloadTotalBytes = 0,
+        initFailed = false, stalledStart = true,
+      )
+    assertEquals(NodeStatus.OFFLINE, s.status)
+    assertEquals(PrimaryAction.START, s.primaryAction)
+    assertEquals("node not running · press START", s.detailLine)
+    assertTrue(s.detailLineBright)
+  }
+
+  @Test
+  fun `a stalled start does not borrow the failed-init copy`() {
+    // "check model/token" is misleading advice when the node simply is not running.
+    val stalled =
+      computeControlPanelState(
+        false, true, "m", false, ProvisionPhase.IDLE, 0, 0,
+        initFailed = false, stalledStart = true,
+      )
+    val failedInit =
+      computeControlPanelState(
+        false, true, "m", false, ProvisionPhase.IDLE, 0, 0,
+        initFailed = true, stalledStart = false,
+      )
+    assertEquals("node not running · press START", stalled.detailLine)
+    assertEquals("start failed · check model/token, then START again", failedInit.detailLine)
+  }
+
+  @Test
+  fun `a failed init keeps its actionable copy once the stall debounce also fires`() {
+    // BOTH flags true is not a corner case — it is where EVERY failed init ends up. RelaisNodeService's
+    // `finally` clears startupInProgress while lastInitFailed stays true, so ~3 polls (~3s) after any
+    // failure the stall debounce fires too. With the stalled arm checked first and unguarded, that
+    // silently replaced "check model/token" with the generic "node not running" three seconds after
+    // every failure — burying the only actionable advice for the dominant real failure, a
+    // license-gated repo 401 (#220).
+    val s =
+      computeControlPanelState(
+        false, true, "m", false, ProvisionPhase.IDLE, 0, 0,
+        initFailed = true, stalledStart = true,
+      )
+    assertEquals(NodeStatus.OFFLINE, s.status)
+    assertEquals(PrimaryAction.START, s.primaryAction)
+    assertEquals("start failed · check model/token, then START again", s.detailLine)
+  }
+
+  @Test
+  fun `a genuine in-flight start is still STARTING`() {
+    // The guard must never fire during a real start — including a slow multi-GB download.
+    val s =
+      computeControlPanelState(
+        false, true, "m", false, ProvisionPhase.DOWNLOADING, 500, 1000,
+        initFailed = false, stalledStart = false,
+      )
+    assertEquals(NodeStatus.STARTING, s.status)
+    assertEquals(PrimaryAction.CANCEL, s.primaryAction)
+    assertTrue(s.showProgressBar)
+  }
+
+  @Test
+  fun `a stopped node is never reported as stalled`() {
+    // stalledStart is only meaningful while running; an intentional STOP must read plainly.
+    val s =
+      computeControlPanelState(
+        false, false, "m", false, ProvisionPhase.IDLE, 0, 0,
+        initFailed = false, stalledStart = true,
+      )
+    assertEquals(NodeStatus.OFFLINE, s.status)
+    assertEquals("node stopped · m", s.detailLine)
+  }
+
+  @Test
+  fun `the stalled debounce needs three consecutive polls`() {
+    // One tick must not accuse a start that simply has not reached startupInProgress yet.
+    assertEquals(false, isStalledStart(0))
+    assertEquals(false, isStalledStart(1))
+    assertEquals(false, isStalledStart(2))
+    assertEquals(true, isStalledStart(3))
+    assertEquals(true, isStalledStart(10))
   }
 
   // ---------------------------------------------------------------------------

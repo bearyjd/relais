@@ -38,8 +38,10 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * Full-screen MODELS destination (Unified App Shell, Task 5): shows the currently served model and
@@ -58,6 +60,36 @@ fun ModelsScreen() {
   var showSheet by remember { mutableStateOf(false) }
   var reloading by remember { mutableStateOf(false) }
   var reloadJob by remember { mutableStateOf<Job?>(null) }
+  var download by remember { mutableStateOf<ModelDownloadState>(ModelDownloadState.Idle) }
+  var downloadJob by remember { mutableStateOf<Job?>(null) }
+
+  // #217: picking a model used to ONLY persist the selection — the bytes were fetched later as a
+  // side effect of the node starting, with no progress and no message, so a pick looked like a dead
+  // button. Fetch here, visibly. `ensureModel` is idempotent, so this doubles as the retry path and
+  // as an "is it already on disk?" check.
+  fun startDownload() {
+    if (download.isInFlight()) return
+    downloadJob?.cancel()
+    download = ModelDownloadState.Preparing
+    downloadJob =
+      scope.launch {
+        val result =
+          withContext(Dispatchers.IO) {
+            runCatching {
+              RelaisModelProvisioner.ensureModel(ctx) { pct ->
+                download = ModelDownloadState.Downloading(pct)
+              }
+            }
+          }
+        download =
+          result.fold(
+            onSuccess = { ModelDownloadState.Ready(RelaisConfig.modelId(ctx)) },
+            onFailure = { e ->
+              ModelDownloadState.Failed(e.message ?: e::class.simpleName ?: "unknown error")
+            },
+          )
+      }
+  }
 
   // Mirror the in-chat selector's reload feedback (both routes persist through [ModelSwitch]): after
   // a pick, show "reloading model…" until the engine settles, so this screen and the chat sheet
@@ -95,6 +127,37 @@ fun ModelsScreen() {
       modifier =
         Modifier.clip(RoundedCornerShape(6.dp)).clickable { showSheet = true }.padding(vertical = 4.dp),
     )
+    // Explicit DOWNLOAD affordance: a pick auto-fetches, but this is the retry after a failure and
+    // the way to fetch a model that was selected before this screen could download at all.
+    if (!download.isInFlight()) {
+      Text(
+        "DOWNLOAD MODEL ›",
+        color = Amber,
+        fontFamily = FontFamily.Monospace,
+        fontWeight = FontWeight.Bold,
+        fontSize = 12.sp,
+        modifier =
+          Modifier.clip(RoundedCornerShape(6.dp))
+            .clickable { startDownload() }
+            .padding(vertical = 4.dp),
+      )
+    }
+    modelDownloadLine(download)?.let { line ->
+      Text(
+        line,
+        color = if (download is ModelDownloadState.Failed) StopRed else Muted,
+        fontFamily = FontFamily.Monospace,
+        fontSize = 11.sp,
+      )
+    }
+    modelDownloadHint(download)?.let { hint ->
+      Text(
+        hint,
+        color = Paper,
+        fontFamily = FontFamily.Monospace,
+        fontSize = 11.sp,
+      )
+    }
     if (reloading) {
       Text(
         "reloading model — $modelId…",
@@ -116,6 +179,8 @@ fun ModelsScreen() {
         modelRef = ref
         modelId = ref.modelId
         showSheet = false
+        download = ModelDownloadState.Idle
+        startDownload()
         observeReload()
       },
       onPickManualId = { id ->
@@ -125,6 +190,8 @@ fun ModelsScreen() {
         modelRef = null
         modelId = id
         showSheet = false
+        download = ModelDownloadState.Idle
+        startDownload()
         observeReload()
       },
       onDismiss = { showSheet = false },
