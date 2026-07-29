@@ -57,4 +57,18 @@ object RelaisError {
   /** `{"error":{"message":[message],"type":[type]}}` — the OpenAI-compatible error envelope. */
   fun json(message: String, type: String): JSONObject =
     JSONObject().put("error", JSONObject().put("message", message).put("type", type))
+
+  /**
+   * Same envelope with an OpenAI machine-readable [code] **inside** the `error` object, which is
+   * where real clients look (`error.code == "model_not_found"`).
+   *
+   * NB: three existing call sites attach `code` at the TOP level instead
+   * (`RelaisError.json(...).put("code", …)` for `unknown_template` / `queue_full`). That placement
+   * does not match OpenAI and a client keying on `error.code` misses it — a pre-existing
+   * inconsistency, deliberately left alone here because changing those shapes is a client-visible
+   * change unrelated to #180. New codes should use this function.
+   */
+  fun json(message: String, type: String, code: String): JSONObject =
+    JSONObject()
+      .put("error", JSONObject().put("message", message).put("type", type).put("code", code))
 }

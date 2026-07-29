@@ -12,26 +12,24 @@
 
 package cc.grepon.relais
 
-/**
- * Single-slot swap-on-mismatch decision (#180, first cut): should the resident engine be closed and
- * reloaded to serve a DIFFERENT model than the one currently resident?
+/*
+ * Single-slot swap-on-mismatch (#180): should the resident engine be closed and reloaded to serve a
+ * DIFFERENT model than the one currently resident?
  *
- * Scope is deliberately narrow. This node has exactly one resident engine slot (no LRU, no
- * multi-model cache — see [RelaisEngine]'s KDoc), so a "swap" is always a strict close-then-load,
- * never a hitless load-before-close (no evidence litertlm supports two simultaneously-resident
- * `Engine` objects, and phone RAM is the whole reason this feature exists). The narrow-scope guard
- * below — requiring the requested id to match [configuredModelId], not merely to differ from
- * [residentModelId] — is the actual safety boundary of this feature:
+ * This node has exactly one resident engine slot (no LRU, no multi-model cache — see [RelaisEngine]'s
+ * KDoc), so a "swap" is always a strict close-then-load, never a hitless load-before-close (no
+ * evidence litertlm supports two simultaneously-resident `Engine` objects, and phone RAM is the whole
+ * reason this feature exists).
  *
- * An HTTP client's `model` field is arbitrary, untrusted input. If [shouldSwapModel] triggered a
- * swap purely on "requested != resident", any client on the LAN could force the node to download
- * and load an arbitrary model it names, entirely unattended — new attack surface (disk fill,
- * bandwidth, a multi-GB unattended fetch) with no operator involvement. Gating the swap to "AND it
- * matches what the operator already staged via the app's Models UI ([ModelSwitch.applyRef] /
- * [ModelSwitch.applyManualId], which only persist [RelaisConfig] — they do NOT themselves force a
- * reload, which is the actual gap this issue closes)" means a request can only ever complete a swap
- * the operator initiated locally, never originate one. This is intentionally the whole feature for
- * this first cut — see the issue's own scope note before broadening it.
+ * WHERE THE SAFETY BOUNDARY LIVES. An HTTP client's `model` field is arbitrary, untrusted input. If a
+ * swap fired purely on "requested != resident", any client on the LAN could force the node to
+ * download and load a model it names, entirely unattended — disk fill, bandwidth, a multi-GB fetch
+ * with no operator involvement. The first cut bought that safety by only ever swapping to
+ * [RelaisConfig.modelId], the operator's own staged selection. That guard is GONE: the property is
+ * now carried by [RelaisModelRegistry], which only gains an entry when a provision SUCCEEDS LOCALLY.
+ * A request can therefore still only complete a swap the operator already initiated, never originate
+ * one — but it may now name any model actually on the device, not just the configured one. Do not
+ * widen eligibility past registry membership without replacing that property with another.
  *
  * Pure JVM (no Context, no Engine, no [RelaisEngine]) so the decision is unit-testable in isolation —
  * mirrors [shouldUnloadIdleEngine] in RelaisIdleTtl.kt. The actual concurrency/lock-ordering safety
@@ -39,31 +37,58 @@ package cc.grepon.relais
  * NOT expressed here — it lives in [RelaisEngine.ensureModelSwapInBackground], which reuses
  * [RelaisEngine.startupInProgress] (the same "still coming up, not dead" signal every existing
  * not-ready window already relies on — see that function's KDoc and [RelaisWatchdogReceiver]).
- *
- * @param residentModelId [RelaisEngine.residentModelId] — the id actually loaded right now, or null
- *   before any successful init.
- * @param requestedModelId the inbound request's `model` field, or null/blank if the client omitted it.
- * @param configuredModelId [RelaisConfig.modelId] — the operator's currently-staged selection.
- * @param isReady [RelaisEngine.isReady] — nothing to swap away from if no engine is resident yet;
- *   let the normal not-ready path ([RelaisEngine.ensureInitializedInBackground] / lazy
- *   [RelaisEngine.ensureInitialized] on the next request) handle that case instead.
- *
- * INVARIANT this function silently depends on: `RelaisHttpServer.DEFAULT_MODEL` (substituted in for
- * [requestedModelId] when a request omits `model` entirely) must never be normalized to equal a real
- * [configuredModelId]/[residentModelId] — today it's a short cosmetic alias (`"gemma-4-e4b-it"`) that
- * can never match a full HF-style id, so an omitted-`model` request correctly never swaps, but that's
- * accidental unless this stays true. See the comment at `DEFAULT_MODEL`'s definition.
  */
-fun shouldSwapModel(
+
+/**
+ * What to do with a request's `model` field (#180, full feature).
+ *
+ * Replaces the first cut's boolean because the answer is genuinely three-way: serve, swap, or
+ * refuse. A boolean could not express "the client named a model this node does not have", so an
+ * unknown id silently fell through and was answered by whatever happened to be resident — the
+ * drop-in-fidelity gap this issue exists to close.
+ */
+sealed interface ModelRequestOutcome {
+  /** Serve the resident model: no `model` field, not ready yet, or it already matches. */
+  data object ServeResident : ModelRequestOutcome
+
+  /** [targetModelId] is provisioned locally — kick a single-slot swap and have the client retry. */
+  data class SwapThenRetry(val targetModelId: String) : ModelRequestOutcome
+
+  /** The client named a model that is not on this device. Answer 404 `model_not_found`. */
+  data class NotProvisioned(val requestedModelId: String) : ModelRequestOutcome
+}
+
+/**
+ * Decide what a request's `model` field means for this node.
+ *
+ * [requestedModelId] MUST be the RAW field — `null` when the client omitted it. Do **not** pass
+ * `RelaisHttpServer.DEFAULT_MODEL` in its place: that cosmetic alias matches no real id, so
+ * substituting it would turn every omitted-`model` request into a 404. (The first cut tolerated the
+ * substitution because an unmatched id merely meant "don't swap"; under [NotProvisioned] the same
+ * value becomes a hard client-visible error. This is the one behavioural landmine in the change.)
+ *
+ * [provisionedModelIds] comes from [RelaisModelRegistry] — models actually on disk. Membership is
+ * what makes a swap legal, and it is why an arbitrary client string still cannot trigger a
+ * download: the registry only grows on a locally-successful provision. [configuredModelId] stays
+ * swap-eligible on its own so the operator's current selection works before it has been recorded.
+ *
+ * Pure JVM (no Context, no Engine) so the whole matrix is unit-tested in isolation — mirrors
+ * [shouldUnloadIdleEngine] in RelaisIdleTtl.kt.
+ */
+fun resolveModelRequest(
   residentModelId: String?,
   requestedModelId: String?,
   configuredModelId: String,
+  provisionedModelIds: Set<String>,
   isReady: Boolean,
-): Boolean {
-  if (!isReady) return false // nothing resident to swap away from
-  if (requestedModelId.isNullOrBlank()) return false // no explicit ask -> serve whatever is resident
-  if (requestedModelId == residentModelId) return false // already serving the requested model
-  // Narrow-scope guard: only swap TO the operator's currently-configured selection, never to an
-  // arbitrary client-supplied id that isn't what's staged — see this file's KDoc for why.
-  return requestedModelId == configuredModelId
+): ModelRequestOutcome {
+  // Not ready: the normal not-ready path (503) owns this. Refusing here would answer 404 for a
+  // model the node may well have, purely because it hasn't finished coming up.
+  if (!isReady) return ModelRequestOutcome.ServeResident
+  val requested = requestedModelId?.takeIf { it.isNotBlank() } ?: return ModelRequestOutcome.ServeResident
+  if (requested == residentModelId) return ModelRequestOutcome.ServeResident
+  if (requested == configuredModelId || requested in provisionedModelIds) {
+    return ModelRequestOutcome.SwapThenRetry(requested)
+  }
+  return ModelRequestOutcome.NotProvisioned(requested)
 }

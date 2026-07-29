@@ -76,4 +76,71 @@ class RelaisProvisionerTest {
       savedPath?.let { RelaisConfig.setModelPath(ctx, it) }
     }
   }
+
+  /**
+   * Drift guard covers the #180 registry, not just the persisted path.
+   *
+   * A registry entry and `KEY_MODEL_PATH` make the SAME claim — "this model id lives at this file" —
+   * and #180 made the registry's copy load-bearing: `swapTargetFor(id)` hands its path straight to
+   * `ensureInitialized(modelPath = …, modelId = id)`. So a mismatched pair does not merely waste a
+   * swap, it makes the node serve one model's weights stamped with another model's id, and it never
+   * self-corrects (every later request for that id matches `residentModelId` → ServeResident).
+   *
+   * The bug this pins: `recordProvisioned` ran ABOVE the drift gate and re-read the CURRENT
+   * `RelaisConfig.modelId`, so an operator switching models mid-download — the exact issue-#11 race
+   * the adjacent guard exists to stop, and a window minutes wide for a multi-GB fetch — bound the
+   * NEW id to the OLD model's file, permanently.
+   */
+  @Test
+  fun `a model id change mid-provision records no registry entry`() {
+    val ctx = ApplicationProvider.getApplicationContext<android.app.Application>()
+    val savedModelId = RelaisConfig.modelId(ctx)
+    val savedRegistry = RelaisConfig.provisionedModels(ctx)
+    val fileForA = File(ctx.cacheDir, "drift-model-a.litertlm")
+
+    try {
+      RelaisConfig.setProvisionedModels(ctx, emptyList())
+      fileForA.writeBytes(byteArrayOf(0x00)) // must exist, or the read-prune would mask the bug
+      // The operator switched to B while A was still downloading.
+      RelaisConfig.setModelId(ctx, "org/model-B")
+
+      RelaisModelProvisioner.remember(ctx, fileForA.absolutePath, persistForId = "org/model-A")
+
+      assertEquals(
+        "a path provisioned for org/model-A must never be recorded under org/model-B",
+        emptyList<ProvisionedModel>(),
+        RelaisConfig.provisionedModels(ctx),
+      )
+    } finally {
+      fileForA.delete()
+      RelaisConfig.setModelId(ctx, savedModelId)
+      RelaisConfig.setProvisionedModels(ctx, savedRegistry)
+    }
+  }
+
+  /** The other half of the gate: with no drift, the id/path pair IS recorded, and keyed correctly. */
+  @Test
+  fun `an undrifted provision is recorded under the id it was provisioned for`() {
+    val ctx = ApplicationProvider.getApplicationContext<android.app.Application>()
+    val savedModelId = RelaisConfig.modelId(ctx)
+    val savedRegistry = RelaisConfig.provisionedModels(ctx)
+    val file = File(ctx.cacheDir, "steady-model.litertlm")
+
+    try {
+      RelaisConfig.setProvisionedModels(ctx, emptyList())
+      file.writeBytes(byteArrayOf(0x00))
+      RelaisConfig.setModelId(ctx, "org/steady")
+
+      RelaisModelProvisioner.remember(ctx, file.absolutePath, persistForId = "org/steady")
+
+      val recorded = RelaisConfig.provisionedModels(ctx)
+      assertEquals(1, recorded.size)
+      assertEquals("org/steady", recorded.single().modelId)
+      assertEquals(file.absolutePath, recorded.single().path)
+    } finally {
+      file.delete()
+      RelaisConfig.setModelId(ctx, savedModelId)
+      RelaisConfig.setProvisionedModels(ctx, savedRegistry)
+    }
+  }
 }

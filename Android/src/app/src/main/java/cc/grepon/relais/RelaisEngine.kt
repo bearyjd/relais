@@ -293,12 +293,21 @@ object RelaisEngine {
    * The model id actually resolved/loaded by the most recent successful [ensureInitialized] — null
    * before any successful init. The source of truth for "is the resident engine serving what a
    * request just asked for" (#180): compared against an inbound request's `model` field via
-   * [shouldSwapModel] to decide whether a single-slot swap is needed. Set unconditionally on every
+   * [resolveModelRequest] to decide whether a single-slot swap is needed. Set unconditionally on every
    * successful init (idle-reload, an ordinary request, or [ensureModelSwapInBackground]) — never
    * assumed.
    */
   @Volatile
   var residentModelId: String? = null
+    private set
+
+  /**
+   * On-disk path of the resident engine, tracked alongside [residentModelId] so a FAILED swap can
+   * reload what was working. Without it, a swap that shuts the old engine down and then fails to
+   * initialize the new one leaves the node with no engine at all.
+   */
+  @Volatile
+  var residentModelPath: String? = null
     private set
 
   /** Guards [ensureModelSwapInBackground] so a burst of mismatched requests dispatches at most one swap thread. */
@@ -339,6 +348,7 @@ object RelaisEngine {
       ExperimentalFlags.enableSpeculativeDecoding = false
       engine = buildResidentEngine(modelPath, cacheDir, context.applicationInfo.nativeLibraryDir)
       residentModelId = modelId // #180: the source of truth for what the resident engine is serving
+      residentModelPath = modelPath
       lastActivityAtMs = System.currentTimeMillis() // idle-TTL clock (#178): init counts as activity
       wasIdleUnloaded = false // a real init attempt is underway; restore normal not-ready semantics
     }
@@ -373,8 +383,11 @@ object RelaisEngine {
   }
 
   /**
-   * Kicks a background swap to the operator's currently-configured model when it differs from what's
-   * resident (#180, single-slot swap-on-mismatch, first cut). Single-flight (a burst of mismatched
+   * Kicks a background swap to [target] — the model the REQUEST named, resolved from
+   * [RelaisModelRegistry] so its on-disk path is already known and no network is needed (#180,
+   * single-slot swap-on-mismatch). [target] is null only when the caller could not find a registry
+   * entry, i.e. the operator's configured selection has not been recorded yet; the configured model
+   * is then resolved the long way, which may block on the allowlist. Single-flight (a burst of mismatched
    * requests dispatches at most one swap thread) — mirrors [ensureInitializedInBackground]'s
    * [backgroundReloadDispatching] pattern with its own dedicated guard, since the two can legitimately
    * race independently (an idle-reload and a swap are different triggers).
@@ -393,7 +406,7 @@ object RelaisEngine {
    * resident engine because one bad request triggered a swap attempt. Only [shutdown] + the actual
    * reload happen once the new model is confirmed present on disk.
    */
-  fun ensureModelSwapInBackground(context: Context) {
+  fun ensureModelSwapInBackground(context: Context, target: ProvisionedModel? = null) {
     if (!swapDispatching.compareAndSet(false, true)) return // a swap is already dispatching
     thread(name = "relais-model-swap") {
       try {
@@ -405,9 +418,16 @@ object RelaisEngine {
         // preference a second time after resolveModel() returns — reusing configuredModelId for the
         // final ensureInitialized() call guarantees at least this function's own view of "which model
         // id" stays single-sourced for the rest of the swap.
-        val configuredModelId = RelaisConfig.modelId(context)
-        val model = RelaisModelProvisioner.resolveModel(context) // resolves RelaisConfig.modelId(context); blocking, may hit network
-        val path = model.getPath(context)
+        // #180 (full): [target] names the model the REQUEST asked for, which is not necessarily the
+        // operator's configured one now that any provisioned model is swap-eligible. Loading the
+        // configured model here regardless — as the first cut did, correctly, because its guard made
+        // requested == configured by construction — would 503 "swapping", reload the SAME model, and
+        // 503 the client's retry forever. A targeted swap needs no network: the registry already
+        // holds the on-disk path.
+        val configuredModelId = target?.modelId ?: RelaisConfig.modelId(context)
+        val path =
+          target?.path
+            ?: RelaisModelProvisioner.resolveModel(context).getPath(context) // blocking, may hit network
         if (!File(path).exists()) {
           Log.w(TAG, "model swap target not provisioned on disk: $path — leaving resident engine untouched")
           return@thread
@@ -420,8 +440,29 @@ object RelaisEngine {
         // them here is safe: any other caller blocks on `lock` for the FULL close+reload, then sees the
         // fully-updated engine/residentModelId together.
         synchronized(lock) {
+          // Capture what is working BEFORE tearing it down. `File.exists()` is the only pre-check we
+          // can do — whether a model actually LOADS is unknowable until init runs — and the allowlist
+          // ships models that download fine but fail engine-create (e.g. Qwen2.5-1.5B on litertlm
+          // 0.12.0: "Failed to parse LlmMetadata"). #180 makes that reachable by request, since any
+          // provisioned model is now a legal swap target. Without this rollback, one such request
+          // would take a healthy node down until an operator restarted it.
+          val previousPath = residentModelPath
+          val previousId = residentModelId
           shutdown() // close the OLD engine only now that the NEW one is confirmed present on disk
-          ensureInitialized(context, modelPath = path, modelId = configuredModelId)
+          try {
+            ensureInitialized(context, modelPath = path, modelId = configuredModelId)
+          } catch (t: Throwable) {
+            Log.w(TAG, "swap to $configuredModelId failed (${t.message}); restoring $previousId")
+            if (previousPath != null && previousId != null) {
+              runCatching { ensureInitialized(context, modelPath = previousPath, modelId = previousId) }
+                .onFailure { Log.e(TAG, "could not restore previous model $previousId: ${it.message}") }
+            }
+            // Deliberately NOT rethrown. The failure is fully handled here — rolled back and logged —
+            // and this is a bare thread: the outer handler catches Exception, so an Error (a native
+            // engine-create can surface UnsatisfiedLinkError or OutOfMemoryError, and #180 makes
+            // models that fail to load reachable by request) would escape it, hit Android's default
+            // uncaught handler, and kill the WHOLE node process — moments after the rollback saved it.
+          }
         }
       } catch (e: Exception) {
         Log.w(TAG, "model swap failed: ${e.message}")

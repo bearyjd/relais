@@ -35,6 +35,7 @@ object RelaisConfig {
   private const val KEY_SHOULD_RUN = "should_run"
   private const val KEY_MODEL_ID = "model_id"
   private const val KEY_MODEL_REF = "model_ref"
+  private const val KEY_PROVISIONED_MODELS = "provisioned_models"
   private const val KEY_HF_TOKEN = "hf_token"
   private const val KEY_MODEL_PATH = "model_path"
   private const val KEY_IMAGE_MODEL_ID = "image_model_id"
@@ -268,6 +269,18 @@ object RelaisConfig {
     val edit = p.edit().putString(KEY_MODEL_REF, json).putString(KEY_MODEL_ID, ref.modelId)
     if (changed) edit.remove(KEY_MODEL_PATH)
     edit.apply()
+  }
+
+  /**
+   * Models provisioned on THIS device (#180). Distinct from [modelRef], which holds only the single
+   * current selection and is cleared when the id diverges — this is the durable inventory a
+   * per-request model swap resolves against.
+   */
+  fun provisionedModels(context: Context): List<ProvisionedModel> =
+    decodeProvisioned(prefs(context).getString(KEY_PROVISIONED_MODELS, null))
+
+  fun setProvisionedModels(context: Context, entries: List<ProvisionedModel>) {
+    prefs(context).edit().putString(KEY_PROVISIONED_MODELS, encodeProvisioned(entries)).apply()
   }
 
   /** Drops the persisted ref (e.g. reverting to a pure allowlist id). Leaves [KEY_MODEL_ID] intact. */

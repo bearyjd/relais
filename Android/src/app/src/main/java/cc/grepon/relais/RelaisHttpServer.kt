@@ -77,12 +77,12 @@ internal const val MAX_BODY_BYTES = 32 * 1024 * 1024 // 32 MB cap (base64 image/
 private const val MAX_MULTIPART_IMAGE_BYTES = 12 * 1024 * 1024 // 12 MB decoded image
 private const val MAX_HEADER_LINES = 64 // bound header parsing (slowloris / header-flood)
 private const val MAX_HEADER_BYTES = 16 * 1024
-// INVARIANT (#180 review, MEDIUM finding 3): this must never be normalized to equal
-// RelaisConfig.DEFAULT_MODEL_ID / any real configured model id. shouldSwapModel() (RelaisModelSwap.kt)
-// does exact string equality between a request's `model` field and RelaisConfig.modelId/
-// residentModelId (full HF-style ids); today DEFAULT_MODEL is a short cosmetic alias that can never
-// equal one of those, so an omitted-`model` request correctly never triggers a swap — but that safety
-// is accidental, not enforced anywhere, and silently depends on this constant staying a short alias.
+// A cosmetic display alias, and NOTHING routes on it any more (#180, full feature). The decision in
+// resolveModelRequest() and the response echo both take the RAW `model` field, so this value never
+// reaches either — it survives only as the last-resort echo when a request omits `model` AND no
+// engine is resident. The old INVARIANT here ("must never equal a real configured id, or an
+// omitted-model request would trigger a swap") described a defence the code no longer relies on;
+// it is gone rather than left to be trusted.
 private const val DEFAULT_MODEL = "gemma-4-e4b-it"
 private const val RATE_LIMIT = 30 // requests
 private const val RATE_WINDOW_MS = 60_000L // per 60s, per client IP
@@ -906,7 +906,8 @@ class RelaisHttpServer(
   private fun handleModels(ctx: RequestContext) {
     val refs = RelaisModelCatalog.curatedModels()
     val fallback = RelaisConfig.modelId(context)
-    ctx.send(200, buildModelsResponse(refs, fallback))
+    val onDisk = provisionedIds(provisionedOnDisk())
+    ctx.send(200, buildModelsResponse(refs, fallback, onDisk))
   }
 
   private fun handleClientConfig(ctx: RequestContext) {
@@ -1114,42 +1115,98 @@ class RelaisHttpServer(
 
   // --- OpenAI-compatible chat completions ---
 
+  /** Registry entries whose file still exists — see the read-prune note in [rejectIfModelUnavailable]. */
+  private fun provisionedOnDisk(): List<ProvisionedModel> =
+    pruneMissingProvisioned(RelaisConfig.provisionedModels(context)) { java.io.File(it).exists() }
+
   /**
-   * Issue #180 (single-slot swap-on-mismatch, first cut): if the request's `model` field names the
-   * operator's currently-configured model (not just any client-supplied string — see
-   * [shouldSwapModel]'s KDoc for the narrow-scope guard) and it differs from what's actually
-   * resident, kick a background swap and tell the client to retry rather than silently serving from
-   * the wrong (stale) resident model. Returns true iff a 503 was sent (caller must return immediately
-   * without generating). [endpoint] labels the metric correctly per caller; [errorBody] lets each
-   * caller use its own error envelope shape (OpenAI's flat `RelaisError.json` vs Anthropic's nested
+   * Issue #180 (full feature): decide what the request's `model` field means and answer for it when
+   * the answer is not "serve the resident model". Delegates to [resolveModelRequest] and acts on the
+   * three-way outcome — swap-and-retry (503 + `Retry-After`) for a model provisioned on this device,
+   * 404 `model_not_found` for one that isn't, nothing for the serve case.
+   *
+   * Eligibility is membership in [RelaisModelRegistry], NOT (as in the first cut) equality with the
+   * operator's configured id — see that file's KDoc for why the registry carries the safety boundary
+   * now: it only grows on a locally-successful provision, so a client-named model can complete a
+   * download the operator already made but can never originate one.
+   *
+   * Returns true iff a response was already sent (caller must return immediately without
+   * generating). [endpoint] labels the metric correctly per caller; [errorBody] and [notFoundBody]
+   * let each caller use its own envelope shape (OpenAI's `RelaisError.json` vs Anthropic's
    * `buildAnthropicError`) rather than leaking one shape onto the other's wire format.
    */
-  private fun rejectAndSwapIfModelMismatched(
+  private fun rejectIfModelUnavailable(
     sock: java.net.Socket,
     endpoint: String,
     requestedModel: String?,
     errorBody: (message: String) -> JSONObject,
+    notFoundBody: (message: String) -> JSONObject = errorBody,
   ): Boolean {
     if (!RelaisEngine.isReady) return false // let the normal not-ready path (503 elsewhere) handle this
-    if (!shouldSwapModel(RelaisEngine.residentModelId, requestedModel, RelaisConfig.modelId(context), RelaisEngine.isReady)) {
-      return false
+    val outcome =
+      resolveModelRequest(
+        residentModelId = RelaisEngine.residentModelId,
+        requestedModelId = requestedModel,
+        configuredModelId = RelaisConfig.modelId(context),
+        // Pruned on READ, not just on write: entries go stale whenever a model file disappears
+        // (storage cleared, model deleted, side-load removed) and nothing re-provisions afterwards.
+        // Serving a swap for a model that is no longer on disk would 503 the client, then fail the
+        // swap deep in init — so eligibility must reflect the filesystem, not the last write.
+        provisionedModelIds = provisionedIds(provisionedOnDisk()),
+        isReady = RelaisEngine.isReady,
+      )
+    return when (outcome) {
+      is ModelRequestOutcome.ServeResident -> false
+      is ModelRequestOutcome.SwapThenRetry -> {
+        // Hand the swap the REQUESTED model's registry entry (path + id). Null only when the target
+        // is the operator's configured selection that hasn't been recorded yet, where the engine's
+        // configured-model fallback is exactly right.
+        val target =
+          swapTargetFor(outcome.targetModelId, provisionedOnDisk())
+        RelaisEngine.ensureModelSwapInBackground(context, target)
+        RelaisMetrics.recordRequest(endpoint, 503)
+        respond(
+          sock,
+          503,
+          errorBody("resident model differs from the requested model; swapping — retry shortly"),
+          listOf("Retry-After: 25"),
+        )
+        true
+      }
+      is ModelRequestOutcome.NotProvisioned -> {
+        // 404 rather than silently answering from the resident model: the client asked for X and
+        // would otherwise get Y with no way to tell. Matches OpenAI/Ollama/LM Studio.
+        RelaisMetrics.recordRequest(endpoint, 404)
+        respond(
+          sock,
+          404,
+          notFoundBody(
+            "model '${outcome.requestedModelId}' is not provisioned on this node; " +
+              "see GET /v1/models for what is available"
+          ),
+        )
+        true
+      }
     }
-    RelaisEngine.ensureModelSwapInBackground(context)
-    RelaisMetrics.recordRequest(endpoint, 503)
-    respond(
-      sock,
-      503,
-      errorBody("resident model differs from the requested model; swapping — retry shortly"),
-      listOf("Retry-After: 25"),
-    )
-    return true
   }
 
   private fun handleOpenAi(sock: java.net.Socket, body: JSONObject, sessionKey: String? = null) {
-    val model = body.optString("model", DEFAULT_MODEL)
-    if (rejectAndSwapIfModelMismatched(sock, "/v1/chat/completions", model) { message ->
-        RelaisError.json(message, RelaisError.SERVICE_UNAVAILABLE)
-      }
+    // RAW field — null when the client omitted `model`. Feeding DEFAULT_MODEL to the decision would
+    // 404 every omitted-model request, the single most common shape there is.
+    val requestedModel = body.optString("model", "").takeIf { it.isNotBlank() }
+    // Echo: the client's own id when it sent one (the OpenAI drop-in contract #192 settled),
+    // otherwise the model ACTUALLY serving — never DEFAULT_MODEL. That alias is in no registry and
+    // in no /v1/models listing, so echoing it hands back an id that now 404s the moment a proxy
+    // sends it back, a loop #180's 404-on-unknown policy would otherwise have created itself.
+    val model = requestedModel ?: RelaisEngine.residentModelId ?: DEFAULT_MODEL
+    if (
+      rejectIfModelUnavailable(
+        sock,
+        "/v1/chat/completions",
+        requestedModel,
+        { message -> RelaisError.json(message, RelaisError.SERVICE_UNAVAILABLE) },
+        { message -> RelaisError.json(message, RelaisError.INVALID_REQUEST, "model_not_found") },
+      )
     ) {
       return
     }
@@ -1305,8 +1362,16 @@ class RelaisHttpServer(
    * `[DONE]` sentinel (see [SseWriter]), and the Anthropic error envelope (see [buildAnthropicError]).
    */
   private fun handleAnthropicMessages(sock: java.net.Socket, body: JSONObject, sessionKey: String? = null) {
-    val model = body.optString("model", DEFAULT_MODEL)
-    if (rejectAndSwapIfModelMismatched(sock, "/v1/messages", model) { message -> buildAnthropicError(message, "overloaded_error") }) {
+    // RAW field + resident-model echo — see the /v1/chat/completions call site for both rationales.
+    val requestedModel = body.optString("model", "").takeIf { it.isNotBlank() }
+    val model = requestedModel ?: RelaisEngine.residentModelId ?: DEFAULT_MODEL
+    if (rejectIfModelUnavailable(
+      sock,
+      "/v1/messages",
+      requestedModel,
+      { message -> buildAnthropicError(message, "overloaded_error") },
+      { message -> buildAnthropicError(message, "not_found_error") },
+    )) {
       return
     }
 
@@ -1986,7 +2051,11 @@ private const val MODEL_CREATED_EPOCH = 0L
  * Each entry includes a stable `created` epoch so strict OpenAI clients (older openai-python) that
  * require the field do not reject the response.
  */
-internal fun buildModelsResponse(refs: List<RelaisModelRef>, fallbackId: String): JSONObject {
+internal fun buildModelsResponse(
+  refs: List<RelaisModelRef>,
+  fallbackId: String,
+  provisionedIds: Set<String> = emptySet(),
+): JSONObject {
   val data = JSONArray()
   if (refs.isEmpty()) {
     data.put(
@@ -1995,6 +2064,7 @@ internal fun buildModelsResponse(refs: List<RelaisModelRef>, fallbackId: String)
         .put("object", "model")
         .put("owned_by", "node")
         .put("created", MODEL_CREATED_EPOCH)
+        .put("provisioned", fallbackId in provisionedIds)
     )
   } else {
     refs.forEach { ref ->
@@ -2002,6 +2072,10 @@ internal fun buildModelsResponse(refs: List<RelaisModelRef>, fallbackId: String)
         JSONObject()
           .put("id", ref.modelId)
           .put("object", "model")
+          // #180: non-standard but load-bearing — a request naming a NOT-provisioned model now 404s,
+          // so the catalog must say which entries can actually be served rather than listing all of
+          // them as if interchangeable.
+          .put("provisioned", ref.modelId in provisionedIds)
           .put("owned_by", ref.source)
           .put("created", MODEL_CREATED_EPOCH)
       )
