@@ -287,10 +287,16 @@ object RelaisModelProvisioner {
    * Add (or refresh) this model in the provisioned registry (#180), pruning entries whose file has
    * since disappeared. Best-effort: a registry write must never fail a provision that succeeded —
    * the model IS on disk either way, and a missing registry entry only costs a swap opportunity.
+   *
+   * [id] MUST be the id [path] was actually provisioned FOR, never a fresh read of
+   * [RelaisConfig.modelId] — see [remember]'s drift gate for why. A registry entry binds an id to a
+   * file, and #180 makes that binding load-bearing: `swapTargetFor(id)` hands this exact path to
+   * `ensureInitialized(modelPath = …, modelId = id)`, so a mismatched pair makes the node serve one
+   * model's weights stamped with another model's id — permanently, since every later request for
+   * that id then matches `residentModelId` and short-circuits to ServeResident.
    */
-  private fun recordProvisioned(context: Context, path: String) {
+  private fun recordProvisioned(context: Context, path: String, id: String) {
     runCatching {
-        val id = RelaisConfig.modelId(context)
         val display = RelaisConfig.modelRef(context)?.takeIf { it.modelId == id }?.displayName ?: id
         val updated =
           upsertProvisioned(
@@ -305,15 +311,21 @@ object RelaisModelProvisioner {
 
   internal fun remember(context: Context, path: String, persistForId: String? = null): String {
     cachedPath = path
-    // #180: the ONE funnel both the already-present and freshly-downloaded paths pass through, so
-    // it is where the provisioned-model registry gains entries. Recording only on local success is
-    // what keeps a per-request swap unable to originate a download.
-    recordProvisioned(context, path)
     // Read the current id once: it drives the gate AND the drift warning, and re-reading risks a
     // TOCTOU mismatch between the decision and the logged value.
     val currentId = RelaisConfig.modelId(context)
     if (shouldPersistPath(persistForId, currentId)) {
       RelaisConfig.setModelPath(context, path)
+      // #180: the ONE funnel both the already-present and freshly-downloaded paths pass through, so
+      // it is where the provisioned-model registry gains entries. Recording only on local success is
+      // what keeps a per-request swap unable to originate a download.
+      //
+      // INSIDE the drift gate, and keyed on the id this path was provisioned FOR: the registry entry
+      // and the persisted path are the same claim ("this id lives at this file"), so drift must
+      // refuse both. Recording it above the gate — with a fresh read of RelaisConfig.modelId —
+      // reintroduced the issue-#11 race one line before the guard that exists to stop it: an
+      // operator switching models mid-download would bind the NEW id to the OLD model's file.
+      recordProvisioned(context, path, persistForId ?: currentId)
     } else {
       Log.w(
         TAG,

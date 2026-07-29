@@ -293,7 +293,7 @@ object RelaisEngine {
    * The model id actually resolved/loaded by the most recent successful [ensureInitialized] — null
    * before any successful init. The source of truth for "is the resident engine serving what a
    * request just asked for" (#180): compared against an inbound request's `model` field via
-   * [shouldSwapModel] to decide whether a single-slot swap is needed. Set unconditionally on every
+   * [resolveModelRequest] to decide whether a single-slot swap is needed. Set unconditionally on every
    * successful init (idle-reload, an ordinary request, or [ensureModelSwapInBackground]) — never
    * assumed.
    */
@@ -383,8 +383,11 @@ object RelaisEngine {
   }
 
   /**
-   * Kicks a background swap to the operator's currently-configured model when it differs from what's
-   * resident (#180, single-slot swap-on-mismatch, first cut). Single-flight (a burst of mismatched
+   * Kicks a background swap to [target] — the model the REQUEST named, resolved from
+   * [RelaisModelRegistry] so its on-disk path is already known and no network is needed (#180,
+   * single-slot swap-on-mismatch). [target] is null only when the caller could not find a registry
+   * entry, i.e. the operator's configured selection has not been recorded yet; the configured model
+   * is then resolved the long way, which may block on the allowlist. Single-flight (a burst of mismatched
    * requests dispatches at most one swap thread) — mirrors [ensureInitializedInBackground]'s
    * [backgroundReloadDispatching] pattern with its own dedicated guard, since the two can legitimately
    * race independently (an idle-reload and a swap are different triggers).
@@ -454,7 +457,11 @@ object RelaisEngine {
               runCatching { ensureInitialized(context, modelPath = previousPath, modelId = previousId) }
                 .onFailure { Log.e(TAG, "could not restore previous model $previousId: ${it.message}") }
             }
-            throw t
+            // Deliberately NOT rethrown. The failure is fully handled here — rolled back and logged —
+            // and this is a bare thread: the outer handler catches Exception, so an Error (a native
+            // engine-create can surface UnsatisfiedLinkError or OutOfMemoryError, and #180 makes
+            // models that fail to load reachable by request) would escape it, hit Android's default
+            // uncaught handler, and kill the WHOLE node process — moments after the rollback saved it.
           }
         }
       } catch (e: Exception) {
