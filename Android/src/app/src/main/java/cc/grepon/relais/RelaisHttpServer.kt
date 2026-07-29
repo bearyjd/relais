@@ -1144,7 +1144,12 @@ class RelaisHttpServer(
     return when (outcome) {
       is ModelRequestOutcome.ServeResident -> false
       is ModelRequestOutcome.SwapThenRetry -> {
-        RelaisEngine.ensureModelSwapInBackground(context)
+        // Hand the swap the REQUESTED model's registry entry (path + id). Null only when the target
+        // is the operator's configured selection that hasn't been recorded yet, where the engine's
+        // configured-model fallback is exactly right.
+        val target =
+          swapTargetFor(outcome.targetModelId, RelaisConfig.provisionedModels(context))
+        RelaisEngine.ensureModelSwapInBackground(context, target)
         RelaisMetrics.recordRequest(endpoint, 503)
         respond(
           sock,

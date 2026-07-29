@@ -98,6 +98,24 @@ class RelaisModelRegistryTest {
     assertEquals(listOf("good"), out.map { it.modelId })
   }
 
+  // ---- swap targeting: the invariant that broke when eligibility widened ----
+
+  @Test fun `the swap target is the REQUESTED model, not the configured one`() {
+    // The bug this guards: ensureModelSwapInBackground loaded RelaisConfig.modelId. That was correct
+    // while the guard forced requested == configured, but once ANY provisioned model became
+    // eligible it meant 503 "swapping" -> reload the SAME model -> 503 the retry, forever.
+    val registry = listOf(m("configured", "/p/configured"), m("requested", "/p/requested"))
+    val target = swapTargetFor("requested", registry)
+    assertEquals("requested", target?.modelId)
+    assertEquals("/p/requested", target?.path)
+  }
+
+  @Test fun `an unrecorded target yields null so the engine uses its configured-model fallback`() {
+    // The operator's just-selected model may not be recorded yet; null is the correct signal.
+    assertEquals(null, swapTargetFor("not-yet-recorded", listOf(m("a"))))
+    assertEquals(null, swapTargetFor("anything", emptyList()))
+  }
+
   @Test fun `display name falls back to the model id when absent`() {
     assertEquals("good", decodeProvisioned("""[{"model_id":"good","path":"/p"}]""").single().displayName)
   }

@@ -90,3 +90,18 @@ fun decodeProvisioned(json: String?): List<ProvisionedModel> {
     }
     .getOrDefault(emptyList())
 }
+
+/**
+ * The registry entry a [ModelRequestOutcome.SwapThenRetry] should load.
+ *
+ * Exists to make one invariant explicit and testable: the swap target is the **requested** model,
+ * never the operator's configured one. They coincided under #180's first cut (its guard only allowed
+ * `requested == configured`), so `ensureModelSwapInBackground` simply loaded the configured model.
+ * Once ANY provisioned model became eligible that stopped being true, and loading the configured
+ * model would 503 "swapping", reload the same model, and 503 the retry forever.
+ *
+ * Returns null when the target isn't in the registry — the operator's just-selected model that
+ * hasn't been recorded yet, where the engine's configured-model fallback is correct.
+ */
+fun swapTargetFor(targetModelId: String, provisioned: List<ProvisionedModel>): ProvisionedModel? =
+  provisioned.firstOrNull { it.modelId == targetModelId }
