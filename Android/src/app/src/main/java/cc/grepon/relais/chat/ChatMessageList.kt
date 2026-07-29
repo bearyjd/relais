@@ -30,6 +30,10 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -39,6 +43,7 @@ import cc.grepon.relais.Line
 import cc.grepon.relais.Muted
 import cc.grepon.relais.Panel
 import cc.grepon.relais.Paper
+import cc.grepon.relais.StopRed
 import cc.grepon.relais.data.ChatTurn
 import cc.grepon.relais.ui.common.BufferedFadingMarkdownText
 import cc.grepon.relais.ui.common.MarkdownText
@@ -59,6 +64,13 @@ fun ChatMessageList(
   onCopy: (String) -> Unit,
   onRegenerate: (ChatTurn) -> Unit,
   onEditResend: (ChatTurn, String) -> Unit,
+  // Required, not defaulted: a no-op default would let a caller silently drop speech entirely and
+  // still compile, ship, and pass CI with the feature inert.
+  speechState: SpeechState,
+  speechOffered: Boolean,
+  onSpeak: (ChatTurn) -> Unit,
+  onStopSpeaking: () -> Unit,
+  onSpeechNoticeShown: (String) -> Unit,
   modifier: Modifier = Modifier,
 ) {
   val listState = rememberLazyListState()
@@ -76,7 +88,16 @@ fun ChatMessageList(
       if (turn.role == "user") {
         UserTurnRow(turn = turn, onCopy = onCopy, onEditResend = onEditResend)
       } else {
-        AssistantTurnRow(turn = turn, onCopy = onCopy, onRegenerate = onRegenerate)
+        AssistantTurnRow(
+          turn = turn,
+          onCopy = onCopy,
+          onRegenerate = onRegenerate,
+          speechState = speechState,
+          speechOffered = speechOffered,
+          onSpeak = onSpeak,
+          onStopSpeaking = onStopSpeaking,
+          onSpeechNoticeShown = onSpeechNoticeShown,
+        )
       }
     }
     if (showStreamingBubble) {
@@ -156,6 +177,11 @@ private fun AssistantTurnRow(
   turn: ChatTurn,
   onCopy: (String) -> Unit,
   onRegenerate: (ChatTurn) -> Unit,
+  speechState: SpeechState,
+  speechOffered: Boolean,
+  onSpeak: (ChatTurn) -> Unit,
+  onStopSpeaking: () -> Unit,
+  onSpeechNoticeShown: (String) -> Unit,
 ) {
   MarkdownText(
     text = turn.content,
@@ -177,20 +203,81 @@ private fun AssistantTurnRow(
   Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
     CopyLabel(text = turn.content, onCopy = onCopy)
     ActionLabel(text = "REGEN", onClick = { onRegenerate(turn) })
+    // Speech is offered only when a TTS engine is registered AND this turn is worth reading aloud
+    // (an `[error]` turn is not) — otherwise the row keeps its original two actions exactly.
+    if (speechOffered && turnIsSpeakable(turn.answeredByBackend, turn.content)) {
+      SpeakLabel(
+        turn = turn,
+        state = speechState,
+        onSpeak = onSpeak,
+        onStopSpeaking = onStopSpeaking,
+        onNoticeShown = onSpeechNoticeShown,
+      )
+    }
   }
 }
 
+/**
+ * SPEAK / STOP / status label for one assistant turn (#211). All of the state→label/enablement logic
+ * lives in the pure helpers in `ChatSpeech.kt`; this composable only renders and dispatches.
+ */
 @Composable
-private fun ActionLabel(text: String, onClick: () -> Unit) {
+private fun SpeakLabel(
+  turn: ChatTurn,
+  state: SpeechState,
+  onSpeak: (ChatTurn) -> Unit,
+  onStopSpeaking: () -> Unit,
+  onNoticeShown: (String) -> Unit,
+) {
+  val label = speechActionLabel(state, turn.id)
+  val enabled = speechActionEnabled(state, turn.id)
+  val stops = speechActionStops(state, turn.id)
+  val failed = state is SpeechState.Failed && state.turnId == turn.id
+
+  // SPEECH FAILED clears itself, like the COPIED ack. FETCHING VOICE does NOT — the download far
+  // outlasts any notice delay, so it clears only when the voice actually becomes ready.
+  if (failed) {
+    LaunchedEffect(state) {
+      delay(SPEECH_NOTICE_MS)
+      onNoticeShown(turn.id)
+    }
+  }
+
+  ActionLabel(
+    text = label,
+    color = if (failed) StopRed else if (enabled) Amber else Muted,
+    enabled = enabled,
+    onClick = { if (stops) onStopSpeaking() else onSpeak(turn) },
+  )
+}
+
+/**
+ * A row action. Carries [Role.Button] so screen readers announce it as a control rather than as
+ * prose, and when [enabled] is false it attaches **no click action at all** — a no-op `onClick`
+ * would still be announced as actionable, offering a control that silently does nothing.
+ */
+@Composable
+private fun ActionLabel(
+  text: String,
+  onClick: () -> Unit,
+  color: Color = Amber,
+  enabled: Boolean = true,
+) {
   Text(
     text = text,
-    color = Amber,
+    color = color,
     fontFamily = FontFamily.Monospace,
     fontSize = 11.sp,
     fontWeight = FontWeight.Bold,
-    modifier = Modifier.clickable(onClick = onClick).padding(vertical = 4.dp),
+    modifier =
+      Modifier.semantics { role = Role.Button }
+        .then(if (enabled) Modifier.clickable(onClick = onClick) else Modifier)
+        .padding(vertical = 4.dp),
   )
 }
+
+/** How long a transient speech notice stays up before clearing (matches the COPIED ack's feel). */
+private const val SPEECH_NOTICE_MS = 2500L
 
 /** Shared COPY/COPIED action label: shows "COPIED" for ~1.5s after a copy, then reverts. */
 @Composable

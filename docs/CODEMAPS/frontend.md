@@ -36,6 +36,14 @@ Status dot/word + phase line, LAN(:8443)/LOCAL(:8080) copyable endpoints, masked
 ## Chat (`chat/`, `RelaisChatActivity.kt`, `ChatViewModel.kt`, `ChatRepository.kt`)
 Room-backed via `ChatDao` (conversations/turns, truncate/regenerate/edit-and-resend). **Hybrid transport**: `ChatTransportSelector` health-probes the loopback HTTP server per send, prefers `HttpChatTransport` (SSE), falls back to `InProcessChatTransport` (direct `RelaisEngine.generate`). Markdown rendering, image/PDF/WAV/text attachments, export-to-.md, share, in-chat model switch via `ModelSwitch.kt`.
 
+**Speech playback (#211)** — assistant turns carry a `SPEAK` action that synthesizes the turn on-device and plays it. The label doubles as its own status readout (`SYNTHESIZING` / `STOP` / `FETCHING VOICE` / `SPEECH FAILED`), so playback adds no spinner and no second control; a screen-level `SpeakingStopStrip` keeps STOP reachable once the speaking row scrolls out of the `LazyColumn`.
+- `chat/ChatSpeech.kt` — `SpeechState` sealed interface + pure state→label/enablement/stop-vs-start helpers (JVM-tested; the UI only renders and dispatches).
+- `chat/ChatSpeechUi.kt` — `SpeakingStopStrip` and `RefreshOnResume`, extracted out of `RelaisChatActivity` so they're drivable by `ChatSpeechUiProbe` rather than by tap coordinates.
+- `tts/SpeechText.kt` — markdown→speakable prose (drops fenced code, keeps link text, normalises table punctuation). Pure.
+- `tts/TtsPlayer.kt` — `AudioTrack` playback in `MODE_STREAM`, one live track at a time, transient audio-focus handling, `COMPLETED`/`CANCELLED`/`FAILED` outcomes.
+- `ChatViewModel` owns synthesis + playback behind a monotonic **generation token** (turn-id comparison is insufficient — stop-then-re-tap of the same turn yields identical ids). Availability is re-checked on `ON_RESUME` because **TTS registers at node startup, not app startup** (`TtsRegistration` ← `RelaisNodeService`), and `refreshSpeechOffered()` deliberately avoids `availability()` since that loads the ~64 MB voice model.
+- Coverage: JVM (`SpeechTextTest`, `ChatSpeechTest`, `ChatViewModelSpeechTest`) + on-device `SpeechPlaybackProbe` (player/focus/real voice) and `ChatSpeechUiProbe` (Compose UI; the repo's first).
+
 ## Models (`ModelsScreen.kt`)
 Current-model header + bottom-sheet model selector, reload-polling feedback.
 
