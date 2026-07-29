@@ -906,7 +906,7 @@ class RelaisHttpServer(
   private fun handleModels(ctx: RequestContext) {
     val refs = RelaisModelCatalog.curatedModels()
     val fallback = RelaisConfig.modelId(context)
-    val onDisk = provisionedIds(RelaisConfig.provisionedModels(context))
+    val onDisk = provisionedIds(provisionedOnDisk())
     ctx.send(200, buildModelsResponse(refs, fallback, onDisk))
   }
 
@@ -1125,6 +1125,10 @@ class RelaisHttpServer(
    * caller use its own error envelope shape (OpenAI's flat `RelaisError.json` vs Anthropic's nested
    * `buildAnthropicError`) rather than leaking one shape onto the other's wire format.
    */
+  /** Registry entries whose file still exists — see the read-prune note in [rejectIfModelUnavailable]. */
+  private fun provisionedOnDisk(): List<ProvisionedModel> =
+    pruneMissingProvisioned(RelaisConfig.provisionedModels(context)) { java.io.File(it).exists() }
+
   private fun rejectIfModelUnavailable(
     sock: java.net.Socket,
     endpoint: String,
@@ -1138,7 +1142,11 @@ class RelaisHttpServer(
         residentModelId = RelaisEngine.residentModelId,
         requestedModelId = requestedModel,
         configuredModelId = RelaisConfig.modelId(context),
-        provisionedModelIds = provisionedIds(RelaisConfig.provisionedModels(context)),
+        // Pruned on READ, not just on write: entries go stale whenever a model file disappears
+        // (storage cleared, model deleted, side-load removed) and nothing re-provisions afterwards.
+        // Serving a swap for a model that is no longer on disk would 503 the client, then fail the
+        // swap deep in init — so eligibility must reflect the filesystem, not the last write.
+        provisionedModelIds = provisionedIds(provisionedOnDisk()),
         isReady = RelaisEngine.isReady,
       )
     return when (outcome) {
@@ -1148,7 +1156,7 @@ class RelaisHttpServer(
         // is the operator's configured selection that hasn't been recorded yet, where the engine's
         // configured-model fallback is exactly right.
         val target =
-          swapTargetFor(outcome.targetModelId, RelaisConfig.provisionedModels(context))
+          swapTargetFor(outcome.targetModelId, provisionedOnDisk())
         RelaisEngine.ensureModelSwapInBackground(context, target)
         RelaisMetrics.recordRequest(endpoint, 503)
         respond(
