@@ -311,6 +311,24 @@ class RelaisControlPanelStateTest {
   }
 
   @Test
+  fun `a failed init keeps its actionable copy once the stall debounce also fires`() {
+    // BOTH flags true is not a corner case — it is where EVERY failed init ends up. RelaisNodeService's
+    // `finally` clears startupInProgress while lastInitFailed stays true, so ~3 polls (~3s) after any
+    // failure the stall debounce fires too. With the stalled arm checked first and unguarded, that
+    // silently replaced "check model/token" with the generic "node not running" three seconds after
+    // every failure — burying the only actionable advice for the dominant real failure, a
+    // license-gated repo 401 (#220).
+    val s =
+      computeControlPanelState(
+        false, true, "m", false, ProvisionPhase.IDLE, 0, 0,
+        initFailed = true, stalledStart = true,
+      )
+    assertEquals(NodeStatus.OFFLINE, s.status)
+    assertEquals(PrimaryAction.START, s.primaryAction)
+    assertEquals("start failed · check model/token, then START again", s.detailLine)
+  }
+
+  @Test
   fun `a genuine in-flight start is still STARTING`() {
     // The guard must never fire during a real start — including a slow multi-GB download.
     val s =

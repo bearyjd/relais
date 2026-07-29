@@ -88,6 +88,13 @@ fun computeControlPanelState(
   //    (OS kill, crash, or an APK reinstall under a persisted shouldRun=true). Nothing sets
   //    lastInitFailed in that case, so the panel used to show indefinite fake progress.
   val failed = running && !ready && (initFailed || stalledStart)
+  // The two signals are NOT mutually exclusive, and treating them as such was a real regression:
+  // after ANY failed init, RelaisNodeService's `finally` clears startupInProgress while
+  // lastInitFailed stays true, so the stall debounce fires ~3 polls later and BOTH are set. The init
+  // failure is the more specific diagnosis and must win — "check model/token" is the actionable
+  // advice for the dominant real failure (a license-gated repo 401, see #220), and letting the
+  // generic "node not running" copy replace it three seconds after every failure would bury it.
+  val stalledOnly = stalledStart && !initFailed
   val status = when {
     ready -> NodeStatus.LIVE
     failed -> NodeStatus.OFFLINE // OFFLINE-rendered on purpose (§ review M1): retry via START, never CANCEL-locked.
@@ -104,7 +111,7 @@ fun computeControlPanelState(
   return RelaisControlPanelState(
     status = status,
     statusWord = status.name,
-    detailLine = controlPanelDetailLine(status, failed, stalledStart, modelDisplayName, thermalShedding, phase, downloadReceivedBytes, downloadTotalBytes),
+    detailLine = controlPanelDetailLine(status, failed, stalledOnly, modelDisplayName, thermalShedding, phase, downloadReceivedBytes, downloadTotalBytes),
     detailLineBright = thermalShed || failed,
     primaryAction = when (status) {
       NodeStatus.LIVE -> PrimaryAction.STOP
@@ -124,7 +131,8 @@ fun computeControlPanelState(
 internal fun controlPanelDetailLine(
   status: NodeStatus,
   failed: Boolean,
-  stalledStart: Boolean,
+  /** Stalled AND not a failed init — see [computeControlPanelState]'s `stalledOnly`. */
+  stalledOnly: Boolean,
   modelDisplayName: String,
   thermalShedding: Boolean,
   phase: ProvisionPhase,
@@ -134,8 +142,9 @@ internal fun controlPanelDetailLine(
   when {
     // A stalled start and a failed init are both "OFFLINE + press START", but they are NOT the same
     // problem and must not share copy: "check model/token" is actively misleading advice when the
-    // node simply isn't running. Checked before the generic failed arm (#217).
-    status == NodeStatus.OFFLINE && failed && stalledStart -> "node not running · press START"
+    // node simply isn't running. Checked before the generic failed arm (#217) — safe to put first
+    // ONLY because [stalledOnly] already excludes the failed-init case, which reaches BOTH states.
+    status == NodeStatus.OFFLINE && failed && stalledOnly -> "node not running · press START"
     // Checked first: an in-flight (still "running") attempt that already failed renders OFFLINE
     // above, but must never be confused with a plain, intentional stop.
     // The "START again" promise is only honest because RelaisNodeService.onStartCommand
