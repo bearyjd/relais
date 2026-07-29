@@ -118,6 +118,62 @@ class RelaisProvisionerTest {
     }
   }
 
+  /**
+   * #221: one model id owns TWO possible directories, and "absent" from one is not absent from the
+   * device.
+   *
+   * `modelFromRef` derives the on-disk directory from `Model.name`, which it picks by provenance
+   * alone — `modelId` for a Hugging Face ref, `displayName` for an allowlist entry. So the same model
+   * at the same commit lands in `litert_community_gemma_4_E2B_it_litert_lm/` or `Gemma_4_E2B_it/`
+   * depending purely on how it was resolved. `ensureModel` checked only its own route's path and
+   * re-fetched multiple GB of a model already sitting on disk (observed: 2.6 GB on rango).
+   */
+  @Test
+  fun `an existing copy under the sibling provenance path is adopted instead of re-downloaded`() {
+    val ctx = ApplicationProvider.getApplicationContext<android.app.Application>()
+    val savedModelId = RelaisConfig.modelId(ctx)
+    val savedRef = RelaisConfig.modelRef(ctx)
+    val savedPath = RelaisConfig.modelPath(ctx)
+
+    // A Hugging Face ref: ensureModel will resolve to the modelId-derived directory.
+    val ref =
+      cc.grepon.relais.data.RelaisModelRef(
+        modelId = "litert-community/sibling-probe",
+        modelFile = "sibling-probe.litertlm",
+        commitHash = "abc123",
+        sizeInBytes = 1L,
+        displayName = "Sibling Probe",
+        source = cc.grepon.relais.data.RelaisModelRef.SOURCE_HUGGINGFACE,
+      )
+
+    try {
+      RelaisConfig.setModelRef(ctx, ref)
+      // Force both offline fast paths to miss so the sibling probe is what's under test.
+      RelaisConfig.setModelPath(ctx, File(ctx.cacheDir, "no-such-model.litertlm").absolutePath)
+
+      // Stage the model ONLY at the allowlist-provenance (displayName-derived) location — the copy
+      // the HF-ref route cannot see.
+      val sibling = File(RelaisModelProvisioner.siblingModelPath(ctx)!!)
+      sibling.parentFile?.mkdirs()
+      sibling.writeBytes(byteArrayOf(0x00))
+
+      try {
+        val resolved = RelaisModelProvisioner.ensureModel(ctx)
+        assertEquals(
+          "the copy already on disk under the other provenance name must be adopted, not re-downloaded",
+          sibling.absolutePath,
+          resolved,
+        )
+      } finally {
+        sibling.delete()
+      }
+    } finally {
+      RelaisConfig.setModelId(ctx, savedModelId)
+      savedRef?.let { RelaisConfig.setModelRef(ctx, it) } ?: RelaisConfig.clearModelRef(ctx)
+      savedPath?.let { RelaisConfig.setModelPath(ctx, it) }
+    }
+  }
+
   /** The other half of the gate: with no drift, the id/path pair IS recorded, and keyed correctly. */
   @Test
   fun `an undrifted provision is recorded under the id it was provisioned for`() {

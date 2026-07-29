@@ -258,12 +258,44 @@ object RelaisModelProvisioner {
       Log.i(TAG, "Model already present, skipping download: $path")
       return remember(context, path, persistForId = idAtStart)
     }
+    // #221: "absent" at [path] does NOT mean absent from the device. The on-disk directory is derived
+    // from Model.name, and modelFromRef picks that name by PROVENANCE — modelId for a Hugging Face
+    // ref, displayName for an allowlist entry — so one model id owns two possible directories with
+    // byte-identical content. Checking only this route's path re-downloaded multiple GB of a model
+    // the device already had (observed: 2.6 GB on rango). Probe the other route before concluding.
+    siblingModelPath(context)
+      ?.takeIf { it != path && File(it).exists() }
+      ?.let { existing ->
+        Log.i(TAG, "Adopting the existing copy at the sibling path (#221), no download needed: $existing")
+        return remember(context, existing, persistForId = idAtStart)
+      }
     model.accessToken = RelaisConfig.hfToken(context)
     Log.i(TAG, "Model absent; downloading ${model.name} from ${model.url} -> $path")
     download(context, model, onProgress)
     require(File(path).exists()) { "Download reported success but file is missing: $path" }
     Log.i(TAG, "Model provisioned: $path")
     return remember(context, path, persistForId = idAtStart)
+  }
+
+  /**
+   * The path this model would occupy had it been resolved via the OTHER provenance route (#221), or
+   * null when there's no persisted ref to derive it from.
+   *
+   * [modelFromRef] keys the on-disk directory off `name`, and picks `name` by provenance alone —
+   * `modelId` for [RelaisModelRef.SOURCE_HUGGINGFACE], `displayName` otherwise. Flipping just that
+   * field therefore yields the sibling directory while reusing the exact same path construction, so
+   * this can never drift from the real layout the way a hand-rolled second path would.
+   *
+   * Deliberately does NOT move, link, or delete anything: the goal is only to stop re-downloading a
+   * model that is already here. Reclaiming the orphaned copy is a separate decision (#221 option 3).
+   */
+  internal fun siblingModelPath(context: Context): String? {
+    val ref = RelaisConfig.modelRef(context)?.takeIf { it.modelId == RelaisConfig.modelId(context) } ?: return null
+    val flipped =
+      if (ref.source == RelaisModelRef.SOURCE_HUGGINGFACE) RelaisModelRef.SOURCE_ALLOWLIST
+      else RelaisModelRef.SOURCE_HUGGINGFACE
+    // Best-effort: a malformed ref must never fail a provision that would otherwise just download.
+    return runCatching { modelFromRef(ref.copy(source = flipped)).getPath(context) }.getOrNull()
   }
 
   /**
