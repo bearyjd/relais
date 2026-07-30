@@ -56,6 +56,13 @@ sealed interface ModelRequestOutcome {
 
   /** The client named a model that is not on this device. Answer 404 `model_not_found`. */
   data class NotProvisioned(val requestedModelId: String) : ModelRequestOutcome
+
+  /**
+   * The client named a model that IS on this device but is measured not to load on the pinned
+   * runtime (#220). Distinct from [NotProvisioned] because the cause and the fix differ: the file is
+   * present and re-downloading it will not help. Answer 404 with [reason].
+   */
+  data class Incompatible(val requestedModelId: String, val reason: String) : ModelRequestOutcome
 }
 
 /**
@@ -72,6 +79,12 @@ sealed interface ModelRequestOutcome {
  * download: the registry only grows on a locally-successful provision. [configuredModelId] stays
  * swap-eligible on its own so the operator's current selection works before it has been recorded.
  *
+ * [incompatibleReason] answers "is this model measured not to load on the pinned runtime, and why"
+ * (#220). Passed in rather than read from [RelaisRuntimeCompat] directly so this stays a pure
+ * function *of its arguments* — a test can supply a hypothetical table instead of being stuck with
+ * whatever the shipped one happens to say today. Defaults to "nothing is known-bad", which keeps
+ * every caller that predates #220 behaving exactly as before.
+ *
  * Pure JVM (no Context, no Engine) so the whole matrix is unit-tested in isolation — mirrors
  * [shouldUnloadIdleEngine] in RelaisIdleTtl.kt.
  */
@@ -81,12 +94,22 @@ fun resolveModelRequest(
   configuredModelId: String,
   provisionedModelIds: Set<String>,
   isReady: Boolean,
+  incompatibleReason: (String) -> String? = { null },
 ): ModelRequestOutcome {
   // Not ready: the normal not-ready path (503) owns this. Refusing here would answer 404 for a
   // model the node may well have, purely because it hasn't finished coming up.
   if (!isReady) return ModelRequestOutcome.ServeResident
   val requested = requestedModelId?.takeIf { it.isNotBlank() } ?: return ModelRequestOutcome.ServeResident
+  // Deliberately BEFORE the compat check: if a model is somehow resident and answering, observed
+  // reality outranks the static table. The table's job is to stop us loading something, not to
+  // refuse something already demonstrably working.
   if (requested == residentModelId) return ModelRequestOutcome.ServeResident
+  // #220: being on disk proves the file downloaded, NOT that the engine can create against it.
+  // Refuse before attempting a swap, otherwise the client gets a 503 + Retry-After and the swap
+  // then dies deep in engine init with nothing explaining why.
+  incompatibleReason(requested)?.let {
+    return ModelRequestOutcome.Incompatible(requested, it)
+  }
   if (requested == configuredModelId || requested in provisionedModelIds) {
     return ModelRequestOutcome.SwapThenRetry(requested)
   }
