@@ -2078,6 +2078,14 @@ internal fun buildModelsResponse(
           .put("provisioned", ref.modelId in provisionedIds)
           .put("owned_by", ref.source)
           .put("created", MODEL_CREATED_EPOCH)
+          // #220: cost-before-commit signals. A client (or the operator reading this by curl) can
+          // see that a listed model needs an HF token, or is untested on the pinned runtime, WITHOUT
+          // spending a multi-GB download to find out. Measured-broken models are not listed at all.
+          .put("requires_hf_token", RelaisRuntimeCompat.requiresHfToken(ref.modelId))
+          .put(
+            "runtime_compat",
+            RelaisRuntimeCompat.loadability(ref.modelId).name.lowercase(),
+          )
       )
     }
   }

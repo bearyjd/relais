@@ -300,9 +300,14 @@ private fun CuratedRow(ref: RelaisModelRef, selected: Boolean, onClick: () -> Un
         overflow = TextOverflow.Ellipsis,
         modifier = Modifier.weight(1f),
       )
-      if (looksGated(ref.modelId)) {
+      if (RelaisRuntimeCompat.requiresHfToken(ref.modelId)) {
         Spacer(Modifier.width(8.dp))
         Text("token", color = Muted, fontFamily = FontFamily.Monospace, fontSize = 10.sp)
+      }
+      // #220: an untested build family — the operator can still pick it, but not unknowingly.
+      if (RelaisRuntimeCompat.loadability(ref.modelId) == RelaisRuntimeCompat.Loadability.SUSPECT) {
+        Spacer(Modifier.width(8.dp))
+        Text("untested", color = Muted, fontFamily = FontFamily.Monospace, fontSize = 10.sp)
       }
       Spacer(Modifier.width(12.dp))
       Text(
@@ -407,14 +412,6 @@ private fun AmberAction(label: String, enabled: Boolean, onClick: () -> Unit) {
     )
   }
 }
-
-/**
- * Whether a repo is likely license-gated and so needs a pre-set HF token to download. Heuristic: the
- * codebase treats `litert-community` repos as open and `google/`-prefixed repos as gated (see
- * [RelaisConfig.DEFAULT_MODEL_ID]). Surfacing it on the row keeps a headless operator from picking a
- * model that then silently 401s with no in-UI signal that the HF token field had to be filled first.
- */
-private fun looksGated(modelId: String): Boolean = modelId.startsWith("google/")
 
 /** Human-readable file size for a selector row, e.g. `3.6GB`. `-1`/unknown renders as a dash. */
 private fun formatSize(bytes: Long): String {
