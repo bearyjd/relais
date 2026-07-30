@@ -97,6 +97,63 @@ class RelaisModelCatalogTest {
     assertTrue(RelaisModelCatalog.curatedModelsFrom(ModelAllowlist(emptyList())).isEmpty())
   }
 
+  // --- #220: runtime-compatibility filter ------------------------------------------------------
+
+  /**
+   * Entries shaped like the real allowlist, using the actual repo ids from the measured table in
+   * #220 — a model that fails engine-create, one that is untested, and one that is license-gated.
+   */
+  private val compatFixtureJson =
+    """
+    {
+      "models": [
+        { "name": "Qwen2.5 1.5B", "modelId": "litert-community/Qwen2.5-1.5B-Instruct",
+          "modelFile": "qwen.litertlm", "commitHash": "aaa111", "description": "",
+          "sizeInBytes": 1597939712, "defaultConfig": {},
+          "taskTypes": ["llm_chat"], "runtimeType": "litert_lm" },
+        { "name": "DeepSeek R1 Distill", "modelId": "litert-community/DeepSeek-R1-Distill-Qwen-1.5B",
+          "modelFile": "deepseek.litertlm", "commitHash": "bbb222", "description": "",
+          "sizeInBytes": 1830000000, "defaultConfig": {},
+          "taskTypes": ["llm_chat"], "runtimeType": "litert_lm" },
+        { "name": "Gemma 3 1B IT", "modelId": "litert-community/Gemma3-1B-IT",
+          "modelFile": "gemma3.litertlm", "commitHash": "ccc333", "description": "",
+          "sizeInBytes": 580000000, "defaultConfig": {},
+          "taskTypes": ["llm_chat"], "runtimeType": "litert_lm" },
+        { "name": "Gemma 4 E2B", "modelId": "litert-community/gemma-4-E2B-it-litert-lm",
+          "modelFile": "e2b.litertlm", "commitHash": "ddd444", "description": "",
+          "sizeInBytes": 2590000000, "defaultConfig": {},
+          "taskTypes": ["llm_chat"], "runtimeType": "litert_lm" }
+      ]
+    }
+    """
+      .trimIndent()
+
+  @Test
+  fun dropsModelsMeasuredToFailEngineCreate() {
+    val allowlist = Gson().fromJson(compatFixtureJson, ModelAllowlist::class.java)
+
+    val ids = RelaisModelCatalog.curatedModelsFrom(allowlist).map { it.modelId }
+
+    assertTrue(
+      "#220: Qwen downloads 1.6GB then fails 'parse LlmMetadata' — it must not be offered",
+      !ids.contains("litert-community/Qwen2.5-1.5B-Instruct"),
+    )
+  }
+
+  @Test
+  fun keepsUntestedAndGatedModelsSoTheCatalogDoesNotSilentlyShrink() {
+    val allowlist = Gson().fromJson(compatFixtureJson, ModelAllowlist::class.java)
+
+    val ids = RelaisModelCatalog.curatedModelsFrom(allowlist).map { it.modelId }
+
+    // Suspected-but-unmeasured: badged "untested" in the selector, still selectable.
+    assertTrue(ids.contains("litert-community/DeepSeek-R1-Distill-Qwen-1.5B"))
+    // License-gated: badged "token", still selectable once the operator sets one.
+    assertTrue(ids.contains("litert-community/Gemma3-1B-IT"))
+    assertTrue(ids.contains("litert-community/gemma-4-E2B-it-litert-lm"))
+    assertEquals("only the measured failure is withheld", 3, ids.size)
+  }
+
   // --- Pinned G5-TPU refs (spike plan T-4 backlog: Relais-curated, upstream allowlist has none) ---
 
   @Test

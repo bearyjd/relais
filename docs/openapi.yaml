@@ -693,7 +693,15 @@ paths:
     get:
       tags: [metadata]
       summary: OpenAI-compatible model listing
-      description: Lists the curated model catalog; falls back to a single entry for the currently-provisioned model id if the catalog is unavailable offline.
+      description: |
+        Lists the curated model catalog; falls back to a single entry for the currently-provisioned
+        model id if the catalog is unavailable offline.
+
+        Models measured to fail engine-create on this node's pinned LiteRT-LM runtime are **not
+        listed at all** (#220) — the catalog is upstream and drifts independently of the pinned
+        runtime, so listing them cost the operator a multi-GB download followed by a dead node.
+        The non-standard `provisioned`, `requires_hf_token` and `runtime_compat` fields let a client
+        see what a listed model will demand *before* committing to that download.
       responses:
         "200":
           description: Model list.
@@ -712,6 +720,26 @@ paths:
                         object: { type: string, enum: [model] }
                         owned_by: { type: string, description: "allowlist or huggingface." }
                         created: { type: integer }
+                        provisioned:
+                          type: boolean
+                          description: >-
+                            Whether the model is downloaded on this device. A chat/messages request
+                            naming a non-provisioned model is answered 404 model_not_found (#180),
+                            so this says which entries can actually be served right now.
+                        requires_hf_token:
+                          type: boolean
+                          description: >-
+                            Whether downloading this model needs the operator's HuggingFace token
+                            (license-gated repo — a token-less download answers 401).
+                        runtime_compat:
+                          type: string
+                          enum: [verified, suspect, unknown]
+                          description: >-
+                            Confidence that this node's pinned LiteRT-LM runtime can load the model.
+                            `verified` = measured on-device; `suspect` = untested and shares a build
+                            family with a measured failure; `unknown` = no measurement either way.
+                            Measured failures are omitted from the listing entirely, so
+                            `incompatible` never appears on the wire.
         "401": { $ref: "#/components/responses/Unauthorized" }
 
   /v1/clientconfig:

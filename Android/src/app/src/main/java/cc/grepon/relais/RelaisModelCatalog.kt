@@ -156,6 +156,14 @@ object RelaisModelCatalog {
    */
   private fun isNodeRunnable(m: AllowedModel): Boolean {
     if (m.disabled == true) return false
+    // #220: the upstream allowlist is keyed by our versionName and drifts independently of the
+    // litertlm we pin, so it offers models that download cleanly (multi-GB) and then fail
+    // engine-create. Withhold only MEASURED failures — suspected/gated entries stay on offer and are
+    // badged instead (see RelaisRuntimeCompat).
+    // modelId can be null at runtime (Gson reflection, as with taskTypes/modelFile below); a null id
+    // is not in any compat table, so treat it as offerable here and let the existing checks drop it.
+    val id: String? = m.modelId
+    if (id != null && !RelaisRuntimeCompat.isOfferable(id)) return false
     // taskTypes can be null (Gson reflection); null means no LLM_CHAT task → not runnable.
     if (m.taskTypes?.contains(BuiltInTaskId.LLM_CHAT) != true) return false
     // A RelaisModelRef captures only the top-level file/commit/size. For a per-SOC entry,

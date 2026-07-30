@@ -1148,6 +1148,11 @@ class RelaisHttpServer(
         residentModelId = RelaisEngine.residentModelId,
         requestedModelId = requestedModel,
         configuredModelId = RelaisConfig.modelId(context),
+        // #220: being provisioned proves a model is on disk, NOT that this runtime can create an
+        // engine against it — the broken ones download perfectly. A model provisioned before it was
+        // known-bad is still in the registry, so without this the swap path would 503 the client and
+        // then fail deep in engine init with no usable explanation.
+        incompatibleReason = RelaisRuntimeCompat::incompatibleReason,
         // Pruned on READ, not just on write: entries go stale whenever a model file disappears
         // (storage cleared, model deleted, side-load removed) and nothing re-provisions afterwards.
         // Serving a swap for a model that is no longer on disk would 503 the client, then fail the
@@ -1171,6 +1176,13 @@ class RelaisHttpServer(
           errorBody("resident model differs from the requested model; swapping — retry shortly"),
           listOf("Retry-After: 25"),
         )
+        true
+      }
+      is ModelRequestOutcome.Incompatible -> {
+        // Distinct from NotProvisioned on purpose: the file IS here, so "download it" is the wrong
+        // advice. Say what's actually wrong instead of a generic model_not_found.
+        RelaisMetrics.recordRequest(endpoint, 404)
+        respond(sock, 404, notFoundBody("model '${outcome.requestedModelId}' is ${outcome.reason}"))
         true
       }
       is ModelRequestOutcome.NotProvisioned -> {
@@ -2078,6 +2090,14 @@ internal fun buildModelsResponse(
           .put("provisioned", ref.modelId in provisionedIds)
           .put("owned_by", ref.source)
           .put("created", MODEL_CREATED_EPOCH)
+          // #220: cost-before-commit signals. A client (or the operator reading this by curl) can
+          // see that a listed model needs an HF token, or is untested on the pinned runtime, WITHOUT
+          // spending a multi-GB download to find out. Measured-broken models are not listed at all.
+          .put("requires_hf_token", RelaisRuntimeCompat.requiresHfToken(ref.modelId))
+          .put(
+            "runtime_compat",
+            RelaisRuntimeCompat.loadability(ref.modelId).name.lowercase(),
+          )
       )
     }
   }

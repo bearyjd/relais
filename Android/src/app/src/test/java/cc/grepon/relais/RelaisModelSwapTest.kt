@@ -37,7 +37,8 @@ class RelaisModelSwapTest {
     configuredId: String = configured,
     provisioned: Set<String> = onDisk,
     isReady: Boolean = true,
-  ) = resolveModelRequest(residentId, requested, configuredId, provisioned, isReady)
+    incompatibleReason: (String) -> String? = { null },
+  ) = resolveModelRequest(residentId, requested, configuredId, provisioned, isReady, incompatibleReason)
 
   // ---- serve the resident model ----
 
@@ -81,6 +82,56 @@ class RelaisModelSwapTest {
       ModelRequestOutcome.SwapThenRetry(configured),
       outcome(configured, provisioned = emptySet()),
     )
+  }
+
+  // ---- refuse: measured-incompatible with the pinned runtime (#220) ----
+
+  /** A stand-in table, so these assertions don't depend on what the shipped one happens to say. */
+  private val brokenOnThisRuntime = { id: String ->
+    if (id == alsoOnDisk) "not loadable by this node's runtime (engine-create fails)" else null
+  }
+
+  @Test fun `a model on disk that cannot load is refused instead of swapped to`() {
+    // Without this the client gets 503 + Retry-After, waits, retries, and the swap dies deep in
+    // engine init — the #220 experience, just relocated from the download to the request.
+    assertEquals(
+      ModelRequestOutcome.Incompatible(
+        alsoOnDisk,
+        "not loadable by this node's runtime (engine-create fails)",
+      ),
+      outcome(alsoOnDisk, incompatibleReason = brokenOnThisRuntime),
+    )
+  }
+
+  @Test fun `an incompatible verdict does not leak onto other models`() {
+    assertEquals(
+      ModelRequestOutcome.SwapThenRetry(configured),
+      outcome(configured, incompatibleReason = brokenOnThisRuntime),
+    )
+  }
+
+  @Test fun `a resident model answering requests outranks the compatibility table`() {
+    // Observed reality beats a static table: the table exists to stop us LOADING something, not to
+    // refuse something that is demonstrably already serving.
+    assertEquals(
+      ModelRequestOutcome.ServeResident,
+      outcome(resident, residentId = resident, incompatibleReason = { "claims to be broken" }),
+    )
+  }
+
+  @Test fun `an unprovisioned model is NotProvisioned even when also flagged incompatible`() {
+    // Not-on-disk is the more actionable diagnosis, and it is checked against real state rather
+    // than a table — so it must not be masked by the compat verdict.
+    val absent = "meta-llama/Llama-3-70B"
+    assertEquals(
+      ModelRequestOutcome.NotProvisioned(absent),
+      outcome(absent, provisioned = emptySet(), configuredId = configured, incompatibleReason = { null }),
+    )
+  }
+
+  @Test fun `by default nothing is treated as incompatible`() {
+    // The parameter defaults to "nothing is known-bad" so every pre-#220 caller is unaffected.
+    assertEquals(ModelRequestOutcome.SwapThenRetry(alsoOnDisk), outcome(alsoOnDisk))
   }
 
   // ---- refuse ----

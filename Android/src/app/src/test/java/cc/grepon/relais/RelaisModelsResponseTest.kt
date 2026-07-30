@@ -21,6 +21,7 @@ package cc.grepon.relais
 import cc.grepon.relais.data.RelaisModelRef
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
@@ -67,6 +68,29 @@ class RelaisModelsResponseTest {
     // fallback must NOT appear when the real list is non-empty
     val ids = (0 until data.length()).map { data.getJSONObject(it).getString("id") }
     assertFalse("fallback id must not appear in curated response", ids.contains(fallback))
+  }
+
+  // Test 1b (#220) — cost-before-commit signals so a client can see what a model will demand
+  // BEFORE spending a multi-GB download on it.
+  @Test
+  fun `entries advertise hf-token requirement and runtime compatibility`() {
+    val gated = makeRef("litert-community/Gemma3-1B-IT", RelaisModelRef.SOURCE_ALLOWLIST)
+    val verified = makeRef("litert-community/gemma-4-E2B-it-litert-lm", RelaisModelRef.SOURCE_ALLOWLIST)
+    val suspect =
+      makeRef("litert-community/DeepSeek-R1-Distill-Qwen-1.5B", RelaisModelRef.SOURCE_ALLOWLIST)
+
+    val data = buildModelsResponse(listOf(gated, verified, suspect), "unused").getJSONArray("data")
+    val byId = (0 until data.length()).associate { i ->
+      data.getJSONObject(i).let { it.getString("id") to it }
+    }
+
+    // Gated despite not being a `google/` repo — the exact case the old prefix heuristic missed.
+    assertTrue(byId.getValue(gated.modelId).getBoolean("requires_hf_token"))
+    assertFalse(byId.getValue(verified.modelId).getBoolean("requires_hf_token"))
+
+    assertEquals("verified", byId.getValue(verified.modelId).getString("runtime_compat"))
+    assertEquals("suspect", byId.getValue(suspect.modelId).getString("runtime_compat"))
+    assertEquals("unknown", byId.getValue(gated.modelId).getString("runtime_compat"))
   }
 
   // Test 2 — offline fallback (empty refs)
