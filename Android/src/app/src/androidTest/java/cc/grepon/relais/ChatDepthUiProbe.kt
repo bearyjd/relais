@@ -97,16 +97,28 @@ class ChatDepthUiProbe {
 
   // ---- copy + the COPIED ack (#145) ----------------------------------------------------------
 
+  /**
+   * The COPIED ack is *transient* — `CopyLabel` reverts it via `LaunchedEffect { delay(1500) }`.
+   * With the test clock's default auto-advance, waiting for idle runs straight through that delay
+   * and the label is back to COPY before any assertion lands. So drive the clock manually: this is
+   * the difference between observing the ack and silently never seeing it.
+   */
   @Test
-  fun copyHandsBackTheTurnTextAndAcknowledges() {
+  fun copyHandsBackTheTurnTextAndAcknowledgesThenReverts() {
     var copied: String? = null
+    compose.mainClock.autoAdvance = false
     setList(listOf(turn(content = "the exact text")), onCopy = { copied = it })
 
     compose.onNodeWithText("COPY").performClick()
+    compose.mainClock.advanceTimeByFrame() // let the recomposition apply, but not the 1500ms delay
 
     assertEquals("copy must hand back the turn's own text", "the exact text", copied)
     // The ack is the whole point of #145 — without it a tap on a monospace label gives no feedback.
     compose.onNodeWithText("COPIED").assertIsDisplayed()
+
+    // ...and it must not stick, or every copied row stays visually "copied" forever.
+    compose.mainClock.advanceTimeBy(1_600)
+    compose.onNodeWithText("COPY").assertIsDisplayed()
   }
 
   @Test
@@ -206,9 +218,14 @@ class ChatDepthUiProbe {
 
   // ---- roles render differently (markdown vs plain) ---------------------------------------------
 
+  /**
+   * Only the *user* half is asserted here. A user turn is plain `Text`, so its raw markdown must
+   * survive verbatim — that is exact and cheap to pin. The assistant half goes through `MarkdownText`
+   * (commonmark → richtext), whose output nodes are an implementation detail of that library; an
+   * assertion on them would pin the library, not our behaviour. Left to the eye on the device pass.
+   */
   @Test
-  fun assistantMarkdownIsRenderedWhileUserTextStaysLiteral() {
-    // A user turn is plain Text: its raw markdown must survive verbatim, fences and all.
+  fun userTurnsRenderTheirMarkdownLiterallyRatherThanRendered() {
     setList(listOf(turn(content = "**not bold** `raw`")))
 
     compose.onNodeWithText("**not bold** `raw`").assertIsDisplayed()
