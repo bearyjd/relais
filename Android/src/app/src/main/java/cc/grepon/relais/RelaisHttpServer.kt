@@ -1143,6 +1143,18 @@ class RelaisHttpServer(
     notFoundBody: (message: String) -> JSONObject = errorBody,
   ): Boolean {
     if (!RelaisEngine.isReady) return false // let the normal not-ready path (503 elsewhere) handle this
+    // #220: being provisioned proves a model is on disk, NOT that this runtime can create an engine
+    // against it — the whole point of that issue is that the broken ones download perfectly. A model
+    // provisioned before it was known-bad is still in the registry, so without this the swap path
+    // would 503 the client and then fail deep in engine init with no usable explanation. Answer for
+    // it up front instead, and say why.
+    requestedModel?.let { requested ->
+      RelaisRuntimeCompat.incompatibleReason(requested)?.let { why ->
+        RelaisMetrics.recordRequest(endpoint, 404)
+        respond(sock, 404, notFoundBody("model '$requested' is $why"))
+        return true
+      }
+    }
     val outcome =
       resolveModelRequest(
         residentModelId = RelaisEngine.residentModelId,

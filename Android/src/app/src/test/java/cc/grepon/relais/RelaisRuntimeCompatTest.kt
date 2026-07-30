@@ -19,6 +19,7 @@
 package cc.grepon.relais
 
 import cc.grepon.relais.RelaisRuntimeCompat.Loadability
+import java.io.File
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -127,10 +128,42 @@ class RelaisRuntimeCompatTest {
 
   /**
    * The whole table above is only true for one runtime. If litertlm is bumped, these measurements
-   * are void until re-run on hardware — this pin is what makes that obvious in review.
+   * are void until re-run on hardware.
+   *
+   * Asserting the constant against a literal would be tautological — it cannot fail for the reason
+   * that matters, which is `libs.versions.toml` moving while this table stands still. So read the
+   * real pin. Skips (rather than fails) when the TOML isn't locatable from the test working
+   * directory, since the JVM test CWD is a build-layout detail, not something under test.
    */
   @Test
-  fun compatibilityTableDeclaresTheRuntimeItWasMeasuredAgainst() {
-    assertEquals("0.12.0", RelaisRuntimeCompat.PINNED_LITERTLM_VERSION)
+  fun compatibilityTableTracksThePinnedRuntime() {
+    val toml =
+      generateSequence(File(".").absoluteFile) { it.parentFile }
+        .map { File(it, "gradle/libs.versions.toml") }
+        .firstOrNull { it.exists() } ?: return
+    val pinned =
+      Regex("""^\s*litertlm\s*=\s*"([^"]+)"""", RegexOption.MULTILINE)
+        .find(toml.readText())
+        ?.groupValues
+        ?.get(1)
+
+    assertEquals(
+      "litertlm was bumped without re-measuring the #220 compatibility table — " +
+        "re-run the models on hardware, don't just re-point the constant",
+      pinned,
+      RelaisRuntimeCompat.PINNED_LITERTLM_VERSION,
+    )
+  }
+
+  /**
+   * Gating and loadability are independent axes, and collapsing them would drop a working model:
+   * `Gemma3-1B-IT` is a license-gated repo whose Relais-pinned `…_Google_Tensor_G5` AOT build
+   * ([RelaisModelCatalog.G5_TPU_REFS]) serves fine — it is the model the #146 on-device passes ran on.
+   */
+  @Test
+  fun gatingAndLoadabilityAreIndependentAxes() {
+    val id = "litert-community/Gemma3-1B-IT"
+    assertTrue("gated", RelaisRuntimeCompat.requiresHfToken(id))
+    assertTrue("but still offerable — gating is not incompatibility", RelaisRuntimeCompat.isOfferable(id))
   }
 }

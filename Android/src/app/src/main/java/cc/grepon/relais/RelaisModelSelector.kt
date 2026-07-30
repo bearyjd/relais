@@ -305,9 +305,10 @@ private fun CuratedRow(ref: RelaisModelRef, selected: Boolean, onClick: () -> Un
         Text("token", color = Muted, fontFamily = FontFamily.Monospace, fontSize = 10.sp)
       }
       // #220: an untested build family — the operator can still pick it, but not unknowingly.
+      // Amber, not Muted: this is a warning that costs a multi-GB download to ignore, not metadata.
       if (RelaisRuntimeCompat.loadability(ref.modelId) == RelaisRuntimeCompat.Loadability.SUSPECT) {
         Spacer(Modifier.width(8.dp))
-        Text("untested", color = Muted, fontFamily = FontFamily.Monospace, fontSize = 10.sp)
+        Text("untested", color = Amber, fontFamily = FontFamily.Monospace, fontSize = 10.sp)
       }
       Spacer(Modifier.width(12.dp))
       Text(
