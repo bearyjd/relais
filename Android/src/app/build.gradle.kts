@@ -120,20 +120,30 @@ android {
     release {
       // arm64-v8a ONLY (#123). The bundled LiteRT runtime ships .so for 4 ABIs and the litertlm AAR
       // for 2, but x86_64 in a SHIPPING build is dead weight: no Android phone runs it, and the TPU
-      // lane this node exists for is Tensor-only. `jniLibs.useLegacyPackaging = true` stores .so
-      // UNCOMPRESSED, so every one of those bytes is a real APK byte.
+      // lane this node exists for is Tensor-only.
       //
-      // MEASURED on fullOpen release: 231.84 MiB -> 171.84 MiB, a 60 MiB (26%) cut. (The debug APK
-      // suggested a larger saving — x86_64 is 155 MiB of its 305 MiB — but release strips more, so
-      // 60 MiB is the number that actually ships.) v1.0.15 went out at 232 MiB against
-      // IzzyOnDroid's ~30 MB rule-of-thumb.
+      // MEASURED on fullOpen release: 231.88 MiB -> 171.84 MiB, a 60 MiB (26%) cut. v1.0.15 went
+      // out at 232 MiB against IzzyOnDroid's ~30 MB rule-of-thumb.
+      //
+      // (An earlier version of this comment claimed useLegacyPackaging stores .so UNCOMPRESSED so
+      // "every byte is a real APK byte". That is backwards — see the packaging block above. The
+      // 60 MiB figure was measured, so it stands; only the explanation was wrong.)
       //
       // TRADE-OFF: this also drops x86_64 from the Play AAB, so x86 Chromebooks lose support. That
       // is deliberate — reach there is marginal for an on-device LLM node — but it is the one line
       // to change if Play/ChromeOS coverage is wanted back. Narrowing it to only the `open` policy
       // would need variant-level filters, which AGP does not express cleanly.
       ndk { abiFilters += listOf("arm64-v8a") }
-      isMinifyEnabled = false
+      // R8 shrinking, ON as of #229. Dex was the single largest part of the APK — 80.8 MiB of
+      // 144.5 — because minification had been off since the fork while `proguardFiles` pointed at a
+      // proguard-rules.pro that did not exist (inert when minify is off, so nothing complained).
+      // MEASURED: 144.50 -> 74.10 MiB; dex 80.8 -> ~9 MiB.
+      //
+      // The keep rules were NOT guessed — every one was added in response to a real failure on
+      // rango. See proguard-rules.pro; the short version is that protobuf-javalite and litertlm's
+      // JNI surface both break at RUNTIME under R8, in ways no JVM test can catch (a JVM test never
+      // runs R8). Treat any change here as requiring an on-device inference check, not just green CI.
+      isMinifyEnabled = true
       proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
       // Real release signing when the CI secrets are present; debug-signed otherwise so assemble*Release
       // still builds locally and in build_android.yaml without any secrets configured.
