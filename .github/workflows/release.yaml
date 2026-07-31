@@ -94,6 +94,31 @@ jobs:
           fi
           echo "OK — playsafe declares none of the restricted permissions and ships none of the stripped components."
 
+      - name: Verify release APKs ship arm64-v8a natives only
+        # #123: x86_64 natives were 155 MiB of the debug APK (40% of the native payload) and pushed
+        # the IzzyOnDroid APK to 232 MiB against their ~30 MB rule-of-thumb. No Android phone runs
+        # x86_64, so it is dead weight in a shipping build — but it is one merged abiFilters away
+        # from silently coming back (AGP UNIONs defaultConfig + buildType filters), and the only
+        # symptom would be a quietly enormous APK. Fail loudly instead.
+        run: |
+          BAD=0
+          for variant in fullOpen fullPlaysafe degoogledOpen; do
+            APK=$(find "app/build/outputs/apk/$variant/release" -name "*.apk" 2>/dev/null | head -1)
+            if [ -z "$APK" ]; then
+              echo "::error::$variant: no release APK found — ABI gate cannot verify"
+              BAD=1; continue
+            fi
+            FOREIGN=$(unzip -l "$APK" | grep -Eo 'lib/[a-z0-9_-]+/' | sort -u | grep -v 'lib/arm64-v8a/' || true)
+            if [ -n "$FOREIGN" ]; then
+              echo "::error::$variant ships non-arm64 native libs — abiFilters regressed (see build.gradle.kts buildTypes.release)"
+              echo "$FOREIGN"
+              BAD=1; continue
+            fi
+            SIZE=$(stat -c%s "$APK")
+            echo "$variant: arm64-v8a only ✓  ($(awk -v b="$SIZE" 'BEGIN{printf "%.1f", b/1048576}') MiB)"
+          done
+          [ "$BAD" -eq 0 ] || exit 1
+
       - name: Verify all shipped native libs are 16 KB-page-aligned
         run: |
           shopt -s nullglob
