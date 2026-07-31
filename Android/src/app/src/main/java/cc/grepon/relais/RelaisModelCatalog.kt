@@ -20,7 +20,8 @@ package cc.grepon.relais
 
 import android.content.Context
 import android.util.Log
-import cc.grepon.relais.common.getJsonResponse
+import cc.grepon.relais.common.HttpJsonResult
+import cc.grepon.relais.common.getJsonResponseAuthed
 import cc.grepon.relais.common.isPixel10
 import java.io.File
 import kotlinx.coroutines.CancellationException
@@ -122,12 +123,31 @@ object RelaisModelCatalog {
       if (now - cacheTimeMs < CURATED_TTL_MS) return cached
     }
     val url = RelaisModelProvisioner.allowlistUrl()
+    // #227: distinguish "the device is offline" from "upstream deleted the catalog we pin". Both
+    // yield an empty curated list, but only the second is a problem someone has to act on — and
+    // when the URL was derived from versionName, the second was indistinguishable from the first,
+    // so a version bump silently emptied the MODELS screen with nothing in the log to explain it.
     val allowlist =
-      getJsonResponse<ModelAllowlist>(url)?.jsonObj
-        ?: run {
+      when (val r = getJsonResponseAuthed<ModelAllowlist>(url, bearer = null)) {
+        is HttpJsonResult.Ok -> r.body.jsonObj
+        is HttpJsonResult.HttpError -> {
+          if (r.code == 404) {
+            Log.e(
+              TAG,
+              "Allowlist revision ${RelaisModelProvisioner.ALLOWLIST_REVISION} is GONE upstream " +
+                "($url returned 404) — the curated list will be empty on every device until " +
+                "ALLOWLIST_REVISION is repointed at a revision upstream still publishes. See #227.",
+            )
+          } else {
+            Log.w(TAG, "Allowlist fetch failed with HTTP ${r.code} ($url); curated list empty")
+          }
+          return emptyList()
+        }
+        is HttpJsonResult.Transport -> {
           Log.w(TAG, "Allowlist unreachable ($url); curated list empty (offline?)")
           return emptyList()
         }
+      }
     val refs = curatedModelsFrom(allowlist)
     // Only cache a successful non-empty result — do not poison the cache with an empty list,
     // so an offline response retries next call rather than serving emptiness for 5 minutes.
