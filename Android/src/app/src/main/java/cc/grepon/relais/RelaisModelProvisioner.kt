@@ -51,7 +51,7 @@ import kotlinx.coroutines.CancellationException
 
 private const val TAG = "RelaisModelProvisioner"
 
-/** Same allowlist host Gallery uses; versioned `{1_0_x}.json` keyed off the app version. */
+/** Same allowlist host Gallery uses; the revision is pinned by [RelaisModelProvisioner.ALLOWLIST_REVISION]. */
 private const val ALLOWLIST_BASE_URL =
   "https://raw.githubusercontent.com/google-ai-edge/gallery/refs/heads/main/model_allowlists"
 
@@ -110,9 +110,26 @@ object RelaisModelProvisioner {
   /** Last resolved/downloaded model path, cached so the engine can re-read it without a refetch. */
   @Volatile private var cachedPath: String? = null
 
-  /** The versioned allowlist URL keyed off the app version, e.g. `…/1_0_15.json`. */
-  fun allowlistUrl(): String =
-    "$ALLOWLIST_BASE_URL/${BuildConfig.VERSION_NAME.replace(".", "_")}.json"
+  /**
+   * The upstream catalog revision this build reads (#227).
+   *
+   * Deliberately a CONSTANT, not `BuildConfig.VERSION_NAME`. This used to interpolate our version —
+   * which coupled a routine version bump to an upstream repo we do not control. Upstream
+   * `google-ai-edge/gallery/model_allowlists/` publishes `1_0_4.json` … `1_0_15.json` and **stops
+   * there**; there is no `1_0_16.json`, even though upstream carries a 1.0.16 tag.
+   *
+   * So bumping `versionName` pointed the node at a 404. [RelaisModelCatalog] swallows fetch failures
+   * by design (offline must not crash the selector), so the symptom was a permanently empty MODELS
+   * screen — "Allowlist unreachable. Enter a model id below." — with no crash and no log, on every
+   * device, forever. A silent product break triggered by an unrelated one-line change.
+   *
+   * Bump this only when upstream actually publishes a newer catalog AND its contents have been
+   * checked against [RelaisRuntimeCompat] (a new entry may be unloadable on our pinned litertlm).
+   */
+  const val ALLOWLIST_REVISION = "1_0_15"
+
+  /** The pinned upstream allowlist URL, e.g. `…/model_allowlists/1_0_15.json`. */
+  fun allowlistUrl(): String = "$ALLOWLIST_BASE_URL/$ALLOWLIST_REVISION.json"
 
   /**
    * Resolves the configured model to a [Model] (download URL + on-disk path populated). Prefers a
