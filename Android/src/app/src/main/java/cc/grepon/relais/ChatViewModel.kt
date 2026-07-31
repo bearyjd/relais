@@ -54,7 +54,7 @@ import kotlinx.coroutines.withTimeoutOrNull
  * Not wired into any UI yet — that lands in Task 7.
  */
 @OptIn(ExperimentalCoroutinesApi::class)
-class ChatViewModel(
+class ChatViewModel @JvmOverloads constructor(
   app: Application,
   /**
    * Where speech synthesis/playback runs. Injectable so the #211 seam tests can drive it on a test
