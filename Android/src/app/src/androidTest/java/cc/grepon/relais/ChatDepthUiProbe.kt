@@ -76,13 +76,16 @@ class ChatDepthUiProbe {
     onCopy: (String) -> Unit = {},
     onRegenerate: (ChatTurn) -> Unit = {},
     onEditResend: (ChatTurn, String) -> Unit = { _, _ -> },
+    streamingText: String = "",
+    streaming: Boolean = false,
+    pendingPersistedTurnId: String? = null,
   ) {
     compose.setContent {
       ChatMessageList(
         turns = turns,
-        streamingText = "",
-        streaming = false,
-        pendingPersistedTurnId = null,
+        streamingText = streamingText,
+        streaming = streaming,
+        pendingPersistedTurnId = pendingPersistedTurnId,
         onCopy = onCopy,
         onRegenerate = onRegenerate,
         onEditResend = onEditResend,
@@ -220,6 +223,66 @@ class ChatDepthUiProbe {
       "exactly one editor should be open",
       compose.onAllNodes(hasSetTextAction()).fetchSemanticsNodes().size == 1,
     )
+  }
+
+  // ---- streaming bubble + autoscroll (#144) -----------------------------------------------------
+  //
+  // `shouldShowStreamingBubble` — the pure decision — is already covered by StreamingBubbleTest on
+  // the JVM. What was never exercised is the RENDER side: that the decision actually reaches the UI,
+  // and that the list follows the newest content. Both were left as "not yet exercised" in #146
+  // because driving them meant tapping a live stream; driving the composable directly does not.
+
+  @Test
+  fun streamingBubbleShowsTheInProgressText() {
+    setList(listOf(turn(content = "hi")), streamingText = "partial repl", streaming = true)
+
+    compose.onNodeWithText("partial repl").assertIsDisplayed()
+  }
+
+  @Test
+  fun noStreamingBubbleWhenNotStreaming() {
+    setList(listOf(turn(content = "hi")), streamingText = "leftover text", streaming = false)
+
+    // Stale streamingText must not leak into the list once streaming has stopped.
+    compose.onNodeWithText("leftover text").assertDoesNotExist()
+  }
+
+  /**
+   * The anti-double-render guard. ChatViewModel holds the bubble up briefly after persisting the
+   * assistant turn, so there is a window where `turns` and `streaming` describe the SAME content —
+   * rendering both would show the reply twice for a frame.
+   */
+  @Test
+  fun streamingBubbleIsSuppressedOnceThePersistedTurnCoversIt() {
+    val persisted = turn(id = "a1", role = "assistant", content = "the answer")
+    setList(
+      listOf(persisted),
+      streamingText = "the answer",
+      streaming = true,
+      pendingPersistedTurnId = "a1",
+    )
+
+    // Exactly one copy of the text — the persisted turn — not two.
+    assertEquals(
+      "the reply must render once, not once per source",
+      1,
+      compose.onAllNodesWithText("the answer").fetchSemanticsNodes().size,
+    )
+  }
+
+  /**
+   * Autoscroll: ChatMessageList's LaunchedEffect animates to the last item whenever the turn count
+   * or streaming text changes. With enough turns to overflow the viewport, the newest must be the
+   * one on screen — otherwise a reply arrives off-screen and the chat looks frozen.
+   */
+  @Test
+  fun theNewestTurnIsOnScreenAfterTheListGrows() {
+    val many = (1..30).map { turn(id = "t$it", content = "message number $it") }
+    setList(many)
+
+    compose.onNodeWithText("message number 30").assertIsDisplayed()
+    // ...and the oldest has scrolled away, proving the list actually moved rather than fitting.
+    compose.onNodeWithText("message number 1").assertDoesNotExist()
   }
 
   // ---- roles render differently (markdown vs plain) ---------------------------------------------
