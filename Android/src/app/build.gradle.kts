@@ -82,7 +82,34 @@ android {
   // all shipping flavors) because the dispatcher now ships in RELEASE too — the same setting the
   // official LiteRT sample_app_tpu uses. Cost: native libs are extracted uncompressed (slightly larger
   // install); accepted as the price of the TPU lane (proven ~2.8x GPU on Tensor G5).
-  packaging { jniLibs.useLegacyPackaging = true }
+  packaging {
+    jniLibs.useLegacyPackaging = true
+
+    // #229: llmedge is a general-purpose on-device AI toolkit, not an image-gen library. It bundles
+    // FOUR engines — sd.cpp (image), SmolLM (text), Bark (text→audio), Whisper (audio→text) — and
+    // Relais uses only the image half (`io.aatricks.llmedge.image.*` from the :imagegen service).
+    // The other three duplicate capability we already have: text is litertlm, TTS is sherpa-onnx/
+    // Piper (#168), STT is our own /v1/audio/transcriptions.
+    //
+    // Cost: 81 MiB uncompressed / MEASURED 27.3 MiB of actual APK bytes (fullOpen release
+    // 171.84 -> 144.50 MiB). NOTE for anyone sizing things here: useLegacyPackaging = true sets
+    // extractNativeLibs=true, which COMPRESSES .so in the APK (~2.6:1) and expands them at install.
+    // So a lib's uncompressed size is its on-device install footprint, NOT its download cost —
+    // getting that backwards overestimates native-lib savings by roughly 3x.
+    //
+    // Safe because llmedge is modality-partitioned: LLMEdgeConfig composes independent
+    // Text/Speech/Image/Vision runtime configs with per-modality loaders, and LLMEdge itself carries
+    // no reference to smollm/bark/whisper. VERIFIED on rango, not assumed — ImageGenServiceProbe's
+    // service-lifecycle tests pass with these stripped (see the PR).
+    //
+    // Deliberately KEPT: libggufreader.so and libomp.so. Both are small, and ggufreader plausibly
+    // backs the ModelSpec/ModelRegistry path that the image side does use — not worth 0.9 MiB of risk.
+    jniLibs.excludes += setOf(
+      "**/libsmollm*.so",
+      "**/libbark_jni.so",
+      "**/libwhisper_jni.so",
+    )
+  }
 
   buildTypes {
     debug {
