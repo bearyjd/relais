@@ -98,19 +98,25 @@ class ChatDepthUiProbe {
   // ---- copy + the COPIED ack (#145) ----------------------------------------------------------
 
   /**
-   * The COPIED ack is *transient* — `CopyLabel` reverts it via `LaunchedEffect { delay(1500) }`.
-   * With the test clock's default auto-advance, waiting for idle runs straight through that delay
-   * and the label is back to COPY before any assertion lands. So drive the clock manually: this is
-   * the difference between observing the ack and silently never seeing it.
+   * The COPIED ack is *transient* — `CopyLabel` reverts it via `LaunchedEffect { delay(1500) }` —
+   * so the clock has to be driven by hand: under the default auto-advance, waiting for idle runs
+   * straight through that delay and the label is back to COPY before any assertion lands.
+   *
+   * But freezing the clock *before* `setContent` breaks the click instead: the injected gesture
+   * needs frames to dispatch, so `onCopy` never fires (observed on rango — the callback came back
+   * null). Hence the ordering below: compose and click under auto-advance, then freeze only for the
+   * window where the transient state matters.
    */
   @Test
   fun copyHandsBackTheTurnTextAndAcknowledgesThenReverts() {
     var copied: String? = null
-    compose.mainClock.autoAdvance = false
     setList(listOf(turn(content = "the exact text")), onCopy = { copied = it })
 
+    // Freeze first, then click: the gesture is dispatched by the explicit advance below, and the
+    // 1500ms revert cannot run behind our back between the click and the assertion.
+    compose.mainClock.autoAdvance = false
     compose.onNodeWithText("COPY").performClick()
-    compose.mainClock.advanceTimeByFrame() // let the recomposition apply, but not the 1500ms delay
+    compose.mainClock.advanceTimeBy(100) // dispatch + recompose; well short of the 1500ms revert
 
     assertEquals("copy must hand back the turn's own text", "the exact text", copied)
     // The ack is the whole point of #145 — without it a tap on a monospace label gives no feedback.
