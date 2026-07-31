@@ -12,7 +12,12 @@
 
 package cc.grepon.relais
 
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertIsEnabled
+import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.hasSetTextAction
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
@@ -20,6 +25,7 @@ import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTextReplacement
 import cc.grepon.relais.chat.ChatMessageList
+import cc.grepon.relais.chat.SendStopButton
 import cc.grepon.relais.chat.SpeechState
 import cc.grepon.relais.data.ChatTurn
 import org.junit.Assert.assertEquals
@@ -283,6 +289,62 @@ class ChatDepthUiProbe {
     compose.onNodeWithText("message number 30").assertIsDisplayed()
     // ...and the oldest has scrolled away, proving the list actually moved rather than fitting.
     compose.onNodeWithText("message number 1").assertDoesNotExist()
+  }
+
+  // ---- SEND / STOP composer action (#144 "stop mid-stream") -------------------------------------
+  //
+  // Extracted from RelaisChatActivity in this PR precisely so it can be driven here; inline in the
+  // screen it could only be reached by tap coordinates, which is why "stop-mid-stream" sat unverified.
+
+  @Test
+  fun composerSendsWhenIdleAndStopsWhileStreaming() {
+    var sent = 0
+    var stopped = 0
+    var streaming by mutableStateOf(false)
+    compose.setContent {
+      SendStopButton(
+        streaming = streaming,
+        canSend = true,
+        onSend = { sent++ },
+        onStop = { stopped++ },
+      )
+    }
+
+    compose.onNodeWithText("SEND").performClick()
+    assertEquals(1, sent)
+    assertEquals(0, stopped)
+
+    // Same button, driven through RECOMPOSITION — proves the action flips in place rather than only
+    // being correct on first composition.
+    streaming = true
+    compose.onNodeWithText("STOP").performClick()
+    assertEquals("must not have sent again", 1, sent)
+    assertEquals(1, stopped)
+  }
+
+  @Test
+  fun sendIsDisabledWithNothingToSend() {
+    setSendStop(streaming = false, canSend = false)
+
+    compose.onNodeWithText("SEND").assertIsNotEnabled()
+  }
+
+  /**
+   * The non-obvious rule: while streaming the button is enabled **regardless of `canSend`**, because
+   * its job has flipped from "submit this draft" to "cancel the reply". A disabled STOP would strand
+   * the operator in a stream they cannot cancel — which is exactly the acceptance item.
+   */
+  @Test
+  fun stopStaysEnabledWhileStreamingEvenWithAnEmptyDraft() {
+    setSendStop(streaming = true, canSend = false)
+
+    compose.onNodeWithText("STOP").assertIsEnabled()
+  }
+
+  private fun setSendStop(streaming: Boolean, canSend: Boolean) {
+    compose.setContent {
+      SendStopButton(streaming = streaming, canSend = canSend, onSend = {}, onStop = {})
+    }
   }
 
   // ---- roles render differently (markdown vs plain) ---------------------------------------------

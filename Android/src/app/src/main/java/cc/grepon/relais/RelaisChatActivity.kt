@@ -74,6 +74,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import cc.grepon.relais.chat.ChatConversationList
 import cc.grepon.relais.chat.ChatMessageList
 import cc.grepon.relais.chat.RefreshOnResume
+import cc.grepon.relais.chat.SendStopButton
 import cc.grepon.relais.chat.SpeakingStopStrip
 import cc.grepon.relais.chat.SpeechState
 import cc.grepon.relais.chat.conversationToMarkdown
@@ -416,26 +417,12 @@ internal fun ChatScreen() {
             ),
           keyboardActions = KeyboardActions(onSend = { send() }),
         )
-        Button(
-          onClick = { if (streaming) vm.stop() else send() },
-          enabled = streaming || (!reloadingModel && (draft.isNotBlank() || pending != null)),
-          shape = RoundedCornerShape(6.dp),
-          colors =
-            ButtonDefaults.buttonColors(
-              containerColor = if (streaming) StopRed else Amber,
-              contentColor = Charcoal,
-              disabledContainerColor = Line,
-              disabledContentColor = Muted,
-            ),
-        ) {
-          Text(
-            if (streaming) "STOP" else "SEND",
-            fontFamily = FontFamily.Monospace,
-            fontWeight = FontWeight.Bold,
-            fontSize = 13.sp,
-            letterSpacing = 1.sp,
-          )
-        }
+        SendStopButton(
+          streaming = streaming,
+          canSend = !reloadingModel && (draft.isNotBlank() || pending != null),
+          onSend = { send() },
+          onStop = { vm.stop() },
+        )
       }
     }
   }
