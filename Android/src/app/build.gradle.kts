@@ -46,10 +46,10 @@ android {
     versionCode = 33
     versionName = "1.0.15"
 
-    // The bundled LiteRT runtime ships native .so for 4 ABIs, but the litertlm LLM AAR only ships
-    // arm64-v8a + x86_64 — so the node can't run on the others anyway. Match that set to avoid shipping
-    // ~9 MB of armeabi-v7a/x86 TFLite libs that could never execute (and a latent ABI-mismatch trap).
-    ndk { abiFilters += listOf("arm64-v8a", "x86_64") }
+    // NOTE: abiFilters is deliberately NOT set here. AGP takes the UNION of defaultConfig and
+    // buildType abiFilters, so anything listed at this level can never be narrowed later — a release
+    // filter of just arm64-v8a would silently still ship x86_64. The per-buildType filters in
+    // `buildTypes` below are the single source of truth. See #123.
 
     // Needed for HuggingFace auth workflows.
     // Use the scheme of the "Redirect URLs" in HuggingFace app.
@@ -85,7 +85,27 @@ android {
   packaging { jniLibs.useLegacyPackaging = true }
 
   buildTypes {
+    debug {
+      // Both ABIs for development: DEVELOPMENT.md documents an x86_64 emulator as a supported dev
+      // target, and the emulator is the only place x86_64 is genuinely used.
+      ndk { abiFilters += listOf("arm64-v8a", "x86_64") }
+    }
     release {
+      // arm64-v8a ONLY (#123). The bundled LiteRT runtime ships .so for 4 ABIs and the litertlm AAR
+      // for 2, but x86_64 in a SHIPPING build is dead weight: no Android phone runs it, and the TPU
+      // lane this node exists for is Tensor-only. `jniLibs.useLegacyPackaging = true` stores .so
+      // UNCOMPRESSED, so every one of those bytes is a real APK byte.
+      //
+      // MEASURED on fullOpen release: 231.84 MiB -> 171.84 MiB, a 60 MiB (26%) cut. (The debug APK
+      // suggested a larger saving — x86_64 is 155 MiB of its 305 MiB — but release strips more, so
+      // 60 MiB is the number that actually ships.) v1.0.15 went out at 232 MiB against
+      // IzzyOnDroid's ~30 MB rule-of-thumb.
+      //
+      // TRADE-OFF: this also drops x86_64 from the Play AAB, so x86 Chromebooks lose support. That
+      // is deliberate — reach there is marginal for an on-device LLM node — but it is the one line
+      // to change if Play/ChromeOS coverage is wanted back. Narrowing it to only the `open` policy
+      // would need variant-level filters, which AGP does not express cleanly.
+      ndk { abiFilters += listOf("arm64-v8a") }
       isMinifyEnabled = false
       proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
       // Real release signing when the CI secrets are present; debug-signed otherwise so assemble*Release
