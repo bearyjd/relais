@@ -1,9 +1,9 @@
 First public release (1.0.15).
-• OpenAI-compatible /v1/chat/completions with SSE streaming
-• Native /generate endpoint: text, image, audio input
-• /health and Prometheus /metrics
+• OpenAI-compatible /v1/chat/completions (SSE) + tool calling
+• Anthropic-compatible /v1/messages
+• Audio in and out: transcriptions and on-device TTS speech
+• Embeddings, rerank, RAG and batch endpoints
 • Image generation on the full build
-• Default model gemma-4-E4B-it (~3.7 GB); curated list and HuggingFace search
-• Auto-start, Doze survival, crash/OOM recovery
-• Thermal backpressure (503 + Retry-After)
+• Curated models + HuggingFace search; per-request model swap
+• Auto-start, Doze survival, crash/OOM recovery, thermal backpressure
 • Encrypted API key, HTTPS on the LAN, mDNS discovery
