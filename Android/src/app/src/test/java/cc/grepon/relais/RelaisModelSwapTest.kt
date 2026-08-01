@@ -122,10 +122,28 @@ class RelaisModelSwapTest {
   @Test fun `an unprovisioned model is NotProvisioned even when also flagged incompatible`() {
     // Not-on-disk is the more actionable diagnosis, and it is checked against real state rather
     // than a table — so it must not be masked by the compat verdict.
+    //
+    // NOTE: an earlier revision of this test passed `incompatibleReason = { null }`, so it never
+    // flagged the model at all and passed no matter which check ran first — it did not test its own
+    // name. The verdict here MUST come back incompatible for the assertion to mean anything.
     val absent = "meta-llama/Llama-3-70B"
     assertEquals(
       ModelRequestOutcome.NotProvisioned(absent),
-      outcome(absent, provisioned = emptySet(), configuredId = configured, incompatibleReason = { null }),
+      outcome(
+        absent,
+        provisioned = emptySet(),
+        configuredId = configured,
+        incompatibleReason = { "flagged unloadable by the table" },
+      ),
+    )
+  }
+
+  @Test fun `an on-disk incompatible model still reports Incompatible, not NotProvisioned`() {
+    // The other half of the ordering: once the model IS on disk, the compat verdict is what the
+    // operator needs — re-downloading will not help. Guards against over-correcting the ordering.
+    assertEquals(
+      ModelRequestOutcome.Incompatible(alsoOnDisk, "not loadable by this node's runtime (engine-create fails)"),
+      outcome(alsoOnDisk, incompatibleReason = brokenOnThisRuntime),
     )
   }
 

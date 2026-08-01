@@ -229,6 +229,23 @@ object RelaisModelProvisioner {
     // Capture the id AFTER substitution so the issue-#11 drift guard doesn't see false drift
     // (the id is now E2B, and idAtStart must match for the persist gate to pass).
     val idAtStart = RelaisConfig.modelId(context)
+    // #220 follow-up: refuse a MEASURED-incompatible model HERE, at the single chokepoint, before
+    // any fast path. Filtering RelaisModelCatalog only controlled what was OFFERED in the selector
+    // and /v1/models; every other route into provisioning stayed open — a persisted ref from before
+    // the model was known-bad, a ref built by HF search, a pre-staged file, and `adb --es modelId`,
+    // which is literally issue #220's own reproduction command. All of them still downloaded
+    // multiple GB and then died in engine-create, which is the exact symptom that issue exists to
+    // prevent.
+    //
+    // Same lesson as the G5 default above: the chokepoint is ensureModel, NOT resolveModel — the
+    // fast paths below return before resolveModel is ever reached, so a check there is bypassable.
+    //
+    // Keyed by repo id, matching RelaisRuntimeCompat's table. A repo entry therefore blocks EVERY
+    // build in that repo: before marking a repo whose builds differ (Gemma3-1B-IT is the near miss
+    // — its allowlist entry vs its Relais-pinned G5 AOT build), the table needs file-level keying.
+    RelaisRuntimeCompat.incompatibleReason(idAtStart)?.let { why ->
+      error("Model '$idAtStart' is $why. Choose a different model.")
+    }
     // Offline-safe fast path: a previously provisioned file still on disk needs no network. This
     // lets a rebooted / watchdog-restarted node boot without the allowlist when nothing to download.
     RelaisConfig.modelPath(context)?.let { saved ->
