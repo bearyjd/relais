@@ -104,14 +104,18 @@ fun resolveModelRequest(
   // reality outranks the static table. The table's job is to stop us loading something, not to
   // refuse something already demonstrably working.
   if (requested == residentModelId) return ModelRequestOutcome.ServeResident
-  // #220: being on disk proves the file downloaded, NOT that the engine can create against it.
-  // Refuse before attempting a swap, otherwise the client gets a 503 + Retry-After and the swap
-  // then dies deep in engine init with nothing explaining why.
-  incompatibleReason(requested)?.let {
-    return ModelRequestOutcome.Incompatible(requested, it)
-  }
   if (requested == configuredModelId || requested in provisionedModelIds) {
+    // On disk (or the operator's own selection) — but on-disk proves the file downloaded, NOT that
+    // the engine can create against it. Refuse before attempting a swap, otherwise the client gets
+    // 503 + Retry-After and the swap then dies deep in engine init explaining nothing.
+    incompatibleReason(requested)?.let {
+      return ModelRequestOutcome.Incompatible(requested, it)
+    }
     return ModelRequestOutcome.SwapThenRetry(requested)
   }
+  // Deliberately AFTER the on-disk check: for a model that is not here at all, "not provisioned" is
+  // the more actionable diagnosis and it comes from real state rather than a static table. An
+  // earlier revision checked compatibility first, so an ABSENT known-bad id answered Incompatible —
+  // telling the operator the file was unloadable when the real problem was that it was missing.
   return ModelRequestOutcome.NotProvisioned(requested)
 }
