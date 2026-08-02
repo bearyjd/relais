@@ -132,6 +132,22 @@ object RelaisModelProvisioner {
   fun allowlistUrl(): String = "$ALLOWLIST_BASE_URL/$ALLOWLIST_REVISION.json"
 
   /**
+   * Refuses [modelId] if it is MEASURED not to load on the pinned runtime (#220).
+   *
+   * Single-sourced so every gate speaks with one voice: the message is operator-facing and IS the
+   * failure the operator sees — [RelaisNodeService] renders it as "Init failed: …" and
+   * [ModelsScreen] as a failed download — rather than a generic engine-create stack trace.
+   *
+   * Only measured failures are withheld. [RelaisRuntimeCompat.Loadability.SUSPECT] and UNKNOWN pass,
+   * because over-blocking here would silently break every model nobody has run yet.
+   */
+  internal fun refuseIfIncompatible(modelId: String) {
+    RelaisRuntimeCompat.incompatibleReason(modelId)?.let { why ->
+      error("Model '$modelId' is $why. Choose a different model.")
+    }
+  }
+
+  /**
    * Resolves the configured model to a [Model] (download URL + on-disk path populated). Prefers a
    * persisted [RelaisModelRef] — which needs no network and works for non-allowlist HF models —
    * and otherwise fetches the allowlist and matches [RelaisConfig.modelId]. Blocking. Throws with a
@@ -139,6 +155,18 @@ object RelaisModelProvisioner {
    */
   fun resolveModel(context: Context): Model {
     val modelId = RelaisConfig.modelId(context)
+    // #220 follow-up: gate the id THIS function actually resolves, in the same breath as reading it.
+    // [ensureModel]'s gate reads the preference separately and earlier, so the two reads can disagree
+    // — flip the selection mid-provision (ModelSwitch.applyRef while an earlier startup is still
+    // running) and the id that gets resolved and DOWNLOADED is one no gate ever inspected. The #11
+    // drift guard does not save us: it only declines to PERSIST the path, which is still returned and
+    // still handed to engine init. Checking here closes that window by construction.
+    //
+    // This is also the ONLY compat gate on [RelaisEngine.ensureModelSwapInBackground]'s untargeted
+    // path (`target == null`), which calls resolveModel directly and never passes through ensureModel.
+    // Keep BOTH gates: this one cannot cover ensureModel's offline fast paths, which return before
+    // resolveModel is ever reached.
+    refuseIfIncompatible(modelId)
     // Ref fast path: a self-contained ref provisions any selected model offline. Gated to modelId
     // agreement so a bare id change (adb `--es modelId`) bypasses a stale ref and re-resolves the
     // new id via the allowlist below; RelaisConfig.setModelId also drops a diverged ref.
@@ -243,9 +271,10 @@ object RelaisModelProvisioner {
     // Keyed by repo id, matching RelaisRuntimeCompat's table. A repo entry therefore blocks EVERY
     // build in that repo: before marking a repo whose builds differ (Gemma3-1B-IT is the near miss
     // — its allowlist entry vs its Relais-pinned G5 AOT build), the table needs file-level keying.
-    RelaisRuntimeCompat.incompatibleReason(idAtStart)?.let { why ->
-      error("Model '$idAtStart' is $why. Choose a different model.")
-    }
+    //
+    // Paired with the gate inside resolveModel, which covers the case this one cannot: the id being
+    // re-read there after an operator changes the selection mid-provision.
+    refuseIfIncompatible(idAtStart)
     // Offline-safe fast path: a previously provisioned file still on disk needs no network. This
     // lets a rebooted / watchdog-restarted node boot without the allowlist when nothing to download.
     RelaisConfig.modelPath(context)?.let { saved ->
