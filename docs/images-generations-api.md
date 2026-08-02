@@ -85,7 +85,9 @@ server `Content-Length` is checked and the node logs that the artifact is unveri
 - **Per-device support.** Vulkan is used on **Tensor G3/G4** (Mali; a 512×512 SD-Turbo image takes about
   288 s cold on G4). **Tensor G5** (Pixel 10 / PowerVR DXT) has a driver-level first-dispatch Vulkan
   deadlock (issue #69), including after the current PowerVR `25.3@6908880` update: a bounded re-test
-  initialized Vulkan and uploaded the model to VRAM but received no reply in 180 s. Production therefore
+  initialized Vulkan and uploaded the model to VRAM but received no reply in 180 s. The driver report is
+  tracked at [Google Issue Tracker #541837150](https://issuetracker.google.com/issues/541837150).
+  Production therefore
   forces llmedge's CPU backend on G5. This produces a valid 512×512 SD-Turbo image in **279.3 s** rather
   than wedging the node. The Vulkan bypass is deliberate; release builds cannot opt out of it. `degoogled`
   registers no backend → permanent 501.
