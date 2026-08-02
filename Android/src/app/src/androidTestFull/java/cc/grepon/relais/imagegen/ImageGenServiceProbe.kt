@@ -124,6 +124,39 @@ class ImageGenServiceProbe {
     png.delete()
   }
 
+  /**
+   * Explicitly re-tests Vulkan after a Pixel 10 vendor-driver update. This is NOT the normal probe:
+   * it is double-gated because it bypasses the production CPU safeguard on a driver historically
+   * known to deadlock. The service is an isolated, single-use process and [runGenerates] kills it
+   * after the bounded wait, so a regression cannot wedge the node or the next request.
+   */
+  @Test
+  fun vulkanRetestAfterDriverUpdate() {
+    assumeTrue("pass RELAIS_PROBE=1", args.getString("RELAIS_PROBE") == "1")
+    assumeTrue(
+      "pass RELAIS_VULKAN_RETEST=1 only for an intentional vendor-driver retest",
+      args.getString("RELAIS_VULKAN_RETEST") == "1",
+    )
+    val modelPath = args.getString("model_path") ?: DEFAULT_MODEL_PATH
+    assumeTrue("GGUF model not readable at $modelPath — push one first", File(modelPath).canRead())
+
+    val outcome =
+      runGenerates(
+        listOf(generateRequest(modelPath, debugForceVulkan = true)),
+        timeoutS = VULKAN_RETEST_TIMEOUT_S,
+      )
+
+    assertTrue("no Vulkan reply within ${VULKAN_RETEST_TIMEOUT_S}s — driver still wedges", outcome.allReplied)
+    val reply = outcome.terminalReply()
+    assertNull("Vulkan generate reported an error: ${reply.error}", reply.error)
+    val path = reply.pngPath
+    assertTrue("MSG_RESULT carried no PNG path", !path.isNullOrBlank())
+    val png = File(path!!)
+    assertTrue("PNG file missing at $path", png.exists() && png.length() > 0)
+    assertTrue("Vulkan worker did not exit after killProcess", outcome.processGone)
+    png.delete()
+  }
+
   @Test
   fun missingModelRepliesErrorAndProcessExits() {
     assumeTrue("Deferred on-device probe; pass -e RELAIS_PROBE 1 to run", args.getString("RELAIS_PROBE") == "1")
@@ -217,7 +250,7 @@ class ImageGenServiceProbe {
     }
   }
 
-  private fun generateRequest(modelPath: String): Bundle = Bundle().apply {
+  private fun generateRequest(modelPath: String, debugForceVulkan: Boolean = false): Bundle = Bundle().apply {
     putString(ImageGenIpc.KEY_MODEL_PATH, modelPath)
     putString(ImageGenIpc.KEY_PROMPT, "a red apple on a wooden table")
     putInt(ImageGenIpc.KEY_WIDTH, 512)
@@ -225,6 +258,7 @@ class ImageGenServiceProbe {
     putInt(ImageGenIpc.KEY_STEPS, 4)
     putLong(ImageGenIpc.KEY_SEED, 42L)
     putFloat(ImageGenIpc.KEY_CFG, 1.0f)
+    putBoolean(ImageGenIpc.KEY_DEBUG_FORCE_VULKAN, debugForceVulkan)
   }
 
   /** True if every sampled pixel is identical (a flat/blank canvas — generation failed silently). */
@@ -258,6 +292,7 @@ class ImageGenServiceProbe {
   private companion object {
     const val DEFAULT_MODEL_PATH = "/data/local/tmp/relais/imagegen/sdturbo/sdturbo.gguf"
     const val GENERATE_TIMEOUT_S = 600L // headroom for the CPU backend (PowerVR/G5): ~270 s measured
+    const val VULKAN_RETEST_TIMEOUT_S = 180L // historical G5 wedge is immediate; bound the debug probe
     const val CONTROL_TIMEOUT_S = 30L
     const val PROCESS_EXIT_TIMEOUT_MS = 10_000L
   }

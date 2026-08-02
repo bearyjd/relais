@@ -60,6 +60,12 @@ object ImageGenIpc {
   /** Classifier-free-guidance scale as a `Float` (SD-Turbo wants ~1.0). */
   const val KEY_CFG = "cfg"
 
+  /**
+   * Debug-only on-device probe override for re-testing a vendor Vulkan driver. Production ignores it;
+   * see [ImageGenService] and issue #69.
+   */
+  const val KEY_DEBUG_FORCE_VULKAN = "debug_force_vulkan"
+
   // ---- reply bundle keys (service → node) ----
   /** Absolute path of the written PNG in the shared cacheDir; the node reads then deletes it. */
   const val KEY_PNG_PATH = "png_path"
