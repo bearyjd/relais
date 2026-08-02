@@ -300,6 +300,9 @@ dependencies {
   testImplementation(libs.junit)
   testImplementation(libs.com.google.code.gson)
   testImplementation(libs.robolectric)
+  // #220: lets a JVM test construct DefaultDownloadRepository (its ctor calls WorkManager.getInstance)
+  // so the download-refusal gate is pinned by a test of the REAL repository, not just its helper.
+  testImplementation(libs.androidx.work.testing)
   testImplementation(libs.kotlinx.coroutines.test) // virtual-time coroutine tests (#171 shell-polling)
   // Real org.json implementation for JVM unit tests: Android stubs return null for put() under
   // isReturnDefaultValues=true, which breaks buildModelsResponse. This jar provides the real impl.

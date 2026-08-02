@@ -141,4 +141,41 @@ object RelaisRuntimeCompat {
    */
   fun requiresHfToken(modelId: String): Boolean =
     modelId in LICENSE_GATED || modelId.startsWith(GATED_OWNER_PREFIX)
+
+  /**
+   * The HuggingFace repo id a download URL points at (`owner/repo`), or null when the URL is not an
+   * HF repo URL this table can be keyed by.
+   *
+   * ### Why this exists
+   * [Model] carries no model id — only a display `name` and a download `url`. The upstream download
+   * stack ([DownloadRepository]) therefore cannot ask [incompatibleReason] anything without
+   * recovering the id first. `AllowedModel.toModel()` builds the URL as
+   * `https://huggingface.co/{modelId}/resolve/{commitHash}/{modelFile}`, so the id is exactly the
+   * two path segments before `/resolve/` — recovered here rather than threaded through the whole
+   * upstream data model.
+   *
+   * Returns null for a non-HF host or any shape without `/resolve/` (an `AllowedModel.url` override
+   * can point anywhere). Null means "cannot identify", which callers must treat as **allow**, not
+   * block — matching the rule that only MEASURED failures are withheld.
+   */
+  fun repoIdFromDownloadUrl(url: String): String? {
+    val afterHost = url.substringAfter("://", missingDelimiterValue = url).substringAfter('/', "")
+    val host = url.substringAfter("://", missingDelimiterValue = "").substringBefore('/')
+    if (host != "huggingface.co") return null
+    val path = afterHost.substringBefore('?')
+    val resolveAt = path.indexOf("/resolve/")
+    if (resolveAt <= 0) return null
+    val repo = path.substring(0, resolveAt)
+    // Exactly owner/repo. Anything else (a bare name, a nested path) is not a repo id we can key on.
+    return repo.takeIf { it.count { c -> c == '/' } == 1 && !it.startsWith('/') && !it.endsWith('/') }
+  }
+
+  /**
+   * The refusal reason for a model identified only by its download [url], or null to allow.
+   *
+   * The seam the legacy upstream download path uses. See [repoIdFromDownloadUrl] for why a URL is
+   * all that path has to work with.
+   */
+  fun incompatibleReasonForDownloadUrl(url: String): String? =
+    repoIdFromDownloadUrl(url)?.let { incompatibleReason(it) }
 }
