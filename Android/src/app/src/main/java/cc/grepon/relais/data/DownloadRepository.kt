@@ -39,6 +39,7 @@ import androidx.work.WorkManager
 import cc.grepon.relais.AppLifecycleProvider
 import cc.grepon.relais.GalleryEvent
 import cc.grepon.relais.R
+import cc.grepon.relais.RelaisRuntimeCompat
 import cc.grepon.relais.firebaseAnalytics
 import cc.grepon.relais.worker.DownloadWorker
 import java.util.UUID
@@ -98,6 +99,34 @@ class DefaultDownloadRepository(
     model: Model,
     onStatusUpdated: (model: Model, status: ModelDownloadStatus) -> Unit,
   ) {
+    // #220: refuse a model MEASURED not to load on the pinned runtime, before a single byte moves.
+    //
+    // This is the real chokepoint for the legacy (upstream Gallery) download stack, and it is NOT
+    // reachable from RelaisModelProvisioner's gates — the node provisioner drives DownloadWorker
+    // itself. Two callers land here and only one of them goes through
+    // ModelManagerViewModel.downloadModel:
+    //   - a tap on a model row (via that method), and
+    //   - processPendingDownloads(), which calls this method DIRECTLY to resume every
+    //     PARTIALLY_DOWNLOADED model on each MainActivity launch.
+    // The resume path is the one that matters: it needs no user action, it reads the RAW allowlist
+    // (ModelManagerViewModel never consults RelaisModelCatalog), and a device holding a partial
+    // pre-#220 Qwen2.5-1.5B download would resume that multi-GB transfer on every cold start for a
+    // model the engine can never create against. Gating the ViewModel instead would miss it.
+    //
+    // Keyed off the URL because [Model] carries no model id; see
+    // [RelaisRuntimeCompat.repoIdFromDownloadUrl]. An unidentifiable URL is ALLOWED — only measured
+    // failures are withheld.
+    RelaisRuntimeCompat.incompatibleReasonForDownloadUrl(model.url)?.let { why ->
+      Log.w(TAG, "Refusing download of '${model.name}': $why")
+      onStatusUpdated(
+        model,
+        ModelDownloadStatus(
+          status = ModelDownloadStatusType.FAILED,
+          errorMessage = "Model '${model.name}' is $why. Choose a different model.",
+        ),
+      )
+      return
+    }
     // Create input data.
     val builder = Data.Builder()
     val totalBytes = model.totalBytes + model.extraDataFiles.sumOf { it.sizeInBytes }

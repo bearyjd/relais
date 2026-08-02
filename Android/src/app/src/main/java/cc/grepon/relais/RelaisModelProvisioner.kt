@@ -257,8 +257,16 @@ object RelaisModelProvisioner {
     // Capture the id AFTER substitution so the issue-#11 drift guard doesn't see false drift
     // (the id is now E2B, and idAtStart must match for the persist gate to pass).
     val idAtStart = RelaisConfig.modelId(context)
-    // #220 follow-up: refuse a MEASURED-incompatible model HERE, at the single chokepoint, before
-    // any fast path. Filtering RelaisModelCatalog only controlled what was OFFERED in the selector
+    // #220 follow-up: refuse a MEASURED-incompatible model HERE, before any fast path.
+    //
+    // NOT "the single chokepoint" — an earlier revision of this comment claimed that and was wrong.
+    // This is the chokepoint for the NODE's provisioning path only. The upstream Gallery download
+    // stack is a separate lane that never calls this function, and it has its own gate in
+    // DefaultDownloadRepository.downloadModel; its resume path was still fetching known-bad models
+    // on every launch after this one landed. If you add a third way to fetch a model, it needs its
+    // own gate too — grep for callers of DownloadWorker and DownloadRepository, not just this file.
+    //
+    // Filtering RelaisModelCatalog only controlled what was OFFERED in the selector
     // and /v1/models; every other route into provisioning stayed open — a persisted ref from before
     // the model was known-bad, a ref built by HF search, a pre-staged file, and `adb --es modelId`,
     // which is literally issue #220's own reproduction command. All of them still downloaded
