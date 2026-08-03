@@ -66,6 +66,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -264,13 +265,16 @@ internal fun ChatScreen() {
           Box(Modifier.size(9.dp).background(Amber, RoundedCornerShape(5.dp)))
           Spacer(Modifier.size(10.dp))
           Text("RELAIS", color = Amber, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold, fontSize = 18.sp, letterSpacing = 4.sp)
-          Spacer(Modifier.weight(1f))
           Text(
             RelaisConfig.modelId(ctx),
             color = Amber,
             fontFamily = FontFamily.Monospace,
             fontSize = 12.sp,
-            modifier = Modifier.clickable { showModelSheet = true },
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            // A long Hugging Face id must give way to the NEW CHAT and conversation-actions
+            // controls; without a bounded width it pushes SHARE / EXPORT off the right edge.
+            modifier = Modifier.weight(1f).clickable { showModelSheet = true },
           )
           Spacer(Modifier.size(12.dp))
           Box(
