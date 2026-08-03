@@ -9,12 +9,13 @@ base64 PNGs.
 POST /v1/images/generations          Authorization: Bearer <node key>
 ```
 
-> **Status: LIVE on `full` (Vulkan devices); honest `501` on `degoogled`.** The route + envelope (#63),
+> **Status: LIVE on `full`; honest `501` on `degoogled`.** The route + envelope (#63),
 > the process-isolated `:imagegen` service + `llmedge` dep (**PR-A** #67), the model provisioner +
 > registry (**PR-B**), and the `SdcppImageGenerator` impl + registration + endpoint flip `501→503→200`
-> (**PR-C**) are all in. On a `full` build with a Vulkan GPU the endpoint provisions (503) then returns
-> `200`; `degoogled` registers no backend → permanent `501`. **Validated on-device:** a real 512×512 PNG
-> on Tensor **G4** (Pixel 9 Pro Fold). (MediaPipe was evaluated and **reverted as a dead end** — see the
+> (**PR-C**) are all in. On a `full` build the endpoint provisions (503) then returns `200`; `degoogled`
+> registers no backend → permanent `501`. **Validated on-device:** real 512×512 PNGs on Tensor **G4**
+> (Pixel 9 Pro Fold, Vulkan) and Tensor **G5** (Pixel 10 Pro Fold, CPU fallback). (MediaPipe was evaluated
+> and **reverted as a dead end** — see the
 > on-device evaluation at the bottom.)
 
 ## Request
@@ -81,11 +82,19 @@ server `Content-Length` is checked and the node logs that the artifact is unveri
   close+recreate → deadlock; facade → first-generate hang). The only stable primitive is a `:imagegen`
   process that loads the model, does **one** generate, writes the PNG, and is killed. Every image is a
   fresh process's first-and-only generate; a native crash/hang is contained — the node never dies.
-- **Per-device support.** Needs **Vulkan** (`LLMEdge.isVulkanAvailable()`). Confirmed working on **Tensor
-  G3** (Pixel 8 Pro) and **Tensor G4** (Pixel 9 Pro Fold / Mali — a 512×512 SD-Turbo image in ~288 s).
-  **Deadlocks on Tensor G5** (Pixel 10) at the first ggml-vulkan dispatch (issue #69 — PowerVR/DXT); the
-  node-side watchdog reclaims the wedged process, so a G5 request fails (timeout) rather than wedging.
-  `degoogled` registers no backend → permanent 501.
+- **Per-device support.** Vulkan is used on **Tensor G3/G4** (Mali; a 512×512 SD-Turbo image takes about
+  288 s cold on G4). **Tensor G5** (Pixel 10 / PowerVR DXT) has a driver-level first-dispatch Vulkan
+  deadlock (issue #69), including after the current PowerVR `25.3@6908880` update: a bounded re-test
+  initialized Vulkan and uploaded the model to VRAM but received no reply in 180 s. The driver report is
+  tracked at [Google Issue Tracker #541837150](https://issuetracker.google.com/issues/541837150).
+  Production therefore
+  forces llmedge's CPU backend on G5. This produces a valid 512×512 SD-Turbo image in **279.3 s** rather
+  than wedging the node. The Vulkan bypass is deliberate; release builds cannot opt out of it. `degoogled`
+  registers no backend → permanent 501.
+- **G5 re-test protocol.** The debug-only, double-gated `ImageGenServiceProbe.vulkanRetestAfterDriverUpdate`
+  is the safe way to check a future driver: pass both `RELAIS_PROBE=1` and `RELAIS_VULKAN_RETEST=1`. It
+  bypasses CPU only in the disposable `:imagegen` process, waits at most 180 s, then kills that process.
+  Do not add a user-facing switch until this probe produces a valid PNG on a released driver.
 - **Performance.** **~5 min per image, cold, on a Tensor GPU** — each image is a fresh process by design,
   so every one pays the full fixed overhead (model→GPU load + ggml-vulkan shader compile + tiled VAE
   decode); fewer steps don't rescue it (measured ~288 s for SD-Turbo 4-step 512² on G4). The warm ~90 s

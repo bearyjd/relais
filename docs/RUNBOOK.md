@@ -33,7 +33,7 @@ adb -s <serial> shell am start -n <appId>/cc.grepon.relais.RelaisControlActivity
 | First-inference SIGSEGV on **Tensor G5** with E4B | upstream LiteRT-LM #2566 (G5-specific) | Pin **E2B** on G5 (the default is already gated); don't re-file |
 | `503` + `Retry-After` | thermal shed or model still provisioning | Back off; let the device cool; check `/health` `ready` |
 | `429` + `Retry-After` | admission queue full (cap 16) | Retry after the header delay |
-| `POST /v1/images/generations` → `501` | image-gen backend unregistered (#16) | Expected; works on G3 (~5 min cold), **deadlocks on G5** — don't attempt on G5 |
+| `POST /v1/images/generations` → `501` | image-gen backend unregistered (#16) | Expected on `degoogled`; full builds register image-gen. G3/G4 use Vulkan (~5 min cold); G5 uses the safe CPU fallback (~279 s) because PowerVR Vulkan still deadlocks (#69). |
 | `401 unauthorized` | missing/wrong bearer token | Pass the node's API key (constant-time compared) |
 | Node won't start after a dev branch switch | stale Hilt codegen | `./gradlew :app:clean` |
 | CI build fails on GMS / permission gate | `degoogled` dexed a GMS class, or `playsafe` kept a restricted perm | Re-check the offending flavor's deps / `src/playsafe/AndroidManifest.xml` |

@@ -30,6 +30,7 @@ import android.os.Messenger
 import android.os.Process
 import android.os.RemoteException
 import android.util.Log
+import cc.grepon.relais.BuildConfig
 import cc.grepon.relais.common.isPixel10
 import io.aatricks.llmedge.ImageRuntimeConfig
 import io.aatricks.llmedge.LLMEdgeConfig
@@ -170,7 +171,13 @@ class ImageGenService : Service() {
     // can fire. llmedge 0.4.2's ImageRuntimeConfig.useVulkan=false forces the CPU backend — the
     // upstream escape hatch for exactly this device (Aatricks/llmedge#30). Gated to the affected SoC
     // via [imageGenForcesCpuBackend] so Mali (Tensor G3/G4) keeps the fast Vulkan path.
-    val forceCpu = imageGenForcesCpuBackend(isPixel10())
+    // A release build ALWAYS preserves the G5 CPU safeguard. The explicit request bit exists only
+    // for the opt-in instrumentation retest after a vendor-driver update, and remains contained in
+    // this disposable worker process if that driver still wedges.
+    val debugForceVulkan =
+      BuildConfig.DEBUG && request.getBoolean(ImageGenIpc.KEY_DEBUG_FORCE_VULKAN, false)
+    val forceCpu = imageGenForcesCpuBackend(isPixel10()) && !debugForceVulkan
+    if (debugForceVulkan) Log.w(TAG, "DEBUG probe forcing Vulkan; CPU G5 safeguard bypassed (#69)")
     if (forceCpu) Log.i(TAG, "forcing CPU backend for image-gen (PowerVR/G5 Vulkan deadlock, #69)")
     val client =
       ImageClient.create(
