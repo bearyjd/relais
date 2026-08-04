@@ -52,7 +52,7 @@ import org.junit.runner.RunWith
  * Gate validation for the Relais node. Results under logcat tag "RelaisBench".
  *
  *   adb shell am instrument -w -e class cc.grepon.relais.RelaisNodeTest \
- *     cc.grepon.relais.test/androidx.test.runner.AndroidJUnitRunner
+ *     com.ventouxlabs.relais.izzy.test/androidx.test.runner.AndroidJUnitRunner
  */
 @RunWith(AndroidJUnit4::class)
 class RelaisNodeTest {
@@ -141,7 +141,7 @@ class RelaisNodeTest {
    *
    *   adb shell am instrument -w -e class \
    *     cc.grepon.relais.RelaisNodeTest#g_provisionDownloadsModel \
-   *     cc.grepon.relais.test/androidx.test.runner.AndroidJUnitRunner
+   *     com.ventouxlabs.relais.izzy.test/androidx.test.runner.AndroidJUnitRunner
    */
   @Test
   fun g_provisionDownloadsModel() {

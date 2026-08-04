@@ -41,8 +41,8 @@ import org.junit.runner.RunWith
  * Run (rango / Pixel 10 / G5, E2B staged):
  *   adb -s <serial> shell am instrument -w \
  *     -e class cc.grepon.relais.MultiTurnReplayProbe \
- *     -e model /storage/emulated/0/Android/data/cc.grepon.relais/files/litert_community_gemma_4_E2B_it_litert_lm/361a4010ad6d88fc5c86e148e333c0342b99763d/gemma-4-E2B-it.litertlm \
- *     cc.grepon.relais.test/androidx.test.runner.AndroidJUnitRunner
+ *     -e model /storage/emulated/0/Android/data/com.ventouxlabs.relais.izzy/files/litert_community_gemma_4_E2B_it_litert_lm/361a4010ad6d88fc5c86e148e333c0342b99763d/gemma-4-E2B-it.litertlm \
+ *     com.ventouxlabs.relais.izzy.test/androidx.test.runner.AndroidJUnitRunner
  *
  * Watch: adb logcat -s RelaisProbe
  */

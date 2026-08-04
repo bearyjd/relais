@@ -39,7 +39,7 @@ import org.junit.runner.RunWith
  * lane or unattended CI.
  *
  *   adb shell am instrument -w -e class cc.grepon.relais.ClientConfigEndpointProbe \
- *     -e RELAIS_PROBE 1 cc.grepon.relais.test/androidx.test.runner.AndroidJUnitRunner
+ *     -e RELAIS_PROBE 1 com.ventouxlabs.relais.izzy.test/androidx.test.runner.AndroidJUnitRunner
  *
  * It starts a loopback-only [RelaisHttpServer] (plain HTTP, the same code path as the production
  * loopback listener) and asserts:

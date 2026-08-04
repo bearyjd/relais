@@ -45,7 +45,7 @@ import org.junit.runner.RunWith
  * receiver, which an instrumented assertion can't host.
  *
  *   adb shell am instrument -w -e class cc.grepon.relais.BatchE2eProbe -e RELAIS_PROBE 1 \
- *     cc.grepon.relais.test/androidx.test.runner.AndroidJUnitRunner
+ *     com.ventouxlabs.relais.izzy.test/androidx.test.runner.AndroidJUnitRunner
  *   # in another shell: adb logcat -s RelaisBatch:* RelaisEngine:*
  */
 @RunWith(AndroidJUnit4::class)

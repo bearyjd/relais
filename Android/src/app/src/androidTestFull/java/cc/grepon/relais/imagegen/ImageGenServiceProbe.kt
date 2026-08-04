@@ -72,7 +72,7 @@ import org.junit.runner.RunWith
  *
  *   adb push sdturbo.gguf /data/local/tmp/relais/imagegen/sdturbo/sdturbo.gguf   # happy path only
  *   adb shell am instrument -w -e class cc.grepon.relais.imagegen.ImageGenServiceProbe \
- *     -e RELAIS_PROBE 1 cc.grepon.relais.test/androidx.test.runner.AndroidJUnitRunner
+ *     -e RELAIS_PROBE 1 com.ventouxlabs.relais.izzy.test/androidx.test.runner.AndroidJUnitRunner
  *   # optional: -e model_path /data/local/tmp/.../model.gguf   (override the default)
  *   # in another shell: adb logcat -s ImageGenService:*
  */

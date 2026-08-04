@@ -41,7 +41,7 @@ import org.junit.runner.RunWith
  *
  *   adb shell am instrument -w -e class cc.grepon.relais.NodeToolsProbe \
  *     -e RELAIS_PROBE 1 -e hf_token hf_XXXX \
- *     cc.grepon.relais.test/androidx.test.runner.AndroidJUnitRunner
+ *     com.ventouxlabs.relais.izzy.test/androidx.test.runner.AndroidJUnitRunner
  *
  * NOTE: the full LLM round-trip (the model deciding to call a built-in → the node executing it → the
  * grounded re-generation via /v1/chat/completions with `node_tools:true`) is a DEFERRED gate — it

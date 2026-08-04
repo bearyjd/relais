@@ -40,7 +40,7 @@ import org.junit.runner.RunWith
  * (https — Android blocks cleartext http, so a loopback https receiver / public endpoint is needed).
  *
  *   adb shell am instrument -w -e class cc.grepon.relais.BatchProbe -e RELAIS_PROBE 1 \
- *     cc.grepon.relais.test/androidx.test.runner.AndroidJUnitRunner
+ *     com.ventouxlabs.relais.izzy.test/androidx.test.runner.AndroidJUnitRunner
  */
 @RunWith(AndroidJUnit4::class)
 class BatchProbe {

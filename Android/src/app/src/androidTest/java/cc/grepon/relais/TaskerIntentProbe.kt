@@ -52,7 +52,7 @@ import org.junit.runner.RunWith
  *
  * Run (rango / Pixel 10 / G5, E2B staged):
  *   adb -s <serial> shell am instrument -w -e class cc.grepon.relais.TaskerIntentProbe \
- *     cc.grepon.relais.test/androidx.test.runner.AndroidJUnitRunner
+ *     com.ventouxlabs.relais.izzy.test/androidx.test.runner.AndroidJUnitRunner
  * Watch: adb logcat -s RelaisTaskerProbe
  */
 @RunWith(AndroidJUnit4::class)

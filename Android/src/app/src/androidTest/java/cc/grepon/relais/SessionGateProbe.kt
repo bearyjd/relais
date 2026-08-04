@@ -29,7 +29,7 @@ import org.junit.runner.RunWith
  * re-reads it on its next boot (the running node reads the flag per request, so a restart picks it up).
  *
  *   adb -s <serial> shell am instrument -w -e class cc.grepon.relais.SessionGateProbe#enableSessionMemory \
- *     cc.grepon.relais.test/androidx.test.runner.AndroidJUnitRunner
+ *     com.ventouxlabs.relais.izzy.test/androidx.test.runner.AndroidJUnitRunner
  */
 @RunWith(AndroidJUnit4::class)
 class SessionGateProbe {

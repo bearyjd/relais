@@ -58,7 +58,7 @@ import org.junit.runner.RunWith
  *   adb shell am instrument -w \
  *     -e class cc.grepon.relais.RelaisBackendBenchmarkTest#residentGpuMultimodal \
  *     -e model /data/local/tmp/relais/gemma-4-E4B-it.litertlm \
- *     cc.grepon.relais.test/androidx.test.runner.AndroidJUnitRunner
+ *     com.ventouxlabs.relais.izzy.test/androidx.test.runner.AndroidJUnitRunner
  *
  * Watch results: adb logcat -s RelaisBench
  */
