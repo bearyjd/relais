@@ -1,6 +1,6 @@
 # Dependencies, Flavors & Manifest Surface
 
-<!-- Generated: 2026-07-19 | Files scanned: build.gradle.kts + libs.versions.toml + AndroidManifest + src/{full,degoogled,playsafe} | main @ ab345ff -->
+<!-- Generated: 2026-08-04 | Files scanned: build.gradle.kts + libs.versions.toml + AndroidManifest + src/{full,degoogled,playsafe} | main @ afc237c1 -->
 
 ## External dependencies (catalog: `Android/src/gradle/libs.versions.toml`)
 | Dep | Version | Purpose | Flavor |
@@ -27,6 +27,10 @@ Tensor SDK (G5 TPU) is **not a Gradle dep** — a committed native dispatcher (`
 | degoogled | open | `com.ventouxlabs.relais.degoogled` | GrapheneOS/GitHub |
 
 playsafe strip live (#76, `tools:node="remove"` × 6). degoogled = zero GMS, CI-enforced.
+
+**appId ≠ namespace.** `namespace` stays `cc.grepon.relais`; `build.gradle.kts` `onVariants` sets the applicationId per channel (composing suffixes across both dimensions would double-suffix degoogled+open). This is why an on-device probe's instrument target is `com.ventouxlabs.relais.izzy.test` for `fullOpen`, not `cc.grepon.relais.test` — the latter resolves only to a pre-rebrand leftover package and fails at class-load. Resolve it per-device with `adb shell pm list packages | grep -E 'relais|ventoux'`.
+
+**Releases** — `v1.0.16` (2026-08-04) is the first published GitHub Release: `degoogled-open` APK 35.2 MB, `full-open` APK 77.9 MB, `full-playsafe` AAB 78.0 MB, all past the build/permission/ABI/16 KB-alignment/signature gates. R8 is ON for release builds (#231); every keep rule was earned from a real on-device failure, and CI runs no R8 — so proguard changes and reflective dep bumps need an on-device *inference* check, not just a green build.
 
 ## License split (CI-enforced) [NEW since 06-26]
 `.github/workflows/license-lint.yml` — net-new Relais files require an AGPL-3.0 header; Google-origin files keep Apache-2.0; scans `src/main/*.kt` only.

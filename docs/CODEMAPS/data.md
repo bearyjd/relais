@@ -1,6 +1,6 @@
 # Data Layer — Room, DataStore, DI
 
-<!-- Generated: 2026-07-19 | Files scanned: data/ + di/ + rag/RagStore + tts/imagegen provisioners | main @ ab345ff -->
+<!-- Generated: 2026-08-04 | Files scanned: data/ + di/ + rag/RagStore + tts/imagegen provisioners + RelaisModelRegistry | main @ afc237c1 -->
 
 ## Room — `relais.db` v5 (was v4; still additive-only, NO destructive fallback)
 Accessed via static `RelaisDatabase.get(context)` (not Hilt-provided).
@@ -22,6 +22,9 @@ Settings/UserData/Cutouts/BenchmarkResults/Skills — same 5 serializers, same f
 
 ## Config storage (NOT DataStore)
 `RelaisConfig` — `EncryptedSharedPreferences` for API key/TLS password/HF token; plaintext prefs for modelId, opt-ins, shed thresholds.
+
+## Model registry (#180) — plaintext pref, not Room
+`provisioned_models` holds `ProvisionedModel(modelId, path, displayName)` as a JSON array via `RelaisConfig.provisionedModels`/`setProvisionedModels`. It is the **safety boundary** for per-request model swaps: it only grows on a locally-successful provision, so a LAN client can complete a swap the operator already initiated but can never originate a download. **Pruned on READ**, not just on write — `pruneMissingProvisioned` drops entries whose file has vanished (storage cleared, model deleted, side-load removed), so eligibility reflects the filesystem rather than the last write.
 
 ## Model/voice provisioning (byte-size/filename-keyed on disk, NOT DB-tracked)
 | Asset | Path | Completeness check |

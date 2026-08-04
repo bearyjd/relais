@@ -1,86 +1,71 @@
-Codemap refresh — 2026-07-19
-Previous generation: 2026-06-26 @ main 44879e6
-This generation:      2026-07-19 @ main ab345ff (~35 days, +63 commits)
+Codemap refresh — 2026-08-04
+Previous generation: 2026-07-19 @ main ab345ff
+This generation:     2026-08-04 @ main afc237c1 (~16 days, +44 commits)
 
-FILES SCANNED: 334 main .kt (was 289) + 87 test .kt at prior snapshot (untracked delta this pass)
+FILES SCANNED: 318 main .kt (was 334) — a NET DECREASE. 29 verified-dead files were removed
+across 5 gated PRs (0c84a125 + siblings), implying ~13 net-new files in the same window.
+ui/ 114 -> 90, customtasks/ 43 -> 38.
 
 === CHANGE SUMMARY BY FILE ===
 
-architecture.md   ~45% changed
-  - ADDED: rerank subsystem, TTS subsystem, native mid-decode cancel (issue #165) to the
-    resilience spine and data-flow diagram
-  - CHANGED: litertlm 0.11.0 -> 0.12.0 (pinned; 0.14.0 tested+reverted, regresses G5 TPU, #150)
-  - CHANGED: "what it is" framing extended to include TTS/rerank/RAG-triad
-  - CORRECTED: ui/+customtasks/ reframed from "inherited Gallery, in active use" to
-    "mostly dead code, unreachable" (see frontend.md finding below)
+frontend.md   74% changed  (only file over the 30% gate; rewrite approved by the user)
+  - RESOLVED: the "29 genuinely dead files" section described work that HAS SINCE SHIPPED.
+    Every file it listed is gone from disk (verified individually). Section replaced with a
+    4-line "Dead code — cleared" note.
+  - CONDENSED: the 15-line same-day CORRECTION block collapsed to a 4-line standing warning.
+    The durable lesson is kept deliberately: Hilt @IntoSet multibinding is invisible to an
+    import-graph BFS, which is what produced the wrong "157 files dead" claim on 07-19. The
+    file now carries that lesson so the mistake is not re-derived; the incident narrative is
+    dropped.
+  - KEPT: ui/home/LicensesActivity.kt survived the cleanup (manifest-declared, probe-covered).
+    Its launch path SettingsDialog did NOT, so it is manifest-live but unreachable — corrected
+    from "IS dead" (present tense, pre-cleanup) to "was removed by the cleanup".
+  - CORRECTED: customtasks/agentchat/ 22 -> 24 files (stale count, unrelated to the cleanup).
 
-backend.md   ~55% changed (largest structural rewrite)
-  - RelaisHttpServer: 1570L -> 1876L, but decomposed from one ~717-line handle() god-method
-    into ~20 small handleX(ctx: RequestContext) handlers behind a shared RequestContext
-    (PRs #183-#188, issue #173 finding #1)
-  - ADDED ROUTES: POST /v1/rerank (new), POST /v1/audio/speech (new, TTS)
-  - ADDED: RequestContext field list, 5 new extracted helper files (RelaisTls, RelaisLanIp,
-    RelaisHttpIo, RelaisAdmission, RelaisAdmissionGate), resolveEmbeddingModel echo-contract
-    fix (issue #190/#192)
-  - ADDED PACKAGES: rerank/, tts/ (both new since old snapshot)
+architecture.md   27% changed
+  - CORRECTED: RelaisHttpServer 1876L -> 2202L, RelaisEngine 782L -> 1026L (both materially
+    stale; the file counts and line sizes were the least trustworthy part of the old map).
+  - CORRECTED: the dead-code pocket is removed, not pending. Title framing updated to match.
+  - ADDED: the #220 runtime-compat gate to the resilience spine — four chokepoints over one
+    measured table (catalog / provisioner x2 / per-request swap / legacy Gallery download).
 
-data.md   ~30% changed
-  - Room schema v4 -> v5: new Conversation + ChatTurn entities, new ChatDao (backs the
-    "chat depth" persistent in-app conversation feature)
-  - New migration 4->5
-  - UNCHANGED: DataStore (5 serializers), DI (AppModule), config storage (RelaisConfig)
-  - ADDED: on-disk provisioning path table for TTS/embed/imagegen (was previously undocumented)
+backend.md   23% changed
+  - ADDED MISSING ROUTE: POST /v1/messages (Anthropic Messages API, #179). Shipped ~07-23/25,
+    i.e. AFTER the last refresh, and never made it into the route table. Handler is live at
+    RelaisHttpServer.kt:484 (dispatch) / :1372 (handleAnthropicMessages).
+  - ADDED: a runtime-compat gate section — chokepoint table, the VERIFIED/INCOMPATIBLE/SUSPECT/
+    UNKNOWN axis, the independent license-gating axis, and where the operator-facing vs
+    API-client refusal copy each live (refusalMessage vs incompatibleModelMessage).
+  - CORRECTED: RelaisHttpServer/RelaisEngine line counts (as above).
 
-frontend.md   ~65% changed (biggest reframe, not just additive)
-  - STRUCTURAL FINDING: ui/navigation/GalleryNavGraph.kt and GalleryApp() are now UNREACHABLE.
-    MainActivity calls the new RelaisAppShell NavHost directly instead. This makes ~157 files
-    (ui/ 114 + customtasks/ 43) dead code, not "inherited UI still in use" as the prior map
-    stated — this is a correction, not just an addition.
-  - ADDED: RelaisAppShell nav tree (Dashboard/Chat/Models bottom nav), Chat Depth feature
-    (Room-persistent conversations, hybrid HTTP/in-process transport, ChatTransportSelector,
-    markdown, attachments, export, in-chat model switch)
-  - REMOVED FROM ACTIVE DESCRIPTION: old GalleryNavGraph route table (still exists in code,
-    now dead)
+dependencies.md   15% changed
+  - ADDED: appId != namespace. build.gradle.kts onVariants sets applicationId per channel while
+    namespace stays cc.grepon.relais. This is the root cause of the stale probe instrument
+    targets fixed in PR #245, so it is now recorded where a reader will look.
+  - ADDED: v1.0.16 (2026-08-04) is the FIRST published GitHub Release, with asset sizes and the
+    R8-is-on-but-not-in-CI caveat.
+  - VERIFIED UNCHANGED: litertlm 0.12.0, llmedge 0.4.7.2, flavor matrix, license-lint CI.
 
-dependencies.md   ~35% changed
-  - ADDED DEPS: sherpa-onnx 1.13.4 (JitPack, TTS), commons-compress 1.27.1 (voice bundle
-    decompression), kotlinx-coroutines-test 1.10.2 (virtual-time testing)
-  - CHANGED: litertlm 0.11.0 -> 0.12.0 with regression rationale
-  - ADDED: license-lint.yml CI job (AGPL/Apache header enforcement) — not present in old map
-  - ADDED: new exported cc.grepon.relais.notifications.BootReceiver
-  - UNCHANGED: flavor matrix shape (full/degoogled x open/playsafe), manifest core surface
+data.md   13% changed
+  - ADDED: the #180 model registry (provisioned_models plaintext pref -> ProvisionedModel
+    triples). Previously undocumented despite being the SAFETY BOUNDARY for per-request model
+    swaps, and despite being pruned-on-read rather than on-write. That read-time pruning is
+    load-bearing and was invisible in the old map.
+  - VERIFIED UNCHANGED: Room v5, 5 DataStore serializers, Hilt AppModule, provisioning paths.
 
 === STALENESS WARNINGS ===
-None of the 5 codemaps were stale beyond the >30% threshold check itself (35 days is within a
-reasonable cadence) — the volume of change reflects an unusually dense feature-shipping window
-(TTS #168, rerank #177/#189, native cancel #125/#165, RelaisHttpServer decomposition #173,
-OpenAI quick-wins #175, chat depth, model-echo contract fix #190/#192), not doc neglect.
+- None of the 5 maps were 90+ days stale (16 days since last full pass).
+- HOWEVER, two files had drifted WITHOUT their header reflecting it: dependencies.md and
+  frontend.md were content-edited on 2026-07-28 (llmedge bump, #211 speech) while their
+  <!-- Generated: 2026-07-19 --> header stayed put. Freshness headers are only trustworthy if
+  every content edit bumps them; a reader checking the header would have been misled by 9 days.
+  Worth a lint if this recurs.
+- The line-count facts (1876L, 782L, 22 files) rotted fastest and silently. They are the
+  cheapest thing to get wrong and the easiest to auto-verify — a candidate for generation
+  rather than hand-maintenance.
 
-=== HIGH-VALUE FINDING (not a codemap-format issue, flagged separately) ===
-frontend.md's dead-code discovery (ui/ + customtasks/, ~157 files, ~unreachable since the
-app-shell unification) is a real cleanup opportunity worth its own issue/PR, independent of
-the codemap refresh itself. Not filed as a GitHub issue during this pass — flagging here per
-the codemap workflow's "staleness warnings" step so it isn't silently lost.
-
-=== SAME-DAY CORRECTION (2026-07-19, later this session) ===
-The "~157 files dead" claim above was investigated further while planning the actual cleanup
-and found FALSE. A rigorous reachability audit (import BFS + Hilt @IntoSet multibinding trace,
-hand-verified against source) found only 29 files are genuinely dead. The other 128 are live:
-- ui/modelmanager/ModelManagerViewModel.kt + ui/benchmark/* are directly wired into
-  MainActivity.kt/RelaisAppShell.kt (not through GalleryNavGraph at all).
-- customtasks/agentchat/ (skill manager + URL-based skill install, MCP client w/ OAuth+header
-  auth, WebView agent sandbox), customtasks/mobileactions/, customtasks/tinygarden/,
-  ui/llmchat/, ui/llmsingleturn/ are all Hilt @Provides @IntoSet multibindings feeding
-  ModelManagerViewModel's `Set<CustomTask>` constructor parameter — a wiring mechanism that
-  has ZERO Kotlin import connecting it to RelaisAppShell, so a plain grep/BFS (which is what
-  produced the original "157 dead" claim) cannot see it. Deleting these would break the build
-  via Hilt annotation processing.
-- customtasks/agentchat/ in particular has NO replacement anywhere in the new Relais-native
-  stack (nodetools/ is a fixed 4-tool list; no user-facing skill/MCP management exists) — so
-  even setting DI-liveness aside, deleting it would be a real feature regression, not cleanup.
-docs/CODEMAPS/architecture.md and frontend.md have been corrected same-day. The actual cleanup
-plan (scoped to the verified 29-file dead list only) is at
-.claude/PRPs/plans/dead-code-cleanup-ui-customtasks.plan.md.
-LESSON: for "is this code reachable" questions in Hilt/Dagger codebases, multibinding
-(@IntoSet/@IntoMap) is invisible to import-graph analysis — always grep for @IntoSet/@IntoMap
-providers separately and trace their consumers before declaring code dead.
+=== NOTE, NOT A CODEMAP ISSUE ===
+Android/src/app/src/main/java/cc/grepon/relais/.omc/state/ exists inside the Kotlin source
+package. It is untracked (0 files known to git) so it does not ship, but it is OMC tooling state
+sitting in a source tree. Harmless today; worth a .gitignore entry or relocation so it is never
+picked up by a glob-based scan.
