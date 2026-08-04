@@ -13,6 +13,7 @@
 package cc.grepon.relais
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -194,6 +195,41 @@ class RelaisModelSwapTest {
     assertEquals(
       ModelRequestOutcome.SwapThenRetry(configured),
       outcome(configured, residentId = null),
+    )
+  }
+
+  // --- The rendered 404 bodies -----------------------------------------------------------------
+  //
+  // Everything above pins which OUTCOME is chosen. None of it pins what the client is actually
+  // TOLD: the bodies were composed inline inside RelaisHttpServer's private, socket-taking
+  // rejectIfModelUnavailable, so the reason could have been dropped from the 404 and every test
+  // here would still have passed.
+
+  /**
+   * The whole point of [ModelRequestOutcome.Incompatible] existing as a case separate from
+   * [ModelRequestOutcome.NotProvisioned] is that the client is told the file is present but
+   * unloadable. If the reason stops reaching the body, the case has no observable effect and the
+   * caller is back to a generic model_not_found for a problem re-downloading cannot fix.
+   */
+  @Test fun `the incompatible 404 body carries the measured reason, not a generic not-found`() {
+    val reason = "not loadable by this node's LiteRT-LM 0.12.0 runtime (engine-create fails)"
+    val body = incompatibleModelMessage("litert-community/Qwen2.5-1.5B-Instruct", reason)
+
+    assertEquals("model 'litert-community/Qwen2.5-1.5B-Instruct' is $reason", body)
+    assertFalse(
+      "must not read as a missing model — the file IS here, re-downloading will not help",
+      body.contains("not provisioned"),
+    )
+  }
+
+  /** The sibling body: absent model → point the caller at the discovery endpoint. */
+  @Test fun `the not-provisioned 404 body points at the discovery endpoint`() {
+    val body = notProvisionedModelMessage("someone/absent-model")
+
+    assertEquals(
+      "model 'someone/absent-model' is not provisioned on this node; " +
+        "see GET /v1/models for what is available",
+      body,
     )
   }
 }

@@ -1182,7 +1182,11 @@ class RelaisHttpServer(
         // Distinct from NotProvisioned on purpose: the file IS here, so "download it" is the wrong
         // advice. Say what's actually wrong instead of a generic model_not_found.
         RelaisMetrics.recordRequest(endpoint, 404)
-        respond(sock, 404, notFoundBody("model '${outcome.requestedModelId}' is ${outcome.reason}"))
+        respond(
+          sock,
+          404,
+          notFoundBody(incompatibleModelMessage(outcome.requestedModelId, outcome.reason)),
+        )
         true
       }
       is ModelRequestOutcome.NotProvisioned -> {
@@ -1192,10 +1196,7 @@ class RelaisHttpServer(
         respond(
           sock,
           404,
-          notFoundBody(
-            "model '${outcome.requestedModelId}' is not provisioned on this node; " +
-              "see GET /v1/models for what is available"
-          ),
+          notFoundBody(notProvisionedModelMessage(outcome.requestedModelId)),
         )
         true
       }
