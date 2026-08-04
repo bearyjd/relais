@@ -43,7 +43,7 @@ import org.junit.runner.RunWith
  *
  *   adb shell am instrument -w -e class cc.grepon.relais.RagProbe \
  *     -e RELAIS_PROBE 1 -e hf_token hf_XXXX \
- *     cc.grepon.relais.test/androidx.test.runner.AndroidJUnitRunner
+ *     com.ventouxlabs.relais.izzy.test/androidx.test.runner.AndroidJUnitRunner
  */
 @RunWith(AndroidJUnit4::class)
 class RagProbe {

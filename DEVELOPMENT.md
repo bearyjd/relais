@@ -40,6 +40,19 @@ Two dimensions — `dist` (full / degoogled) × `policy` (open / playsafe) — y
 > name the variant. Building/testing more than one heavy variant in a single invocation can OOM the 2 GB
 > Gradle daemon; prefer one variant per invocation.
 
+> ⚠️ **Running a probe: the instrument target is not the namespace.** `cc.grepon.relais` is the source
+> package (and stays in every `-e class cc.grepon.relais.SomeProbe` argument), but `build.gradle.kts`
+> sets the applicationId per channel — so the runner is `com.ventouxlabs.relais.izzy.test` (`fullOpen`),
+> `com.ventouxlabs.relais.test` (`fullPlaysafe`), or `com.ventouxlabs.relais.degoogled.test`
+> (`degoogledOpen`), and a staged model lives under that same appId's `Android/data/` directory. Probe
+> headers document the `fullOpen` form. Instrumenting `cc.grepon.relais.test` resolves to a pre-rebrand
+> leftover package that may still be installed and fails with `ClassNotFoundException`. Resolve both with:
+>
+> ```
+> adb -s <serial> shell pm list packages | grep -E 'relais|ventoux'
+> adb -s <serial> shell find /storage/emulated/0/Android/data/<appId>/files -name '*.litertlm'
+> ```
+
 ## Build configuration (this project has no `.env`)
 Build-time and runtime config come from the following, not environment variables:
 

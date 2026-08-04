@@ -46,7 +46,7 @@ import org.junit.runner.RunWith
  *
  *   adb shell am instrument -w -e class cc.grepon.relais.EmbeddingGemmaProbe \
  *     -e RELAIS_PROBE 1 -e hf_token hf_XXXX \
- *     cc.grepon.relais.test/androidx.test.runner.AndroidJUnitRunner
+ *     com.ventouxlabs.relais.izzy.test/androidx.test.runner.AndroidJUnitRunner
  *
  * It (1) sets the HF token, (2) provisions the GENERIC seq512 `.tflite` + `sentencepiece.model`
  * (downloads ~180 MB on first run; reused after), (3) loads the bundled-LiteRT graph — which

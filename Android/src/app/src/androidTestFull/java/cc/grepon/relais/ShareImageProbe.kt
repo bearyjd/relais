@@ -49,7 +49,7 @@ import org.junit.runner.RunWith
  * asserts the clipboard result when the platform lets it read it.
  *
  *   adb shell am instrument -w -e class cc.grepon.relais.ShareImageProbe -e RELAIS_PROBE 1 \
- *     cc.grepon.relais.test/androidx.test.runner.AndroidJUnitRunner
+ *     com.ventouxlabs.relais.izzy.test/androidx.test.runner.AndroidJUnitRunner
  *   # in another shell: adb logcat -s RelaisShareService:* RelaisOcr:* RelaisEngine:*
  */
 @RunWith(AndroidJUnit4::class)

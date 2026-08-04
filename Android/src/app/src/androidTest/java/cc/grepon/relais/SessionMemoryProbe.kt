@@ -38,7 +38,7 @@ import org.junit.runner.RunWith
  * Run (rango / Pixel 10):
  *   adb -s <serial> shell am instrument -w \
  *     -e class cc.grepon.relais.SessionMemoryProbe \
- *     cc.grepon.relais.test/androidx.test.runner.AndroidJUnitRunner
+ *     com.ventouxlabs.relais.izzy.test/androidx.test.runner.AndroidJUnitRunner
  *
  * Watch: adb logcat -s RelaisSessionProbe
  */
