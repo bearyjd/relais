@@ -1,0 +1,1 @@
+1.0.17: the node now refuses a model measured not to load on its pinned runtime no matter how the download link is written, closing a gap where an unusual host spelling could still start a multi-gigabyte download that was always going to fail. Refusal messages now read the same wherever they appear, and the API explains an unloadable model instead of reporting it as missing.
