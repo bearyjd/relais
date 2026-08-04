@@ -1,0 +1,1 @@
+1.0.16: verified chat sharing, Markdown export, and audio attachment flows; long model names no longer hide chat actions. Adds on-device multimodal HTTP coverage and preserves the Pixel 10 image-generation CPU fallback while Vulkan driver retests remain safely isolated.
