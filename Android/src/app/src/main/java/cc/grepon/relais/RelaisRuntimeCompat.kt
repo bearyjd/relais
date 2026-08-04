@@ -136,6 +136,20 @@ object RelaisRuntimeCompat {
   fun isOfferable(modelId: String): Boolean = loadability(modelId) != Loadability.INCOMPATIBLE
 
   /**
+   * The operator-facing refusal sentence wrapping an [incompatibleReason].
+   *
+   * Formatted here because both gates render this same sentence and they previously built it
+   * independently — [RelaisModelProvisioner.refuseIfIncompatible] throws it, and the legacy download
+   * lane ([DownloadRepository]) surfaces it as a failed download. Nothing asserted the wrapper text,
+   * only the `reason` substring inside it, so the two copies could drift without a test noticing.
+   *
+   * [label] is whatever the operator will recognise: the model id where the caller has one, and the
+   * display `name` in the download lane, which has no id to work with (see [repoIdFromDownloadUrl]).
+   */
+  fun refusalMessage(label: String, reason: String): String =
+    "Model '$label' is $reason. Choose a different model."
+
+  /**
    * Whether downloading [modelId] needs the operator's HF token. Shown **before** the download so a
    * headless operator does not wait out a multi-GB transfer only to hit a 401.
    */
