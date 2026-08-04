@@ -94,4 +94,66 @@ class RelaisDownloadCompatGateTest {
       )
     )
   }
+
+  /**
+   * Host case must not decide whether the gate engages.
+   *
+   * Hosts are case-insensitive (RFC 3986 §3.2.2), so `HuggingFace.co` is the same host — but an
+   * exact `!=` compare keyed it as unidentifiable, and unidentifiable means **allow**. That is the
+   * one direction where the fail-open default is wrong: it silently converts the gate into a no-op
+   * for a measured-incompatible model. Not reachable from `AllowedModel.toModel()`, which builds the
+   * host as a lowercase literal, but an `AllowedModel.url` override in the upstream allowlist JSON
+   * can carry any spelling.
+   */
+  @Test
+  fun `host casing does not decide whether the gate engages`() {
+    val url = "https://HuggingFace.CO/$knownBad/resolve/abc123/model.litertlm"
+
+    // The repo id must come back with its OWN case intact: HF repo ids are case-sensitive and the
+    // compat table is keyed on the exact id, so lowercasing the whole URL would "fix" the host and
+    // break the lookup — a gate that engages and then matches nothing.
+    assertEquals(knownBad, RelaisRuntimeCompat.repoIdFromDownloadUrl(url))
+    assertNotNull(
+      "a measured-incompatible model must be refused regardless of host casing",
+      RelaisRuntimeCompat.incompatibleReasonForDownloadUrl(url),
+    )
+  }
+
+  /**
+   * Siblings of the casing bug: everything else the URL *authority* can legally carry.
+   *
+   * `substringBefore('/')` returns the whole authority, not the host — so an explicit port or a
+   * userinfo prefix made the compare fail and the URL read as unidentifiable, which means ALLOW.
+   * Each of these is the same silent no-op as the casing case, reached the same way (an
+   * `AllowedModel.url` override in the upstream allowlist JSON).
+   */
+  @Test
+  fun `port and userinfo in the authority do not hide the host`() {
+    listOf(
+        "https://huggingface.co:443/$knownBad/resolve/abc/f.litertlm",
+        "https://user@huggingface.co/$knownBad/resolve/abc/f.litertlm",
+        "https://user:pw@HuggingFace.co:443/$knownBad/resolve/abc/f.litertlm",
+      )
+      .forEach { url ->
+        assertEquals("host must be recovered from: $url", knownBad, RelaisRuntimeCompat.repoIdFromDownloadUrl(url))
+        assertNotNull(
+          "a measured-incompatible model must be refused regardless of authority shape: $url",
+          RelaisRuntimeCompat.incompatibleReasonForDownloadUrl(url),
+        )
+      }
+  }
+
+  /**
+   * The flip side, and the reason this cannot just strip everything before an `@`: userinfo that
+   * *looks* like the trusted host must not be mistaken for it. `huggingface.co@evil.example` has
+   * host `evil.example` and must stay unidentifiable (→ allowed, since it is not an HF repo URL).
+   */
+  @Test
+  fun `a trusted-looking userinfo does not impersonate the host`() {
+    assertNull(
+      RelaisRuntimeCompat.repoIdFromDownloadUrl(
+        "https://huggingface.co@evil.example/$knownBad/resolve/abc/f.bin"
+      )
+    )
+  }
 }

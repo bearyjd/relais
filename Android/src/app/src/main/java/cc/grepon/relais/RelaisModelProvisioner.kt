@@ -143,7 +143,7 @@ object RelaisModelProvisioner {
    */
   internal fun refuseIfIncompatible(modelId: String) {
     RelaisRuntimeCompat.incompatibleReason(modelId)?.let { why ->
-      error("Model '$modelId' is $why. Choose a different model.")
+      error(RelaisRuntimeCompat.refusalMessage(modelId, why))
     }
   }
 

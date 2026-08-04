@@ -98,6 +98,24 @@ class RelaisDownloadRepositoryGateTest {
     )
   }
 
+  /**
+   * That this lane renders the SHARED sentence, not a local copy of it.
+   *
+   * The test above only asserts the `reason` substring, which survives any rewording of the wrapper
+   * — and the wrapper was, until recently, hand-built here keyed by display `name` while the
+   * provisioner built the same sentence keyed by model id. Nothing could have caught the two
+   * drifting apart, so pin the lane to [RelaisRuntimeCompat.refusalMessage] itself.
+   */
+  @Test
+  fun `the refusal is rendered by the shared formatter, not a local copy of the sentence`() {
+    val seen = mutableListOf<ModelDownloadStatus>()
+    val model = modelAt(knownBad)
+    repo.downloadModel(task = null, model = model) { _, status -> seen.add(status) }
+
+    val why = requireNotNull(RelaisRuntimeCompat.incompatibleReason(knownBad))
+    assertEquals(RelaisRuntimeCompat.refusalMessage(model.name, why), seen.single().errorMessage)
+  }
+
   @Test
   fun `an unmeasured model is NOT refused by this gate`() {
     // Only MEASURED failures are withheld. An unmeasured id must fall through to the normal enqueue

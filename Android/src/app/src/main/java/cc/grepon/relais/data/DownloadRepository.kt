@@ -122,7 +122,7 @@ class DefaultDownloadRepository(
         model,
         ModelDownloadStatus(
           status = ModelDownloadStatusType.FAILED,
-          errorMessage = "Model '${model.name}' is $why. Choose a different model.",
+          errorMessage = RelaisRuntimeCompat.refusalMessage(model.name, why),
         ),
       )
       return

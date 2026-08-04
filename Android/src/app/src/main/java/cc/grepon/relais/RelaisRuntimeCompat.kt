@@ -18,6 +18,8 @@
 
 package cc.grepon.relais
 
+import java.net.URI
+
 /**
  * Whether a curated allowlist entry can actually be **served by this node**, and whether downloading
  * it needs the operator's HuggingFace token.
@@ -136,6 +138,20 @@ object RelaisRuntimeCompat {
   fun isOfferable(modelId: String): Boolean = loadability(modelId) != Loadability.INCOMPATIBLE
 
   /**
+   * The operator-facing refusal sentence wrapping an [incompatibleReason].
+   *
+   * Formatted here because both gates render this same sentence and they previously built it
+   * independently — [RelaisModelProvisioner.refuseIfIncompatible] throws it, and the legacy download
+   * lane ([DownloadRepository]) surfaces it as a failed download. Nothing asserted the wrapper text,
+   * only the `reason` substring inside it, so the two copies could drift without a test noticing.
+   *
+   * [label] is whatever the operator will recognise: the model id where the caller has one, and the
+   * display `name` in the download lane, which has no id to work with (see [repoIdFromDownloadUrl]).
+   */
+  fun refusalMessage(label: String, reason: String): String =
+    "Model '$label' is $reason. Choose a different model."
+
+  /**
    * Whether downloading [modelId] needs the operator's HF token. Shown **before** the download so a
    * headless operator does not wait out a multi-GB transfer only to hit a 401.
    */
@@ -159,10 +175,20 @@ object RelaisRuntimeCompat {
    * block — matching the rule that only MEASURED failures are withheld.
    */
   fun repoIdFromDownloadUrl(url: String): String? {
-    val afterHost = url.substringAfter("://", missingDelimiterValue = url).substringAfter('/', "")
-    val host = url.substringAfter("://", missingDelimiterValue = "").substringBefore('/')
-    if (host != "huggingface.co") return null
-    val path = afterHost.substringBefore('?')
+    // Parse the authority rather than slicing it. It can legally carry userinfo and a port as well
+    // as the host (`user:pw@HuggingFace.co:443`), and `substringBefore('/')` returned ALL of it — so
+    // every one of those spellings failed the compare and read as "cannot identify", which means
+    // ALLOW. That is the one direction where this function's fail-open default is wrong: it turns
+    // the gate into a silent no-op for a MEASURED failure. [URI] yields the host on its own and
+    // returns null for anything it cannot parse as server-based, which lands on the same allow
+    // default by design — including `huggingface.co@evil.example`, whose host is `evil.example`.
+    val uri = runCatching { URI(url) }.getOrNull() ?: return null
+    // Host compare is case-insensitive (RFC 3986 §3.2.2). The PATH is deliberately not folded: HF
+    // repo ids are case-sensitive and the table is keyed on the exact id, so folding the whole URL
+    // would fix the host and silently break the lookup — a gate that engages and matches nothing.
+    if (uri.host?.equals("huggingface.co", ignoreCase = true) != true) return null
+    // rawPath, not path: no percent-decoding, so the id is keyed exactly as written.
+    val path = uri.rawPath.orEmpty().trimStart('/')
     val resolveAt = path.indexOf("/resolve/")
     if (resolveAt <= 0) return null
     val repo = path.substring(0, resolveAt)

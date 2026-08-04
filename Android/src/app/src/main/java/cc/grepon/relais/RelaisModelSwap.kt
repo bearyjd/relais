@@ -119,3 +119,35 @@ fun resolveModelRequest(
   // telling the operator the file was unloadable when the real problem was that it was missing.
   return ModelRequestOutcome.NotProvisioned(requested)
 }
+
+/*
+ * The two 404 body texts, kept here rather than inline in [RelaisHttpServer.rejectIfModelUnavailable].
+ *
+ * That function is private, takes a [java.net.Socket], and reads RelaisEngine/RelaisConfig, so the
+ * strings it composed were unreachable from a JVM test: [RelaisModelSwapTest] pinned the DECISION
+ * (which outcome resolveModelRequest returns) while the rendered body went unasserted, and deleting
+ * the reason from the 404 broke nothing. Same decision-vs-wiring gap [RelaisDownloadRepositoryGateTest]
+ * exists to close on the download lane.
+ *
+ * Lives in this file, not RelaisHttpServer.kt: this is pure text derived from [ModelRequestOutcome],
+ * which is defined here, and CLAUDE.md asks for extraction over growing that 2200-line file. Mirrors
+ * the `internal` top-level `buildUsageObject`/`estimatePromptTokens` pattern that
+ * [RelaisUsageBlockTest] already relies on.
+ *
+ * These are the API-client wording, deliberately NOT [RelaisRuntimeCompat.refusalMessage]: that
+ * sentence ends "Choose a different model", which is operator-UI advice an HTTP client cannot act
+ * on. Sibling 404s stay in one voice here instead.
+ */
+
+/**
+ * The 404 body for a model that IS on this device but is measured not to load (#220).
+ *
+ * Says what is wrong rather than "model_not_found": the file is present and re-downloading it will
+ * not help, so the generic missing-model advice would send the caller down the wrong path.
+ */
+internal fun incompatibleModelMessage(modelId: String, reason: String): String =
+  "model '$modelId' is $reason"
+
+/** The 404 body for a model this node does not have at all — points at the discovery endpoint. */
+internal fun notProvisionedModelMessage(modelId: String): String =
+  "model '$modelId' is not provisioned on this node; see GET /v1/models for what is available"

@@ -118,6 +118,26 @@ class RelaisProvisionCompatGateTest {
     }
   }
 
+  /**
+   * That the provisioner lane renders the SHARED sentence, not a local copy of it.
+   *
+   * Pairs with the identical assertion in [RelaisDownloadRepositoryGateTest]: between them the two
+   * gates are pinned to one formatter, so a reword cannot land on one lane and leave the other
+   * saying something different to the same operator about the same model.
+   */
+  @Test
+  fun `the refusal is rendered by the shared formatter, not a local copy of the sentence`() {
+    selectWithProvisionedPath(knownBad)
+    val why = requireNotNull(RelaisRuntimeCompat.incompatibleReason(knownBad))
+
+    try {
+      RelaisModelProvisioner.ensureModel(ctx)
+      fail("ensureModel accepted a measured-incompatible id")
+    } catch (e: IllegalStateException) {
+      assertEquals(RelaisRuntimeCompat.refusalMessage(knownBad, why), e.message)
+    }
+  }
+
   @Test
   fun `resolveModel refuses it too, so a mid-provision model change cannot slip past`() {
     // The second read. ensureModel's gate inspected whatever was configured at entry; by the time

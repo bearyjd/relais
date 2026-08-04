@@ -93,6 +93,26 @@ class RelaisRuntimeCompatTest {
     assertTrue(RelaisRuntimeCompat.isOfferable("litert-community/Gemma3-1B-IT"))
   }
 
+  // --- Operator-facing refusal wording ----------------------------------------------------------
+
+  /**
+   * The sentence both gates render around [RelaisRuntimeCompat.incompatibleReason].
+   *
+   * It was previously built independently in [RelaisModelProvisioner.refuseIfIncompatible] and in
+   * the legacy download lane, while every assertion in this repo checked only the embedded reason
+   * substring — so either copy could have been reworded and no test would have failed. Pinned here
+   * because the wording IS the product surface: it is what a headless operator sees instead of an
+   * engine-create stack trace.
+   */
+  @Test
+  fun refusalMessageNamesTheModelAndSaysWhatToDo() {
+    val msg = RelaisRuntimeCompat.refusalMessage("litert-community/Qwen2.5-1.5B-Instruct", "not loadable")
+    assertEquals(
+      "Model 'litert-community/Qwen2.5-1.5B-Instruct' is not loadable. Choose a different model.",
+      msg,
+    )
+  }
+
   // --- HF license gating ------------------------------------------------------------------------
 
   /**
