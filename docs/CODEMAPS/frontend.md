@@ -1,22 +1,14 @@
-# Frontend — UI (unified Relais shell; a small dead-code pocket, NOT most of the tree)
+# Frontend — UI (unified Relais shell over still-live inherited Gallery code)
 
-<!-- Generated: 2026-07-19 (corrected same-day after a rigorous reachability audit) | Files scanned: RelaisAppShell + chat/ + Dashboard/Models screens + full ui/(114) + customtasks/(43) import+DI graph | main @ ab345ff -->
+<!-- Generated: 2026-08-04 | Files scanned: RelaisAppShell + chat/ + Dashboard/Models screens + full ui/(90) + customtasks/(38) import+DI graph | main @ afc237c1 -->
 
-> ⚠️ **CORRECTION, same day**: an earlier pass of this file claimed most of `ui/`+`customtasks/` (157
-> files) was dead. A rigorous reachability audit (BFS over imports + Hilt `@IntoSet` multibinding,
-> hand-verified) found that claim **false** — only **29 files** are actually dead. `GalleryNavGraph`
-> and `GalleryApp()` are dead (confirmed), but `RelaisAppShell`/`MainActivity` still directly wire in
-> `ui/modelmanager/ModelManagerViewModel.kt` and `ui/benchmark/*`. More importantly, `ModelManagerViewModel`
-> constructor-injects `Set<@JvmSuppressWildcards CustomTask>` — a Hilt/Dagger multibinding — and
-> `@Provides @IntoSet` modules in `customtasks/agentchat/`, `customtasks/mobileactions/`,
-> `customtasks/tinygarden/`, `ui/llmchat/`, `ui/llmsingleturn/` all feed it. **No Kotlin import
-> connects these to `RelaisAppShell` — a plain grep/BFS misses this entirely** — but Hilt wires and
-> instantiates them at runtime, and deleting them breaks the build via annotation processing. See
-> `.claude/PRPs/plans/dead-code-cleanup-ui-customtasks.plan.md` for the verified dead-file list and
-> the open question this raises (DI-instantiated ≠ necessarily user-reachable — no live UI currently
-> renders a picker for these CustomTasks, since the task-carousel `HomeScreen` is itself dead; whether
-> that's a safe-to-remove UI gap or a real regression is unresolved, see the plan's "NOT Building"
-> section).
+> ⚠️ **Reachability here is not visible to an import graph.** `ModelManagerViewModel` constructor-injects
+> `Set<@JvmSuppressWildcards CustomTask>`, and `@Provides @IntoSet` modules in `customtasks/agentchat/`,
+> `customtasks/mobileactions/`, `customtasks/tinygarden/`, `ui/llmchat/`, `ui/llmsingleturn/` feed it.
+> **No Kotlin import connects them to `RelaisAppShell` — a plain grep/BFS misses this entirely** — yet
+> Hilt instantiates them at runtime and deleting them breaks the build via annotation processing. A
+> 2026-07-19 pass called 157 files dead on exactly that mistake and was corrected the same day; the real
+> figure was 29, all since removed (`0c84a125` + 4 siblings). Audit with the DI graph, not just imports.
 
 ## Navigation — `RelaisAppShell.kt` (NavHost, replaces GalleryNavGraph as the live entry)
 ```
@@ -52,9 +44,11 @@ Amber `#FFB000` / Charcoal `#0B0B0D`, `FontFamily.Monospace`, dark-only — cons
 
 ## Still LIVE despite looking like old-Gallery leftovers (do not delete)
 - `ui/modelmanager/ModelManagerViewModel.kt` + `ui/benchmark/*` — directly constructed/composed by `MainActivity.kt`/`RelaisAppShell.kt` (the `benchmark/{model}` route, unlinked from bottom nav but live in the NavHost).
-- `customtasks/agentchat/` (22 files: skill manager + URL-based skill install, MCP client with OAuth/header auth, WebView agent sandbox), `customtasks/mobileactions/`, `customtasks/tinygarden/`, `ui/llmchat/`, `ui/llmsingleturn/` — all Hilt `@IntoSet`-bound into `ModelManagerViewModel`'s `Set<CustomTask>`; **no equivalent of agentchat's skill/MCP capability exists anywhere in the new Relais-native stack** (`nodetools/` is a fixed 4-tool list, no user-facing skill or MCP management at all).
-- `ui/home/LicensesActivity.kt` — manifest-declared (`AndroidManifest.xml`), self-contained, covered by `LicensesActivityProbe.kt`. Its only launch path (`ui/home/SettingsDialog.kt`) IS dead, so it's currently unreachable in practice despite being manifest-live — a separate pre-existing product gap, not part of this cleanup.
+- `customtasks/agentchat/` (24 files: skill manager + URL-based skill install, MCP client with OAuth/header auth, WebView agent sandbox), `customtasks/mobileactions/`, `customtasks/tinygarden/`, `ui/llmchat/`, `ui/llmsingleturn/` — all Hilt `@IntoSet`-bound into `ModelManagerViewModel`'s `Set<CustomTask>`; **no equivalent of agentchat's skill/MCP capability exists anywhere in the new Relais-native stack** (`nodetools/` is a fixed 4-tool list, no user-facing skill or MCP management at all).
+- `ui/home/LicensesActivity.kt` — manifest-declared (`AndroidManifest.xml`), self-contained, covered by `LicensesActivityProbe.kt`. Its only launch path (`ui/home/SettingsDialog.kt`) was removed by the dead-code cleanup, so it is manifest-live but unreachable in practice — a pre-existing product gap, deliberately left alone.
 - `ui/common/MarkdownText.kt`, `ui/common/BufferedFadingMarkdownText.kt`, `ui/common/Accordions.kt` — siblings of the dead `ui/common/chat/` tree, but consumed directly by the new `chat/ChatMessageList.kt` and by `ui/benchmark/*`.
 
-## Genuinely dead code (verified, hand-checked — 29 files)
-Only reachable, if at all, through the confirmed-dead `GalleryApp()` → `ui/navigation/GalleryNavGraph.kt` chain: `ui/navigation/GalleryNavGraph.kt`; `ui/home/{HomeScreen,SettingsDialog,SquareDrawerItem,PromoScreenGm4,MobileActionsChallengeDialog,NewReleaseNotification}.kt`; `ui/modelmanager/{ModelManager,ModelList,GlobalModelManager,ModelImportDialog,PromoBannerGm4}.kt`; `ui/notifications/NotificationsScreen.kt`; `ui/common/{EmptyState,GlitteringShapesLoader,LiveCameraView,TaskIcon}.kt`; `ui/common/chat/{MessageBodyClassification,MessageBodyImageWithHistory,ModelInitializationStatus,ModelNotDownloaded}.kt`; `ui/common/modelitem/DeleteModelButton.kt`; `ui/common/tos/AppTosDialog.kt`; `ui/icon/Deploy.kt`; `customtasks/common/SteadinessMonitor.kt`; `customtasks/examplecustomtask/*` (4 files, its `@IntoSet` binding is commented out). Plus, outside the original 157: root-package `GalleryApp.kt` and the dead `class RelaisChatActivity` declaration inside `RelaisChatActivity.kt` (the file's `ChatScreen()` function is live and stays). Full plan: `.claude/PRPs/plans/dead-code-cleanup-ui-customtasks.plan.md`.
+## Dead code — cleared
+The 29 verified-dead files (the `GalleryApp()` → `ui/navigation/GalleryNavGraph.kt` chain and its
+orphans) were removed across 5 gated PRs, which is why `ui/` is now 90 files and `customtasks/` 38.
+No known dead pocket remains.
