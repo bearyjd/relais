@@ -26,15 +26,25 @@ Two dimensions — `dist` (full / degoogled) × `policy` (open / playsafe) — y
 <!-- END AUTO-GENERATED -->
 
 ## Commands
+
+### CI (these two are what the pipeline actually runs)
 <!-- AUTO-GENERATED: from .github/workflows/build_android.yaml -->
 | Command | Description |
 |---|---|
 | `./gradlew assembleRelease` | Build all 3 shipping release variants (the CI build job) |
+| `./gradlew testFullOpenDebugUnitTest testFullPlaysafeDebugUnitTest testDegoogledOpenDebugUnitTest` | JVM unit tests for every shipping variant (the CI test job) |
+<!-- END AUTO-GENERATED -->
+
+### Local development
+Hand-maintained — **not** derived from the workflow, so a regeneration must not drop them.
+
+| Command | Description |
+|---|---|
 | `./gradlew :app:assembleFullOpenDebug` | Build one debug APK (swap the variant: `FullOpen`/`FullPlaysafe`/`DegoogledOpen`) |
 | `./gradlew :app:installFullOpenDebug` | Build + install one debug variant to the attached device |
-| `./gradlew testFullOpenDebugUnitTest testFullPlaysafeDebugUnitTest testDegoogledOpenDebugUnitTest` | JVM unit tests for every shipping variant (the CI test job) |
+| `./gradlew :app:installFullOpenDebugAndroidTest` | Install the probe/test APK (needed before `am instrument`) |
 | `./gradlew :app:compileFullOpenDebugAndroidTestKotlin` | Compile the on-device probe suite (`src/androidTest`; not run in CI) |
-<!-- END AUTO-GENERATED -->
+| `./gradlew :app:clean` | Fixes stale-Hilt failures after switching branches |
 
 > ⚠️ `testDebugUnitTest` and `assembleDebug` are **ambiguous** across the two flavor dimensions — always
 > name the variant. Building/testing more than one heavy variant in a single invocation can OOM the 2 GB
