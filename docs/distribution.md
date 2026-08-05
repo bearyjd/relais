@@ -19,9 +19,29 @@ not shipped. F-Droid's main repo is **not** a target — the bundled `litertlm`/
 prebuilt native blobs, so the FOSS-only main repo can't accept any variant; IzzyOnDroid is the
 F-Droid-ecosystem home.
 
-### IzzyOnDroid — verified constraints (2026-08-05, against the current [inclusion policy](https://izzyondroid.org/docs/general/AppInclusionPolicy/))
+### IzzyOnDroid — NOT PURSUED (decided 2026-08-05)
 
-Three things here were previously assumed and are wrong. Do not re-derive them:
+**#123, #250 and #252 are closed as not planned.** The prep was completed and the constraints below
+are all verified — the decision is about cost/benefit, not feasibility.
+
+**The APK is 2.1% of what an operator downloads.** `fullOpen` is 74.3 MiB; the E4B model is
+3,490 MiB — **47x the APK**. Unbundling both native runtimes (#250 + #252) would cut total first-run
+bytes by **1.1%**, in exchange for two native-library provisioning lanes, new hosting for a 29.5 MiB
+`.so` that must version-match the app or crash natively instead of returning a clean 501, and *then*
+a "rare" size exception plus a proprietary-components argument decided by one maintainer.
+
+**Izzy adds discoverability, not delivery.** It tracks GitHub Release assets — the same ones
+Obtainium tracks, which already works and shipped v1.0.17. For a headless node aimed at operators who
+dedicate a spare phone to it, an F-Droid client listing is not the binding constraint on adoption.
+
+The counter, recorded so a future revisit is not starting from a strawman: F-Droid-ecosystem presence
+is real credibility for an AGPL on-device-AI project and compounds slowly. If the audience ever
+widens past single-operator, this is worth more than it is today. Nothing here is one-way.
+
+**Point Izzy-curious users at Obtainium + GitHub Releases.**
+
+The verified constraints below stand, so a future attempt starts from evidence rather than scratch.
+Three of them were previously assumed and wrong — do not re-derive them:
 
 - **Size: ~30 MiB per app**, exceptions rare and "well reasoned". No build fits *as shipped today* —
   `fullOpen` is 74.3 MiB (248% of cap), `degoogledOpen` 33.6 MiB (112%) — but that is not a floor.
@@ -32,23 +52,26 @@ Three things here were previously assumed and are wrong. Do not re-derive them:
   `degoogledOpen` at **~22.5 MiB — under the cap, no exception needed.**
 
   That figure is for `degoogledOpen`. **DECIDED 2026-08-05: IzzyOnDroid stays on `fullOpen`** — the
-  channel table above is unchanged, and Izzy users keep image generation, OCR and AICore rather
-  than getting the stripped GMS-free build. An exception is therefore required, and its size
-  depends entirely on sequencing:
+  channel table above is unchanged, and Izzy users would keep image generation, OCR and AICore rather
+  than getting the stripped GMS-free build. An exception would therefore have been required. What it
+  would have cost, measured — retained because it is the arithmetic the not-pursuing decision rests on:
 
   | `fullOpen` state | Size | vs 30 MiB cap | Exception ask |
   |---|---|---|---|
   | today | 74.02 MiB | 247% | 44 MiB over |
-  | after #250 only | 44.51 MiB | 148% | 14.5 MiB over |
-  | **after #250 + #252 (both proven viable)** | **33.45 MiB** | **112%** | **3.45 MiB over** |
+  | with image-gen unbundled (was #250) | 44.51 MiB | 148% | 14.5 MiB over |
+  | with both runtimes unbundled (was #250 + #252) | 33.45 MiB | 112% | 3.45 MiB over |
+
+  Even the best case never reaches the cap, and buying it costs two native-provisioning lanes for
+  1.1% of first-run bytes. That is the trade that closed #123.
 
   **Both unbundlings are achievable — one verified against the AAR, one proven on hardware.**
 
   - **#250 (image-gen, 29.51 MiB) is tractable.** `llmedge` 0.4.7.2 ships
     `io.aatricks.llmedge.core.NativeLibraryLoader` exposing `loadLibraryFileOnce`,
     `resolveExactLibraryPath` and `loadCandidates` — a deliberate path-based loading seam, which is
-    exactly what fetching a `.so` at runtime needs. **Do this one first**, for its larger saving, not
-    because #252 is blocked.
+    exactly what fetching a `.so` at runtime needs. It also exposes an `llmedge.disableNativeLoad`
+    system property and `LLMEDGE_BUILD_NATIVE_LIB_PATH`.
   - **#252 (TTS runtime, 11.06 MiB) is also tractable — PROVEN ON DEVICE 2026-08-05.** An earlier
     revision of this doc claimed the opposite, reasoning that because `OfflineTts.class` carries
     `<clinit>` → `System.loadLibrary("sherpa-onnx-jni")` (18 sherpa classes do), and `loadLibrary`
@@ -79,9 +102,10 @@ Three things here were previously assumed and are wrong. Do not re-derive them:
   `NonFreeDep` anti-feature flag, as this doc previously implied. Relais's case is strong (litertlm
   **is** the product) but must be argued in the RFP, not assumed.
 
-Ready today: fastlane metadata complete (short 77/80, full 2324/4000, icon, 3 screenshots, changelogs
-≤500 chars), release-key signed, no `debuggable`/`testOnly`, GitHub Releases as source. Tracking: #123,
-**blocked on #250 + #252**, both proven viable (see above). The listing URL goes here once filed.
+Everything an RFP needs is already in place, should this ever be revisited: fastlane metadata complete
+(short 77/80, full 2324/4000, icon, 3 screenshots, changelogs ≤500 chars), release-key signed, no
+`debuggable`/`testOnly`, GitHub Releases as source. What was missing was never the paperwork — it was
+the size, and the judgement that closing that gap is not worth its price. See #123 for the decision.
 
 **Three lessons, each earned by getting it wrong here first.**
 
