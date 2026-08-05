@@ -41,8 +41,9 @@ import androidx.sqlite.db.SupportSQLiteDatabase
       BatchJob::class,
       Conversation::class,
       ChatTurn::class,
+      ContentReport::class,
     ],
-  version = 5,
+  version = 6,
   exportSchema = true,
 )
 abstract class RelaisDatabase : RoomDatabase() {
@@ -56,6 +57,8 @@ abstract class RelaisDatabase : RoomDatabase() {
   abstract fun batchDao(): BatchDao
 
   abstract fun chatDao(): ChatDao
+
+  abstract fun reportDao(): ReportDao
 
   companion object {
     private const val DB_NAME = "relais.db"
@@ -194,9 +197,39 @@ abstract class RelaisDatabase : RoomDatabase() {
         }
       }
 
+    /**
+     * v5 -> v6 (#258): adds the `content_reports` table (+ its `createdAt` index) backing the in-app
+     * AI-content reporting affordance Play's AI-Generated Content policy requires. CREATE statements
+     * mirror [ContentReport] exactly (column order, affinities, nullability, autoincrement PK, Room's
+     * generated index name) — Room validates the schema identity on open. Additive only; no existing
+     * data is touched. `@VisibleForTesting` so `RelaisDatabaseMigrationTest` can force-run + validate
+     * it vs the exported `6.json` hash.
+     */
+    @VisibleForTesting
+    internal val MIGRATION_5_6 =
+      object : Migration(5, 6) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+          db.execSQL(
+            "CREATE TABLE IF NOT EXISTS `content_reports` (" +
+              "`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
+              "`reasonId` TEXT NOT NULL, " +
+              "`excerpt` TEXT NOT NULL, " +
+              "`note` TEXT, " +
+              "`modelId` TEXT, " +
+              "`backend` TEXT, " +
+              "`surface` TEXT NOT NULL, " +
+              "`createdAt` INTEGER NOT NULL)"
+          )
+          db.execSQL(
+            "CREATE INDEX IF NOT EXISTS `index_content_reports_createdAt` " +
+              "ON `content_reports` (`createdAt`)"
+          )
+        }
+      }
+
     /** Migrations appended by consumers when they add tables + bump [version]. */
     val MIGRATIONS: List<Migration> =
-      listOf(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
+      listOf(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
 
     /** Process-wide singleton (single process — see backlog §3). */
     fun get(context: Context): RelaisDatabase =
