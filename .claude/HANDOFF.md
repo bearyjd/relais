@@ -5,7 +5,89 @@ session summary + next steps. **Newest section at the top.** (This file is uncom
 
 ---
 
-## 2026-08-05 — ⏩ START HERE. **v1.0.17 draft built, NOT published.** 6 PRs merged.
+## 2026-08-05 (later) — ⏩ START HERE. **v1.0.17 PUBLISHED.** IzzyOnDroid unblocked to 2 issues.
+
+### Current state
+
+- `main` = `ee0e1569`. Working tree clean. **One open PR: #254** (docs + the sherpa spike probe),
+  green, unmerged — it carries the corrections below and should land first.
+- **[v1.0.17](https://github.com/bearyjd/relais/releases/tag/v1.0.17) is published and Latest.** All
+  five gates green. Assets: degoogled 35,231,461 · full-open 77,873,050 · playsafe AAB 77,969,674.
+  Only #243 is functionally in the APK; #244-#249 are tests, probes and docs.
+- **Both devices on the 1.0.17 `fullOpenDebug` build, verified healthy** — comet `4A111FDKD0000C`,
+  rango `57211FDCG0023C`, all 4 sherpa/onnx native libs extracted on disk. comet's E4B model
+  (3,659,530,240 bytes) and `relais_secure.xml` survived every install.
+- 8 PRs merged this session: #243-#249, #251, #253.
+
+### IzzyOnDroid (#123) — decided and unblocked
+
+**DECIDED: Izzy stays on `fullOpen`.** Channel table unchanged; Izzy users keep image-gen, OCR and
+AICore rather than the stripped GMS-free build. An exception is required either way — its size is a
+sequencing choice:
+
+| `fullOpen` | Size | vs 30 MiB cap | Exception ask |
+|---|---|---|---|
+| today | 74.02 | 247% | 44 MiB over |
+| after #250 | 44.51 | 148% | 14.5 MiB over |
+| **after #250 + #252** | **33.45** | **112%** | **3.45 MiB over** |
+
+**Both unbundlings are proven achievable**, so #123 is blocked on #250 + #252 and nothing else.
+Everything else is ready: metadata complete, release-signed, GitHub Releases as source, v1.0.17 to
+point at, venue is **Codeberg `IzzyOnDroid/repodata/issues`** (the GitLab repo is archived).
+
+Two other Izzy facts that were wrong in the old runbook: the cap is ~30 MiB with rare exceptions, and
+the policy says *"there should be no proprietary components"* tolerated only *"if essential for the
+app's core functionality"* — **not** a routine `NonFreeDep` flag. Relais's case is strong (litertlm
+**is** the product) but must be argued in the RFP.
+
+### The sherpa spike — read this before touching #252
+
+I claimed #252 was near-infeasible: `OfflineTts` has `<clinit>` → `System.loadLibrary`, and
+`loadLibrary` resolves via `ClassLoader.findLibrary()` against the APK's `nativeLibraryDir`, so
+stripping the `.so` throws before `dlopen`. Argued from bytecode, written into a doc, an issue and a
+PR. **False.** `SherpaUnbundleProbe` on comet, all four libs stripped:
+
+```
+PREMISE sherpa libs still in APK: []
+libonnxruntime / c-api / cxx-api / jni:  System.load OK
+VERDICT: CLINIT OK — System.load(path) SATISFIED sherpa's loadLibrary.
+```
+
+ART resolves the already-loaded soname. No reflection, no custom ClassLoader, no fork. Constraints
+that DO hold: load order `onnxruntime → c-api → cxx-api → jni`, and the libs must land in
+**app-private internal storage** (`filesDir`) — `dlopen` refuses world-writable paths, so the
+`externalFilesDir` used for the TTS *voice* will not work for the *runtime*.
+
+The probe is on #254. It needs a temporary `jniLibs.excludes` to be meaningful (documented in its
+header, deliberately not committed).
+
+### Four errors this session, and what they cost
+
+1. **`git reset --hard`** while cleaning up a trial-merge branch destroyed the uncommitted 08-04
+   handoff section. Never staged, so no blob to recover; rebuilt from transcript. → `HANDOFF.md` is
+   now committed rather than scratch.
+2. **Uncompressed vs compressed bytes.** Read a zip listing as download cost; `build.gradle.kts:95-98`
+   already warned this overestimates ~3x.
+3. **"degoogledOpen is the floor."** Fixed the arithmetic, then extrapolated without itemising what
+   the variant contains. It contained 11 MiB of TTS runtime.
+4. **Asserted ART behaviour from reasoning.** Refuted by ~10 minutes of device time.
+
+Every one had sound arithmetic and a wrong frame. Two were caught by `/codex review` (0% finding
+overlap with my own review, both times), one by JD asking "can we download the missing pieces?", one
+by JD saying "run probe first". A numeric self-review cannot catch these — each claim is individually
+true; only the framing is wrong.
+
+### Next
+
+1. **Merge #254** (green, carries all the corrections + the probe).
+2. **#250 then #252** — both viable; #250 first for the larger saving, not because #252 is blocked.
+3. **Then file the RFP** at Codeberg with a 3.45 MiB exception ask, arguing the litertlm-is-core
+   point explicitly. Everything else is prepared.
+4. #122 Play Console · #69 driver monitoring — unchanged.
+
+---
+
+## 2026-08-05 (earlier) — v1.0.17 draft built, NOT published. 6 PRs merged. (superseded above)
 
 ### Current state
 
