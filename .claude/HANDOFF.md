@@ -5,7 +5,78 @@ session summary + next steps. **Newest section at the top.** (This file is uncom
 
 ---
 
-## 2026-08-05 (later) — ⏩ START HERE. **v1.0.17 PUBLISHED.** IzzyOnDroid unblocked to 2 issues.
+## 2026-08-05 (final) — ⏩ START HERE. **v1.0.17 published. IzzyOnDroid closed, not planned.**
+
+### Current state
+
+- `main` = `88f90e15`. **Working tree clean, zero open PRs.** 11 PRs merged this session
+  (#243-#249, #251, #253-#256).
+- **[v1.0.17](https://github.com/bearyjd/relais/releases/tag/v1.0.17) published and Latest.** Only
+  #243 is functionally in the APK (the #220 compat-gate hardening); the rest is tests and docs.
+- **Both devices on the 1.0.17 `fullOpenDebug` build, verified healthy** — comet `4A111FDKD0000C`,
+  rango `57211FDCG0023C`, all 4 sherpa/onnx native libs extracted on disk. comet's E4B model
+  (3,659,530,240 B) and encrypted API key survived every install this session.
+
+### IzzyOnDroid — DECIDED: not pursued. Do not reopen without new information.
+
+**#123, #250, #252 and story #103 all closed as not planned.** Prep was finished and every constraint
+verified; the decision is cost/benefit, not feasibility. Full reasoning in `docs/distribution.md`.
+
+The number that settles it: **the APK is 2.1% of what an operator downloads** — `fullOpen` 74.3 MiB
+against a 3,490 MiB E4B model, **47x**. Unbundling both native runtimes would cut total first-run
+bytes by **1.1%**, and even then `fullOpen` lands at 33.45 MiB — still over the ~30 MiB cap, still
+needing a "rare" exception plus a proprietary-components argument decided by one maintainer.
+
+Izzy tracks GitHub Release assets, the same ones **Obtainium** already tracks. The gap was
+discoverability, not delivery. Point Izzy-curious users at Obtainium + GitHub Releases.
+
+Epic **#97** stays open on **#122** (Play listing). E3 is resolved as not-planned, not delivered.
+
+### Durable technical findings (survive the closures)
+
+- **`System.load(absolutePath)` satisfies a later `System.loadLibrary` for the same soname.** ART
+  resolves the already-loaded library rather than failing at `ClassLoader.findLibrary()`. Proven on
+  comet by `SherpaUnbundleProbe` (on `main`, `androidTest`) with all four sherpa libs stripped from
+  the APK: `CLINIT OK`. So unbundling ANY bundled native dep here needs no reflection, no custom
+  ClassLoader, no forking. Constraints that do hold: load order
+  `onnxruntime → c-api → cxx-api → jni`, and the libs must land in **app-private internal storage** —
+  `dlopen` refuses world-writable paths, so `externalFilesDir` (where the TTS *voice* stages) will
+  not work for a *runtime*. The probe needs a temporary `jniLibs.excludes` to be meaningful,
+  documented in its header, deliberately not committed.
+- **`llmedge` 0.4.7.2 hooks**, if image-gen unbundling is ever revisited: `NativeLibraryLoader` is
+  `public final` with `ensureStableDiffusionLoaded(...)`, an `llmedge.disableNativeLoad` system
+  property, and `LLMEDGE_BUILD_NATIVE_LIB_PATH`.
+- **Sizing:** measure compressed bytes, `unzip -v` **column 3**. Column 1 is the install footprint;
+  `useLegacyPackaging = true` compresses `.so` ~2.6:1 (`build.gradle.kts:95-98`).
+
+### Five errors this session, and what caught each
+
+1. **`git reset --hard`** during a trial-merge cleanup destroyed the previous session's uncommitted
+   handoff section. Never staged, so unrecoverable; rebuilt from transcript. → this file is committed
+   now, not scratch.
+2. **Uncompressed vs compressed bytes** — read a zip listing as download cost. Caught by the repo's
+   own warning, after the fact.
+3. **"degoogledOpen is the floor"** — fixed the arithmetic, then extrapolated without itemising the
+   variant. Caught by JD asking "can we download the missing pieces?"
+4. **Concluded a variant qualifies without checking the channel table three lines above.** Caught by
+   `/codex review`.
+5. **Asserted ART behaviour from bytecode**, into a doc, an issue and a PR. Refuted by ~10 minutes of
+   device time. Caught by JD saying "run probe first".
+
+Every one had sound arithmetic and a wrong frame. **Zero were caught by my own numeric self-review** —
+each individual claim was true; only the framing was wrong. `/codex review` found 2 (0% overlap with
+my findings both times); JD's questions found 2.
+
+### Next
+
+- **#122** — Play Console listing/policy paperwork + AAB submission. Requires account-holder action.
+- **#69** — Pixel 10 / PowerVR Vulkan driver monitoring. Google tracker
+  https://issuetracker.google.com/issues/541837150. Not a release blocker.
+- Nothing else is open or in flight.
+
+---
+
+## 2026-08-05 (later) — v1.0.17 published, IzzyOnDroid unblocked to 2 issues. (superseded above)
 
 ### Current state
 
@@ -244,7 +315,7 @@ trails `main`; verify asset download counts before deleting an unpublished repla
 
 ---
 
-## 2026-08-02 (later) — ⏩ START HERE. **PR #237 open**: a P1 bypass of #220 that survived #236.
+## 2026-08-02 (later) — **PR #237**: a P1 bypass of #220 that survived #236. (superseded above)
 
 ### The finding — #220 was still broken after #236 merged
 A second `/codex review`, run against the **merged** `8cbabb9`, found a **P1** and it was real
