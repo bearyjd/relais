@@ -16,8 +16,48 @@ will be appended here as they land.
 The three are signed with **one** release key (below). `namespace` stays `cc.grepon.relais`; appId is set
 per-channel in `build.gradle.kts` (`androidComponents.onVariants`). `degoogledPlaysafe` is intentionally
 not shipped. F-Droid's main repo is **not** a target — the bundled `litertlm`/`litert` are proprietary
-prebuilt native blobs, so the FOSS-only main repo can't accept any variant; IzzyOnDroid (which flags the
-`NonFreeDep` anti-feature) is the F-Droid-ecosystem home.
+prebuilt native blobs, so the FOSS-only main repo can't accept any variant; IzzyOnDroid is the
+F-Droid-ecosystem home.
+
+### IzzyOnDroid — verified constraints (2026-08-05, against the current [inclusion policy](https://izzyondroid.org/docs/general/AppInclusionPolicy/))
+
+Three things here were previously assumed and are wrong. Do not re-derive them:
+
+- **Size: ~30 MiB per app**, exceptions rare and "well reasoned". No build fits *as shipped today* —
+  `fullOpen` is 74.3 MiB (248% of cap), `degoogledOpen` 33.6 MiB (112%) — but that is not a floor.
+  Measured compressed bytes (`unzip -v`, column 3, against the published v1.0.17 artifact) show
+  `degoogledOpen` carries **11.06 MiB of sherpa-onnx TTS runtime** (`libonnxruntime.so` 7.33 +
+  `libsherpa-onnx-jni.so` 1.84 + `libsherpa-onnx-c-api.so` 1.76 + `libsherpa-onnx-cxx-api.so` 0.14).
+  Unbundling it (#252) lands
+  `degoogledOpen` at **~22.5 MiB — under the cap, no exception needed.**
+
+  **That conclusion is about `degoogledOpen`, which the channel table above does NOT currently
+  assign to IzzyOnDroid — it assigns `fullOpen`.** The saving does not transfer: `fullOpen` is
+  74.3 MiB, and removing the same 11.06 MiB leaves ~63 MiB, still far over the cap. So compliance
+  requires a product decision, not just #252 — **either remap the Izzy channel to `degoogledOpen`
+  (retiring the unused `…izzy` appId, since nothing is listed yet so there are no users to
+  migrate), or keep `fullOpen` and file for a large exception.** Until that call is made, "under
+  the cap" describes an artifact Izzy is not currently offered. Tracked on #123.
+
+  #250 (image-gen, 29.51 MiB) is the larger absolute saving but only applies to `fullOpen`, which
+  stays over the cap regardless because ML Kit OCR can only be unbundled via Google Play Services.
+- **Venue: Codeberg `IzzyOnDroid/repodata/issues`.** The GitLab `IzzyOnDroid/repo` is archived and
+  read-only.
+- **Proprietary components:** the policy reads *"there should be no proprietary components"*,
+  tolerated only *"if they are essential for the app's core functionality"* — it is not a routine
+  `NonFreeDep` anti-feature flag, as this doc previously implied. Relais's case is strong (litertlm
+  **is** the product) but must be argued in the RFP, not assumed.
+
+Ready today: fastlane metadata complete (short 77/80, full 2324/4000, icon, 3 screenshots, changelogs
+≤500 chars), release-key signed, no `debuggable`/`testOnly`, GitHub Releases as source. Tracking: #123,
+blocked on #252. The listing URL goes here once filed.
+
+**Sizing gotcha, twice-earned.** Measure with `unzip -v` and read **column 3 (compressed)**. Column 1 is
+uncompressed, which is the on-device install footprint, not download cost — `useLegacyPackaging = true`
+compresses `.so` ~2.6:1 (see `build.gradle.kts:95-98`). Reading column 1 overestimates native-lib
+savings ~3x. Separately: do not treat the smallest *current* variant as a floor without itemising what
+is inside it — `degoogledOpen` looked like a hard 33.6 MiB floor until the TTS runtime was itemised out
+of it.
 
 ## The signing key (generate once, never rotate)
 
