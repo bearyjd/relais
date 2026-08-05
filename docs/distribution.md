@@ -29,9 +29,18 @@ Three things here were previously assumed and are wrong. Do not re-derive them:
   `degoogledOpen` carries **11.06 MiB of sherpa-onnx TTS runtime** (`libonnxruntime.so` 7.33 +
   `libsherpa-onnx-jni.so` 1.84 + `libsherpa-onnx-c-api.so` 1.76 + `libsherpa-onnx-cxx-api.so` 0.14).
   Unbundling it (#252) lands
-  `degoogledOpen` at **~22.5 MiB — under the cap, no exception needed.** That is the compliance
-  lever. #250 (image-gen, 29.51 MiB) is the larger absolute saving but only helps `fullOpen`, which
-  stays marginal regardless because ML Kit OCR can only be unbundled via Google Play Services.
+  `degoogledOpen` at **~22.5 MiB — under the cap, no exception needed.**
+
+  **That conclusion is about `degoogledOpen`, which the channel table above does NOT currently
+  assign to IzzyOnDroid — it assigns `fullOpen`.** The saving does not transfer: `fullOpen` is
+  74.3 MiB, and removing the same 11.06 MiB leaves ~63 MiB, still far over the cap. So compliance
+  requires a product decision, not just #252 — **either remap the Izzy channel to `degoogledOpen`
+  (retiring the unused `…izzy` appId, since nothing is listed yet so there are no users to
+  migrate), or keep `fullOpen` and file for a large exception.** Until that call is made, "under
+  the cap" describes an artifact Izzy is not currently offered. Tracked on #123.
+
+  #250 (image-gen, 29.51 MiB) is the larger absolute saving but only applies to `fullOpen`, which
+  stays over the cap regardless because ML Kit OCR can only be unbundled via Google Play Services.
 - **Venue: Codeberg `IzzyOnDroid/repodata/issues`.** The GitLab `IzzyOnDroid/repo` is archived and
   read-only.
 - **Proprietary components:** the policy reads *"there should be no proprietary components"*,
