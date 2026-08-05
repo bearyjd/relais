@@ -31,16 +31,21 @@ Three things here were previously assumed and are wrong. Do not re-derive them:
   Unbundling it (#252) lands
   `degoogledOpen` at **~22.5 MiB — under the cap, no exception needed.**
 
-  **That conclusion is about `degoogledOpen`, which the channel table above does NOT currently
-  assign to IzzyOnDroid — it assigns `fullOpen`.** The saving does not transfer: `fullOpen` is
-  74.3 MiB, and removing the same 11.06 MiB leaves ~63 MiB, still far over the cap. So compliance
-  requires a product decision, not just #252 — **either remap the Izzy channel to `degoogledOpen`
-  (retiring the unused `…izzy` appId, since nothing is listed yet so there are no users to
-  migrate), or keep `fullOpen` and file for a large exception.** Until that call is made, "under
-  the cap" describes an artifact Izzy is not currently offered. Tracked on #123.
+  That figure is for `degoogledOpen`. **DECIDED 2026-08-05: IzzyOnDroid stays on `fullOpen`** — the
+  channel table above is unchanged, and Izzy users keep image generation, OCR and AICore rather
+  than getting the stripped GMS-free build. An exception is therefore required, and its size
+  depends entirely on sequencing:
 
-  #250 (image-gen, 29.51 MiB) is the larger absolute saving but only applies to `fullOpen`, which
-  stays over the cap regardless because ML Kit OCR can only be unbundled via Google Play Services.
+  | `fullOpen` state | Size | vs 30 MiB cap | Exception ask |
+  |---|---|---|---|
+  | today | 74.02 MiB | 247% | **44 MiB over** — "rare and well reasoned" is doing heavy lifting |
+  | after #250 + #252 | **33.45 MiB** | 112% | **3.45 MiB over** — a modest, plausible ask |
+
+  Both unbundlings are therefore **prerequisites for a credible RFP**, not optimizations: #250
+  (image-gen, 29.51 MiB) and #252 (TTS runtime, 11.06 MiB). After both, `fullOpen` sits at roughly
+  the same overage `degoogledOpen` has today, but full-featured. The residual 3.45 MiB cannot be
+  removed — ML Kit OCR (5.42 MiB native) is unbundle-able only via Google Play Services, which
+  would trade a size exception for a GMS dependency the F-Droid ecosystem likes even less.
 - **Venue: Codeberg `IzzyOnDroid/repodata/issues`.** The GitLab `IzzyOnDroid/repo` is archived and
   read-only.
 - **Proprietary components:** the policy reads *"there should be no proprietary components"*,
