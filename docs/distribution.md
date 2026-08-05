@@ -70,7 +70,8 @@ Three things here were previously assumed and are wrong. Do not re-derive them:
 
 Ready today: fastlane metadata complete (short 77/80, full 2324/4000, icon, 3 screenshots, changelogs
 ≤500 chars), release-key signed, no `debuggable`/`testOnly`, GitHub Releases as source. Tracking: #123,
-blocked on #252. The listing URL goes here once filed.
+**blocked on #250** — not #252, which is parked and must not gate the RFP. The listing URL goes here
+once filed.
 
 **Sizing gotcha, twice-earned.** Measure with `unzip -v` and read **column 3 (compressed)**. Column 1 is
 uncompressed, which is the on-device install footprint, not download cost — `useLegacyPackaging = true`
