@@ -26,8 +26,9 @@ Three things here were previously assumed and are wrong. Do not re-derive them:
 - **Size: ~30 MiB per app**, exceptions rare and "well reasoned". No build fits *as shipped today* —
   `fullOpen` is 74.3 MiB (248% of cap), `degoogledOpen` 33.6 MiB (112%) — but that is not a floor.
   Measured compressed bytes (`unzip -v`, column 3, against the published v1.0.17 artifact) show
-  `degoogledOpen` carries **10.93 MiB of sherpa-onnx TTS runtime** (`libonnxruntime.so` 7.33 +
-  `libsherpa-onnx-jni.so` 1.84 + `libsherpa-onnx-c-api.so` 1.76). Unbundling it (#252) lands
+  `degoogledOpen` carries **11.06 MiB of sherpa-onnx TTS runtime** (`libonnxruntime.so` 7.33 +
+  `libsherpa-onnx-jni.so` 1.84 + `libsherpa-onnx-c-api.so` 1.76 + `libsherpa-onnx-cxx-api.so` 0.14).
+  Unbundling it (#252) lands
   `degoogledOpen` at **~22.5 MiB — under the cap, no exception needed.** That is the compliance
   lever. #250 (image-gen, 29.51 MiB) is the larger absolute saving but only helps `fullOpen`, which
   stays marginal regardless because ML Kit OCR can only be unbundled via Google Play Services.
