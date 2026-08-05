@@ -38,14 +38,40 @@ Three things here were previously assumed and are wrong. Do not re-derive them:
 
   | `fullOpen` state | Size | vs 30 MiB cap | Exception ask |
   |---|---|---|---|
-  | today | 74.02 MiB | 247% | **44 MiB over** — "rare and well reasoned" is doing heavy lifting |
-  | after #250 + #252 | **33.45 MiB** | 112% | **3.45 MiB over** — a modest, plausible ask |
+  | today | 74.02 MiB | 247% | 44 MiB over |
+  | after #250 only | 44.51 MiB | 148% | 14.5 MiB over |
+  | **after #250 + #252 (both proven viable)** | **33.45 MiB** | **112%** | **3.45 MiB over** |
 
-  Both unbundlings are therefore **prerequisites for a credible RFP**, not optimizations: #250
-  (image-gen, 29.51 MiB) and #252 (TTS runtime, 11.06 MiB). After both, `fullOpen` sits at roughly
-  the same overage `degoogledOpen` has today, but full-featured. The residual 3.45 MiB cannot be
-  removed — ML Kit OCR (5.42 MiB native) is unbundle-able only via Google Play Services, which
-  would trade a size exception for a GMS dependency the F-Droid ecosystem likes even less.
+  **Both unbundlings are achievable — one verified against the AAR, one proven on hardware.**
+
+  - **#250 (image-gen, 29.51 MiB) is tractable.** `llmedge` 0.4.7.2 ships
+    `io.aatricks.llmedge.core.NativeLibraryLoader` exposing `loadLibraryFileOnce`,
+    `resolveExactLibraryPath` and `loadCandidates` — a deliberate path-based loading seam, which is
+    exactly what fetching a `.so` at runtime needs. **Do this one first**, for its larger saving, not
+    because #252 is blocked.
+  - **#252 (TTS runtime, 11.06 MiB) is also tractable — PROVEN ON DEVICE 2026-08-05.** An earlier
+    revision of this doc claimed the opposite, reasoning that because `OfflineTts.class` carries
+    `<clinit>` → `System.loadLibrary("sherpa-onnx-jni")` (18 sherpa classes do), and `loadLibrary`
+    resolves through `ClassLoader.findLibrary()` against the APK's `nativeLibraryDir`, stripping the
+    `.so` would throw `UnsatisfiedLinkError` before `dlopen`. **That was reasoned, not measured, and
+    it is false.** `SherpaUnbundleProbe` on comet (Pixel 9, `fullOpen`) stripped all four libs from
+    the APK (`PREMISE sherpa libs still in APK: []`), `System.load()`-ed them from `filesDir` in
+    dependency order, then forced `OfflineTts`'s `<clinit>`:
+
+    ```
+    libonnxruntime.so / libsherpa-onnx-c-api.so / libsherpa-onnx-cxx-api.so /
+    libsherpa-onnx-jni.so:  System.load OK
+    VERDICT: CLINIT OK — System.load(path) SATISFIED sherpa's loadLibrary.
+    ```
+
+    ART resolves the already-loaded soname rather than failing at `findLibrary`. **No reflection, no
+    custom ClassLoader, no fork of the sherpa bindings.** The libs must still land in app-private
+    internal storage — `dlopen` refuses world-writable paths, so `externalFilesDir` will not do.
+
+  So both unbundlings are viable and the RFP can be planned around **33.45 MiB / 3.45 MiB over**. The
+  residual is not removable either way: ML
+  Kit OCR (5.42 MiB native) can only be unbundled via Google Play Services, trading a size exception
+  for a GMS dependency the F-Droid ecosystem likes less.
 - **Venue: Codeberg `IzzyOnDroid/repodata/issues`.** The GitLab `IzzyOnDroid/repo` is archived and
   read-only.
 - **Proprietary components:** the policy reads *"there should be no proprietary components"*,
@@ -55,14 +81,21 @@ Three things here were previously assumed and are wrong. Do not re-derive them:
 
 Ready today: fastlane metadata complete (short 77/80, full 2324/4000, icon, 3 screenshots, changelogs
 ≤500 chars), release-key signed, no `debuggable`/`testOnly`, GitHub Releases as source. Tracking: #123,
-blocked on #252. The listing URL goes here once filed.
+**blocked on #250 + #252**, both proven viable (see above). The listing URL goes here once filed.
 
-**Sizing gotcha, twice-earned.** Measure with `unzip -v` and read **column 3 (compressed)**. Column 1 is
-uncompressed, which is the on-device install footprint, not download cost — `useLegacyPackaging = true`
-compresses `.so` ~2.6:1 (see `build.gradle.kts:95-98`). Reading column 1 overestimates native-lib
-savings ~3x. Separately: do not treat the smallest *current* variant as a floor without itemising what
-is inside it — `degoogledOpen` looked like a hard 33.6 MiB floor until the TTS runtime was itemised out
-of it.
+**Three lessons, each earned by getting it wrong here first.**
+
+1. **Measure compressed, not uncompressed.** `unzip -v` column 3 is download cost; column 1 is the
+   on-device install footprint, because `useLegacyPackaging = true` compresses `.so` ~2.6:1 (see
+   `build.gradle.kts:95-98`). Reading column 1 overestimates native-lib savings ~3x.
+2. **Do not treat the smallest current variant as a floor** without itemising what is inside it.
+   `degoogledOpen` looked like a hard 33.6 MiB floor until the TTS runtime was itemised out of it.
+3. **Do not assert platform behaviour from reasoning — run it.** The claim that stripping a `.so`
+   makes `System.loadLibrary` fail at `findLibrary` before `dlopen` was argued from the AAR's
+   bytecode and Android internals, written into this doc, an issue and a PR, and was **false**.
+   A ~10 minute on-device spike (`SherpaUnbundleProbe`, strip → `System.load` → force `<clinit>`)
+   settled it. Anything asserted about ART, `dlopen`, SELinux or scoped storage is a hypothesis
+   until a device says otherwise.
 
 ## The signing key (generate once, never rotate)
 
