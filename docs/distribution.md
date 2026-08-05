@@ -23,12 +23,14 @@ F-Droid-ecosystem home.
 
 Three things here were previously assumed and are wrong. Do not re-derive them:
 
-- **Size: ~30 MiB per app**, exceptions rare and "well reasoned". **No Relais build fits.**
-  `fullOpen` is 74.3 MiB (248% of cap); `degoogledOpen` is 33.6 MiB (112%) and is the *floor* —
-  it already has llmedge, ML Kit OCR and AICore stripped, and the rest is litertlm + onnxruntime +
-  dex. So an exception is required no matter what we ship; the open question is which variant to
-  request one for, not how to qualify. Shrinking image-gen (#250) is a real user win but is **not**
-  a compliance path.
+- **Size: ~30 MiB per app**, exceptions rare and "well reasoned". No build fits *as shipped today* —
+  `fullOpen` is 74.3 MiB (248% of cap), `degoogledOpen` 33.6 MiB (112%) — but that is not a floor.
+  Measured compressed bytes (`unzip -v`, column 3, against the published v1.0.17 artifact) show
+  `degoogledOpen` carries **10.93 MiB of sherpa-onnx TTS runtime** (`libonnxruntime.so` 7.33 +
+  `libsherpa-onnx-jni.so` 1.84 + `libsherpa-onnx-c-api.so` 1.76). Unbundling it (#252) lands
+  `degoogledOpen` at **~22.5 MiB — under the cap, no exception needed.** That is the compliance
+  lever. #250 (image-gen, 29.51 MiB) is the larger absolute saving but only helps `fullOpen`, which
+  stays marginal regardless because ML Kit OCR can only be unbundled via Google Play Services.
 - **Venue: Codeberg `IzzyOnDroid/repodata/issues`.** The GitLab `IzzyOnDroid/repo` is archived and
   read-only.
 - **Proprietary components:** the policy reads *"there should be no proprietary components"*,
@@ -37,8 +39,15 @@ Three things here were previously assumed and are wrong. Do not re-derive them:
   **is** the product) but must be argued in the RFP, not assumed.
 
 Ready today: fastlane metadata complete (short 77/80, full 2324/4000, icon, 3 screenshots, changelogs
-≤500 chars), release-key signed, no `debuggable`/`testOnly`, GitHub Releases as source. Tracking: #123.
-The listing URL goes here once filed.
+≤500 chars), release-key signed, no `debuggable`/`testOnly`, GitHub Releases as source. Tracking: #123,
+blocked on #252. The listing URL goes here once filed.
+
+**Sizing gotcha, twice-earned.** Measure with `unzip -v` and read **column 3 (compressed)**. Column 1 is
+uncompressed, which is the on-device install footprint, not download cost — `useLegacyPackaging = true`
+compresses `.so` ~2.6:1 (see `build.gradle.kts:95-98`). Reading column 1 overestimates native-lib
+savings ~3x. Separately: do not treat the smallest *current* variant as a floor without itemising what
+is inside it — `degoogledOpen` looked like a hard 33.6 MiB floor until the TTS runtime was itemised out
+of it.
 
 ## The signing key (generate once, never rotate)
 
