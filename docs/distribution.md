@@ -38,14 +38,29 @@ Three things here were previously assumed and are wrong. Do not re-derive them:
 
   | `fullOpen` state | Size | vs 30 MiB cap | Exception ask |
   |---|---|---|---|
-  | today | 74.02 MiB | 247% | **44 MiB over** — "rare and well reasoned" is doing heavy lifting |
-  | after #250 + #252 | **33.45 MiB** | 112% | **3.45 MiB over** — a modest, plausible ask |
+  | today | 74.02 MiB | 247% | 44 MiB over |
+  | **after #250 (plan around this)** | **44.51 MiB** | **148%** | **14.5 MiB over** |
+  | after #250 + #252 (only if sherpa proves solvable) | 33.45 MiB | 112% | 3.45 MiB over |
 
-  Both unbundlings are therefore **prerequisites for a credible RFP**, not optimizations: #250
-  (image-gen, 29.51 MiB) and #252 (TTS runtime, 11.06 MiB). After both, `fullOpen` sits at roughly
-  the same overage `degoogledOpen` has today, but full-featured. The residual 3.45 MiB cannot be
-  removed — ML Kit OCR (5.42 MiB native) is unbundle-able only via Google Play Services, which
-  would trade a size exception for a GMS dependency the F-Droid ecosystem likes even less.
+  **The two unbundlings are not equally achievable — verified against the AARs, not assumed.**
+
+  - **#250 (image-gen, 29.51 MiB) is tractable.** `llmedge` 0.4.7.2 ships
+    `io.aatricks.llmedge.core.NativeLibraryLoader` exposing `loadLibraryFileOnce`,
+    `resolveExactLibraryPath` and `loadCandidates` — a deliberate path-based loading seam, which is
+    exactly what fetching a `.so` at runtime needs. **Do this one first.**
+  - **#252 (TTS runtime, 11.06 MiB) is hard and may not be worth it.** `OfflineTts.class` carries
+    `<clinit>` → `System.loadLibrary("sherpa-onnx-jni")`, and 18 sherpa classes do the same. There is
+    no path-based entry point. The failure comes earlier than "load it from app-private storage"
+    suggests: `System.loadLibrary` resolves through `ClassLoader.findLibrary()`, which searches only
+    the APK's extracted `nativeLibraryDir`. Strip the `.so` and it throws `UnsatisfiedLinkError`
+    **before `dlopen` is reached**, so pre-loading with `System.load(absolutePath)` does not rescue
+    it. The remaining routes are reflection into `BaseDexClassLoader.pathList.nativeLibraryDirectories`
+    (a restricted non-SDK interface at our `targetSdk 35`), a custom ClassLoader, or forking the
+    sherpa bindings.
+
+  So plan the RFP around **~44.5 MiB / 14.5 MiB over**. The residual is not removable either way: ML
+  Kit OCR (5.42 MiB native) can only be unbundled via Google Play Services, trading a size exception
+  for a GMS dependency the F-Droid ecosystem likes less.
 - **Venue: Codeberg `IzzyOnDroid/repodata/issues`.** The GitLab `IzzyOnDroid/repo` is archived and
   read-only.
 - **Proprietary components:** the policy reads *"there should be no proprietary components"*,
