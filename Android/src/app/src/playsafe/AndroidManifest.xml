@@ -17,8 +17,11 @@
     in playsafe (the user can still exempt the app manually via system Settings).
   - READ_CALENDAR — calendar-data policy; the read-calendar-events agent skill's handler is gated off.
   - BIND_NOTIFICATION_LISTENER_SERVICE listener + its control activity (notification-access feature).
- (Image generation rides the full flavor only and the endpoint is an honest 501, so there is no
- :imagegen service in any playsafe-eligible variant to remove here.)
+ NOT removed, deliberately: image generation. `fullPlaysafe` IS the `full` dist, so the `:imagegen`
+ service and the real sd.cpp generator (`ImageGenRegistration` is split on the *dist* dimension, not
+ policy) both ship here; the endpoint's 501 is a RUNTIME gate on whether a model bundle is
+ provisioned, not a build-time removal. Play permits this — it is why the store submission declares
+ AI-generated content and must carry an in-app reporting affordance (docs/store-submission.md).
 -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
