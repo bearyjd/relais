@@ -16,8 +16,29 @@ will be appended here as they land.
 The three are signed with **one** release key (below). `namespace` stays `cc.grepon.relais`; appId is set
 per-channel in `build.gradle.kts` (`androidComponents.onVariants`). `degoogledPlaysafe` is intentionally
 not shipped. F-Droid's main repo is **not** a target — the bundled `litertlm`/`litert` are proprietary
-prebuilt native blobs, so the FOSS-only main repo can't accept any variant; IzzyOnDroid (which flags the
-`NonFreeDep` anti-feature) is the F-Droid-ecosystem home.
+prebuilt native blobs, so the FOSS-only main repo can't accept any variant; IzzyOnDroid is the
+F-Droid-ecosystem home.
+
+### IzzyOnDroid — verified constraints (2026-08-05, against the current [inclusion policy](https://izzyondroid.org/docs/general/AppInclusionPolicy/))
+
+Three things here were previously assumed and are wrong. Do not re-derive them:
+
+- **Size: ~30 MiB per app**, exceptions rare and "well reasoned". **No Relais build fits.**
+  `fullOpen` is 74.3 MiB (248% of cap); `degoogledOpen` is 33.6 MiB (112%) and is the *floor* —
+  it already has llmedge, ML Kit OCR and AICore stripped, and the rest is litertlm + onnxruntime +
+  dex. So an exception is required no matter what we ship; the open question is which variant to
+  request one for, not how to qualify. Shrinking image-gen (#250) is a real user win but is **not**
+  a compliance path.
+- **Venue: Codeberg `IzzyOnDroid/repodata/issues`.** The GitLab `IzzyOnDroid/repo` is archived and
+  read-only.
+- **Proprietary components:** the policy reads *"there should be no proprietary components"*,
+  tolerated only *"if they are essential for the app's core functionality"* — it is not a routine
+  `NonFreeDep` anti-feature flag, as this doc previously implied. Relais's case is strong (litertlm
+  **is** the product) but must be argued in the RFP, not assumed.
+
+Ready today: fastlane metadata complete (short 77/80, full 2324/4000, icon, 3 screenshots, changelogs
+≤500 chars), release-key signed, no `debuggable`/`testOnly`, GitHub Releases as source. Tracking: #123.
+The listing URL goes here once filed.
 
 ## The signing key (generate once, never rotate)
 
