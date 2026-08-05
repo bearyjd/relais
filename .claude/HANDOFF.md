@@ -5,6 +5,163 @@ session summary + next steps. **Newest section at the top.** (This file is uncom
 
 ---
 
+## 2026-08-05 — ⏩ START HERE. **v1.0.17 draft built, NOT published.** 6 PRs merged.
+
+### Current state
+
+- `main` = `98c90d13` (`chore(release): prepare v1.0.17 (#248)`). Working tree clean, no open PRs.
+- **`v1.0.17` is a DRAFT and deliberately unpublished** — awaiting a go/no-go. All five gates are
+  green (build, GMS-free degoogled, playsafe permission strip, arm64-only, 16 KB alignment,
+  signatures). Assets: degoogled 35,231,461 · full-open 77,873,050 · playsafe AAB 77,969,674 —
+  only +52/+124/+90 bytes over v1.0.16, consistent with a small parser change.
+- **The APK contains only #243.** #244-#247 are an androidTest probe, comments and docs; none ship.
+- **comet is UNPLUGGED** (not enumerated on USB). The 1.0.17 `fullOpenDebug` APK is built at
+  `Android/src/app/build/outputs/apk/fullOpen/debug/app-full-open-debug.apk` and NOT installed.
+  Decision already taken: install the **debug** build in place, not the release APK — release
+  signing differs, so it would need an uninstall, and that deletes `Android/data/<appId>/` with
+  the ~3.7 GB E4B model and the API key in encrypted prefs.
+
+### What shipped (#243, the only code in the release)
+
+An anti-slop pass over the #220 compat-gate lane. The gates were already correctly single-sourced;
+the finds were narrower and real:
+
+- **URL authority bypass.** `repoIdFromDownloadUrl` recovered the host with `substringBefore('/')`,
+  which returns the whole *authority*. Host casing, an explicit `:443`, or a `user@` prefix each
+  failed the compare and read as "cannot identify" — which means **allow**. One root cause, three
+  bypasses of a gate that exists to stop multi-GB doomed downloads. Now parsed with `java.net.URI`,
+  matching what `isHostApproved`/`isMcpHostApproved` already did.
+- **Refusal copy was built twice**, provisioner vs legacy download lane, while `refuseIfIncompatible`'s
+  own KDoc claimed it was single-sourced. Now `RelaisRuntimeCompat.refusalMessage`.
+- **The 404 bodies were untestable** inside a private socket-taking function; extracted as
+  `incompatibleModelMessage`/`notProvisionedModelMessage` in `RelaisModelSwap.kt`.
+
+Every new test was proven to fail before its fix — mutation for the formatters (17 pre-existing
+decision tests passed under mutated bodies), true RED for the URL cases.
+
+### #244 — the wiring proof (on-device, PASS)
+
+`IncompatibleModel404Probe` on comet (Pixel 9, `fullOpen`, E4B resident), `OK (1 test)` in 19.7 s.
+Reaching `Incompatible` needs a provisioned AND measured-bad model, which #236/#237 now prevent, so
+the probe synthesizes the legacy state: a registry entry pointing at a placeholder (`provisionedOnDisk()`
+prunes on `File.exists()` only). Registry saved/restored in a `finally`; verified afterwards that no
+placeholder or probe entry survived. Wire response:
+
+```
+HTTP/1.1 404 Not Found
+{"error":{"message":"model 'litert-community/Qwen2.5-1.5B-Instruct' is not loadable by this node's
+LiteRT-LM 0.12.0 runtime (engine-create fails: \"Failed to parse LlmMetadata\")",
+"type":"invalid_request_error","code":"model_not_found"}}
+```
+
+### #245 — every documented probe command was broken
+
+`cc.grepon.relais` is the **namespace**, not an applicationId. `build.gradle.kts:229` sets appId per
+channel, so the runner is `com.ventouxlabs.relais.izzy.test` for `fullOpen`. `cc.grepon.relais.test`
+resolves to a **pre-rebrand leftover package still installed on comet**, so the command fails at
+class-load, not install — which is why it cost a full install-and-run cycle to diagnose. Fixed in 18
+headers (the `-e class` args are namespace-based and were already correct — 29 of them left untouched).
+Rule recorded in `DEVELOPMENT.md`. Note the prose docs (RUNBOOK, tasker-intent-abi, distribution) had
+this right all along; only the in-code comments rotted.
+
+### #246/#247 — docs drift
+
+`frontend.md` described 29 dead files as *pending removal*; they had shipped (`ui/` 114→90,
+`customtasks/` 43→38, main .kt 334→**318**). `backend.md` was missing `POST /v1/messages` entirely
+(#179, shipped after the last refresh). `data.md` never documented the #180 model registry despite
+its pruned-on-**read** semantics being load-bearing. Two maps had been content-edited on 07-28 without
+bumping their `Generated:` header. `DEVELOPMENT.md`'s commands table sat inside an AUTO-GENERATED
+marker while only 2 of its 5 rows came from the workflow — a regeneration would have deleted the rest.
+
+### Reviews
+
+`/codex review` run twice (on #243's merged diff and on #244): both PASS, no `[P1]`. Cross-model
+overlap with Claude's own findings was **0%** both times, consistent with prior rounds — but both
+runs were confirmations of already-cleaned diffs, not independent bug hunts, and codex reported no
+token count either time. Treat as "nothing objectionable found", not a strong endorsement.
+
+### Next
+
+1. **Decide on the `v1.0.17` draft** — publish, or delete it if a release carrying only #243 is not
+   wanted. Deleting an unpublished draft is clean; unpublishing a live release is not.
+2. **Reconnect comet** and run `./gradlew :app:installFullOpenDebug` (model and API key survive).
+3. #123 IzzyOnDroid RFP · #122 Play Console · #69 driver monitoring — all unchanged.
+
+### Process note
+
+An earlier `git reset --hard origin/main`, used to clean up a throwaway trial-merge branch, silently
+destroyed the uncommitted 2026-08-04 handoff section below. It was never staged, so no blob existed
+to recover; the section was reconstructed from the session transcript. **Do not run `reset --hard` in
+a repo whose only copy of something is an uncommitted working-tree file** — stash or commit first.
+
+---
+
+## 2026-08-04 — **v1.0.16 published; #146 closed.** (superseded by 2026-08-05 above)
+
+### Current state
+
+- `main` = `a52b4b39` (`chore(release): prepare v1.0.16 (#242)`); working tree was clean before
+  this handoff update. No open PRs.
+- [Relais v1.0.16](https://github.com/bearyjd/relais/releases/tag/v1.0.16) is **published** from
+  tag `v1.0.16` at `a52b4b39`. The signed release workflow passed its build, permission,
+  ABI, 16 KB alignment, and APK-signature gates.
+- Published assets:
+  - `app-degoogled-open-release.apk` — 35,231,409 bytes
+  - `app-full-open-release.apk` — 77,872,926 bytes
+  - `app-full-playsafe-release.aab` — 77,969,584 bytes
+- The obsolete unpublished `v1.0.15` draft was deleted only after confirming all three of its
+  assets had zero downloads.
+- Both devices are currently attached and have the current `fullOpenDebug` artifact installed:
+  - **comet / Pixel 9 Pro Fold** — `4A111FDKD0000C`
+  - **rango / Pixel 10 Pro Fold** — `57211FDCG0023C`
+
+### #146 — fully closed
+
+PR #240 added a double-gated on-device `HttpMultimodalProbe`: Pixel 10's resident Gemma 4 E2B
+model accepted one live loopback `/v1/chat/completions` request containing text, PNG `image_url`,
+and WAV `input_audio`; it returned `Red.` in 12.358 s. This covers the real HTTP content-parts
+path independent of accelerator selection.
+
+PR #241 fixed a real header layout defect: a long model id consumed the entire Row and pushed the
+new-chat and conversation-action controls off-screen. The model label now uses `weight(1f)`, one
+line, and ellipsis. On **both** Pixels the header visibly shows `＋` and `⋮`; the latter opens
+`SHARE` and `EXPORT .MD`.
+
+Pixel 9 end-to-end system-surface results:
+
+- `ChatDepthUiProbe` = **16/16** in 16.779 s (including SEND/STOP, streaming, autoscroll,
+  copy/regenerate/edit-resend).
+- Android ChooserActivity received the exact conversation Markdown payload.
+- SAF CreateDocument wrote a Markdown export whose title and user/assistant turns matched the
+  active conversation.
+- Composer `＋` opened DocumentsUI with the **Audio** filter, proving the attachment file-picker
+  gesture.
+
+### Pixel 10 image generation / #69
+
+- Production continues to force CPU on Tensor G5 / PowerVR; verified PNG generation succeeds in
+  ~279 s. This safeguard must remain in release builds.
+- The debug-only, double-gated Vulkan probe retested PowerVR driver `25.3@6908880`; it still
+  wedges after VRAM upload and is reclaimed at 180 s. Do not expose a user Vulkan switch.
+- Google driver issue is filed: https://issuetracker.google.com/issues/541837150.
+- #69 remains open only as upstream driver monitoring/retest work, not as a release blocker.
+
+### Remaining open issues
+
+- #123 — submit IzzyOnDroid RFP for `fullOpen`; now unblocked by the published v1.0.16 release.
+  Request the size exemption (full APK ~74 MiB) and record the listing URL in distribution docs.
+- #122 — Play Console listing/policy paperwork and AAB submission; requires account-holder action.
+- #103 / #102 / #97 — tracking story/epic issues; close after #123 / #122 complete.
+- #69 — driver monitoring only (above).
+
+### Important release rule
+
+The tag workflow creates a draft automatically. It is safe to publish only after its artifact,
+permission, ABI, alignment, and signing gates are all green. Never publish an older draft that
+trails `main`; verify asset download counts before deleting an unpublished replacement.
+
+---
+
 ## 2026-08-02 (later) — ⏩ START HERE. **PR #237 open**: a P1 bypass of #220 that survived #236.
 
 ### The finding — #220 was still broken after #236 merged
