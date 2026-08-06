@@ -93,6 +93,7 @@ class ChatSpeechUiProbe {
         onSpeak = onSpeak,
         onStopSpeaking = onStopSpeaking,
         onSpeechNoticeShown = {},
+        onReport = {},
       )
     }
   }
@@ -150,6 +151,7 @@ class ChatSpeechUiProbe {
         onSpeak = {},
         onStopSpeaking = {},
         onSpeechNoticeShown = {},
+        onReport = {},
       )
     }
 

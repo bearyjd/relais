@@ -100,6 +100,7 @@ class ChatDepthUiProbe {
         onSpeak = {},
         onStopSpeaking = {},
         onSpeechNoticeShown = {},
+        onReport = {},
       )
     }
   }
