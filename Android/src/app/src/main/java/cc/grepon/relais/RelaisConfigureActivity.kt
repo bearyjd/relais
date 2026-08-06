@@ -72,6 +72,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import cc.grepon.relais.chat.ContentReportsActivity
 import cc.grepon.relais.nfc.NfcWriteActivity
 import cc.grepon.relais.templates.PromptTemplateEditorActivity
 import cc.grepon.relais.triage.TriageControlActivity
@@ -267,6 +268,11 @@ private fun ConfigureScreen(activity: RelaisConfigureActivity) {
       }
       ActionLink("PROMPT TEMPLATES ›") {
         ctx.startActivity(Intent(ctx, PromptTemplateEditorActivity::class.java))
+      }
+      // Deliberately NOT behind POLICY_OPEN: reviewing reported AI output is a Play requirement, so
+      // the playsafe build is the one that needs it most (#258).
+      ActionLink("REPORTED OUTPUT ›") {
+        ctx.startActivity(Intent(ctx, ContentReportsActivity::class.java))
       }
       // Notification triage is stripped from the Play (playsafe) build — its listener service +
       // control activity are removed from that manifest (notification-access policy).
