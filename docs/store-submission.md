@@ -40,10 +40,34 @@ LAN chat/completions API, and image generation (`:imagegen` — see Gate 3, it *
 
 **As of `main` there is no report/flag affordance anywhere in the app** (verified: no such string,
 no such handler). This is the one item on this page that cannot be transcribed — it has to be built.
-Tracked as **#258**; do not submit before it lands. The design question it opens: Relais has no
-developer server, so "report to developers" has to resolve to something local (an in-app dialog that
-records the report on-device, optionally offering an export) rather than a `mailto:` — a mail handoff
-arguably *is* "exiting the app."
+Tracked as **#258**; do not submit before it lands.
+
+### The requirement has two halves, and only one is easy
+
+The sentence quoted above imposes **both** "without needing to exit the app" **and** "to
+**developers**". An in-app dialog that records the report on-device satisfies the first and, on its
+own, **fails the second** — VentouxLabs never learns anything, and since the operator running Relais
+is usually also the user, a purely local record is self-reporting. *(Raised by `/codex review` on
+#259 after an earlier draft of this section presented local-only storage as sufficient. It was not.)*
+
+**Decision: a local record plus an opt-in send, defaulting to off.**
+
+| Half of the requirement | How it is met |
+|---|---|
+| "without needing to exit the app" | The report is captured by an in-app dialog. No `mailto:`, no browser — a mail hand-off arguably *is* exiting the app. |
+| "to developers" | Each report offers an explicit, per-report **send to the maintainer**, chosen by the operator. |
+| "use reports to inform moderation" | Reports are reviewable in-app (`CONFIGURE › REPORTED OUTPUT`), so the operator can act on them whether or not one is sent. |
+
+**This changes the Data Safety answers, and the change must be declared honestly.** With a send path
+the app can transmit user-authored content to the developer. Keep the default **off** and the
+transmission **per-report and user-initiated**, so the baseline stays "collects nothing" and the
+optional path is disclosed rather than hidden. Update `distribution.md` §"Play Data Safety form" when
+it lands — do not leave the "no developer server, nothing transmitted" wording standing unqualified.
+
+**Open and blocking #258:** *where* an opt-in send delivers to. There is no VentouxLabs endpoint
+today, and standing one up is a real commitment for a project whose pitch is no cloud. Resolve this
+before the send path is built; the local record and review screen are already done and are a
+prerequisite for any delivery design.
 
 ## ⚠ Gate 2 — target API level deadline
 
@@ -174,8 +198,10 @@ some locales.
 
 ## Order for the operator
 
-1. **Land Gate 1** (in-app content reporting). Nothing below is worth doing first — a GenAI app
-   without it is rejectable on a policy Google enforces at review.
+1. **Land Gate 1** (in-app content reporting), **including the opt-in send** — the local record
+   alone does not meet the "to developers" half. Nothing below is worth doing first: a GenAI app
+   without this is rejectable on a policy Google enforces at review. Decide the delivery endpoint
+   before building the send path.
 2. **Decide Gate 2**: submit before 2026-08-31 at targetSdk 35, or bump to 36 first.
 3. Record the **Gate 3** FGS video and write the four declarations.
 4. Create the app in Play Console, enrol in Play App Signing, upload the AAB.
