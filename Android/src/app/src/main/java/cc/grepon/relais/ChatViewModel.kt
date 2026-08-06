@@ -24,9 +24,9 @@ import cc.grepon.relais.chat.ReportReason
 import cc.grepon.relais.chat.ReportRejection
 import cc.grepon.relais.chat.SpeechState
 import cc.grepon.relais.chat.buildContentReportDraft
+import cc.grepon.relais.chat.persistContentReport
 import cc.grepon.relais.chat.historyForRequest
 import cc.grepon.relais.data.ChatTurn
-import cc.grepon.relais.data.ContentReport
 import cc.grepon.relais.data.Conversation
 import cc.grepon.relais.data.RelaisDatabase
 import cc.grepon.relais.data.ReportSurface
@@ -72,8 +72,6 @@ class ChatViewModel @JvmOverloads constructor(
 
   private val repo = ChatRepository(app, RelaisDatabase.get(app).chatDao())
 
-  /** On-device sink for AI-content reports (#258). No network path — see [reportContent]. */
-  private val reportDao = RelaisDatabase.get(app).reportDao()
 
   /** One selector (and one owned [HttpClient]) for the ViewModel's lifetime; closed in [onCleared]. */
   private val transportSelector = ChatTransportSelector(app)
@@ -336,22 +334,15 @@ class ChatViewModel @JvmOverloads constructor(
           }
       is ReportDraftResult.Valid ->
         viewModelScope.launch {
-          val draft = result.draft
-          runCatching {
-              reportDao.insert(
-                ContentReport(
-                  reasonId = draft.reasonId,
-                  excerpt = draft.excerpt,
-                  note = draft.note,
-                  modelId = draft.modelId,
-                  backend = draft.backend,
-                  surface = ReportSurface.CHAT,
-                  createdAt = System.currentTimeMillis(),
-                )
-              )
-            }
-            .onSuccess { _reportNotice.value = "REPORTED — saved on this device" }
-            .onFailure { _reportNotice.value = "Could not save that report." }
+          val saved =
+            persistContentReport(
+              context = getApplication(),
+              draft = result.draft,
+              surface = ReportSurface.CHAT,
+              nowMs = System.currentTimeMillis(),
+            )
+          _reportNotice.value =
+            if (saved) "REPORTED — saved on this device" else "Could not save that report."
         }
     }
   }
