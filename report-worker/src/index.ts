@@ -99,6 +99,49 @@ export function parseReport(raw: unknown): ReportBody | null {
   };
 }
 
+/**
+ * Reads the body, aborting as soon as it exceeds [maxBytes]. Returns null if the cap is exceeded or
+ * there is no body.
+ *
+ * Counts **bytes off the stream**, not `String.length`. Two reasons, both of which were real bugs:
+ * `await request.text()` buffers the ENTIRE payload before any check can run — so a chunked request,
+ * or one with a lying Content-Length, defeats a cap applied afterwards — and `String.length` counts
+ * UTF-16 code units, so a multi-byte UTF-8 payload well over the cap passes a length test.
+ *
+ * Cancelling the reader on overflow tells the runtime to stop pulling, so an attacker streaming a
+ * large body is cut off rather than fully buffered.
+ */
+export async function readBoundedBody(
+  stream: ReadableStream<Uint8Array> | null,
+  maxBytes: number,
+): Promise<string | null> {
+  if (stream === null) return null;
+
+  const reader = stream.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (value === undefined) continue;
+    total += value.byteLength;
+    if (total > maxBytes) {
+      await reader.cancel();
+      return null;
+    }
+    chunks.push(value);
+  }
+
+  const merged = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    merged.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return new TextDecoder().decode(merged);
+}
+
 /** Salted, non-reversible caller identity for rate limiting. The raw IP is never stored. */
 async function callerHash(ip: string, salt: string): Promise<string> {
   const data = new TextEncoder().encode(`${salt}:${ip}`);
@@ -128,13 +171,20 @@ export default {
     const contentType = request.headers.get('content-type') ?? '';
     if (!contentType.includes('application/json')) return reply(415, 'expected application/json');
 
-    // Trust the declared length only to reject early; the real cap is enforced on the read below,
-    // since Content-Length can lie or be absent under chunked encoding.
+    // Rate limit BEFORE touching the body. An abusive caller should be turned away without us
+    // doing any stream work, and a flood of *malformed* requests has to count against the limit
+    // too — checking after parsing would let junk traffic through the limiter for free.
+    const ip = request.headers.get('cf-connecting-ip') ?? '';
+    if (ip !== '' && (await overRateLimit(env, ip))) return reply(429, 'too many reports');
+
+    // Content-Length is only a cheap early reject — it can lie or be absent under chunked encoding.
+    // readBoundedBody is what actually enforces the cap, counting bytes as it reads and cancelling
+    // the stream on overflow rather than buffering the whole payload first.
     const declared = parseInt(request.headers.get('content-length') ?? '0', 10);
     if (Number.isFinite(declared) && declared > MAX_BODY_BYTES) return reply(413, 'report too large');
 
-    const body = await request.text();
-    if (body.length > MAX_BODY_BYTES) return reply(413, 'report too large');
+    const body = await readBoundedBody(request.body, MAX_BODY_BYTES);
+    if (body === null) return reply(413, 'report too large');
 
     let parsed: unknown;
     try {
@@ -145,9 +195,6 @@ export default {
 
     const report = parseReport(parsed);
     if (report === null) return reply(400, 'malformed report');
-
-    const ip = request.headers.get('cf-connecting-ip') ?? '';
-    if (ip !== '' && (await overRateLimit(env, ip))) return reply(429, 'too many reports');
 
     // Key by time + random so concurrent submissions cannot collide, and so listing is
     // chronological. crypto.randomUUID is available in the Workers runtime.
