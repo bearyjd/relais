@@ -7,7 +7,14 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { parseReport, readBoundedBody } from './index';
+import {
+  MAX_BODY_BYTES,
+  MAX_EXCERPT,
+  MAX_IDENT,
+  MAX_NOTE,
+  parseReport,
+  readBoundedBody,
+} from './index';
 
 /** Builds a stream that delivers `parts` as separate chunks, like a real chunked request. */
 function streamOf(...parts: Uint8Array[]): ReadableStream<Uint8Array> {
@@ -142,5 +149,37 @@ describe('readBoundedBody', () => {
 
   it('returns null when there is no body at all', async () => {
     expect(await readBoundedBody(null, 1024)).toBeNull();
+  });
+});
+
+/**
+ * The transport cap counts BYTES; the field caps count UTF-16 units. If the transport cap is the
+ * smaller of the two, the endpoint 413s reports the schema calls valid — which is what an 8 KiB cap
+ * did to any CJK or emoji report, silently breaking the operators this feature exists for.
+ */
+describe('transport cap vs schema caps', () => {
+  it('accepts a maximum-size CJK report — every field at its limit, all multi-byte', () => {
+    const maximal = {
+      reasonId: 'misinformation',
+      surface: 'gallery_chat',
+      excerpt: '字'.repeat(MAX_EXCERPT),
+      note: '字'.repeat(MAX_NOTE),
+      modelId: '字'.repeat(MAX_IDENT),
+      backend: '字'.repeat(MAX_IDENT),
+    };
+    // Schema-valid by construction: every field is exactly at its UTF-16 limit.
+    expect(parseReport(maximal)).not.toBeNull();
+
+    const bytes = utf8(JSON.stringify(maximal)).byteLength;
+    expect(bytes).toBeGreaterThan(8 * 1024); // the old cap would have refused this
+    expect(bytes).toBeLessThan(MAX_BODY_BYTES);
+  });
+
+  it('covers the worst case: a serializer that escapes every character as \\uXXXX', () => {
+    // 6 bytes per UTF-16 unit is the ceiling for JSON string escaping. If the transport cap ever
+    // drops below this, some valid report becomes unsendable depending on the client's serializer.
+    const maxUnits = MAX_EXCERPT + MAX_NOTE + MAX_IDENT * 2 + 64 + 64;
+    const worstCaseBytes = maxUnits * 6 + 200; // + structural overhead
+    expect(worstCaseBytes).toBeLessThan(MAX_BODY_BYTES);
   });
 });
