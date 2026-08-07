@@ -1,0 +1,23 @@
+# Copyright (C) 2026 Entrevoix / grepon.cc — AGPL-3.0-or-later.
+#
+# Relais AI-content report receiver (#258). Deploy per README.md — the KV namespace id and the
+# rate-limit salt are environment-specific and are NOT committed.
+
+name = "relais-report"
+main = "src/index.ts"
+compatibility_date = "2026-01-01"
+
+# Reports and rate-limit counters share one namespace, distinguished by key prefix (`report:` /
+# `rl:`). Both carry a TTL, so nothing here grows without bound.
+#
+# Fill `id` after running the create command in README.md. Left empty deliberately: committing a
+# namespace id would point every fork's deploy at this account's storage.
+[[kv_namespaces]]
+binding = "REPORTS"
+id = ""
+
+# RATE_LIMIT_SALT is a secret, set with `wrangler secret put` — never in this file.
+# See README.md.
+
+[observability]
+enabled = true

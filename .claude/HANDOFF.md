@@ -1,11 +1,102 @@
 # Relais — Session Handoff
 
 Point-in-time "resume here". Durable facts live in agent memory + `SPIKE-FINDINGS.md`; this is the
-session summary + next steps. **Newest section at the top.** (This file is uncommitted scratch.)
+session summary + next steps. **Newest section at the top.** Committed, not scratch — an
+uncommitted section was once destroyed by `git reset --hard` and had to be rebuilt from a transcript.
 
 ---
 
-## 2026-08-05 (final) — ⏩ START HERE. **v1.0.17 published. IzzyOnDroid closed, not planned.**
+## 2026-08-06 — ⏩ START HERE. **#122 prep done; #258 is the blocker, and it needs a delivery path.**
+
+### Current state
+
+- `main` = **`7ae36370`** (#259 squash-merged). Working tree clean.
+- **One open PR: #260** (draft) — the #258 implementation. CI green, four commits + a refactor.
+- Open issues: **#258** (Play blocker, active) · #122/#102/#97 (blocked on #258) · #69 (upstream driver).
+
+### The thing that reframed this session
+
+`/codex review` on #259 found a **[P1]** that was correct and that I had missed while writing the
+very section it flagged. Play's AI-Generated Content policy requires **both** halves of one sentence:
+
+> "in-app user reporting or flagging features that allow users to report or flag offensive content
+> **to developers** **without needing to exit the app**"
+
+A report recorded only on-device satisfies the second and **fails the first** — and since the Relais
+operator is usually also the user, a purely local record is self-reporting. Fixed in `a9946c66`.
+
+**Decision (JD): local record + opt-in per-report send, default off.** Keeps the baseline Data Safety
+answer ("collects nothing") true while giving the policy a delivery path. **Delivery target decided:
+a Cloudflare Worker on ventouxlabs.com** — chosen over a third-party form relay (extra processor to
+declare) and a prefilled GitHub issue (leaves the app; publishes offensive model output).
+
+### What is DONE and device-verified (#260)
+
+The **capture** half of gate 1 is complete. Verified end to end on **comet** against a real Gemma 4
+E4B turn: `REPORT` on assistant turns → reason picker → persisted row → `CONFIGURE › REPORTED OUTPUT`
+→ DISMISS → empty state. The persisted row carried `reason=harmful surface=chat
+model=litert-community/gemma-4-E4B-it-litert-lm backend=GPU_LITERTLM note=None` — `note=None`
+confirms the blank-note→null normalization holds in production, not just in unit tests.
+
+Room **v5 → v6** (`content_reports`) also verified migrating on **rango** against a real v5 database:
+`user_version` 5 → 6, correct columns and index, no crash, no restart.
+
+`ContentReportShapingTest` is **mutation-verified** — three deliberate breaks each failed exactly the
+test that should catch them. Do this for new regression tests here; see the memory entry on tests
+that shipped green under the bug they claimed to pin.
+
+### Remaining on #258, in order
+
+1. **Cloudflare Worker** — minimal HTTPS endpoint. Write + review here; **JD deploys** (it binds the
+   domain to a data-receiving service).
+2. **Client send path** — opt-in, default off, per-report. Hooks into `persistContentReport()`
+   (`6066df7e`, the single write path, added for exactly this). Needs the endpoint URL.
+3. **Privacy policy + `distribution.md` Data Safety — in the SAME PR as step 2**, not after. The
+   moment the app can transmit user content to the developer, "no developer server, nothing
+   transmitted" stops being true.
+
+### Corrections that must not be re-derived
+
+- **The inherited Gallery chat stack is UNREACHABLE dead code.** Nothing references
+  `AgentChatTaskModule` / `LlmChatTaskModule` / `LlmSingleTurnTaskModule` anywhere, and
+  `MainActivity`/`DashboardScreen`/`ModelsScreen` never mention `agentchat` or `llmchat`, so
+  `LlmChatScreen` and everything under it (`ChatView`, `ChatPanel`, `MessageBodyText`'s AGENT branch)
+  is dead. I wrote a report affordance for it, then reverted it. **Do not add features there.**
+  Deleting the stack is a legitimate separate change.
+- **`RelaisChatActivity` is NOT a manifest activity** — it is a composable screen. `am start` fails.
+  Reach chat via `MainActivity` → bottom-nav CHAT.
+- **`fullPlaysafe` DOES ship `:imagegen`** — it is the `full` dist, and `ImageGenRegistration` splits
+  on the *dist* dimension. The 501 is a runtime gate, not a build-time removal.
+
+### Gate 2 is a live deadline
+
+`targetSdk = 35`. New Play submissions must target **API 36 from 2026-08-31**, so the current AAB is
+eligible only until **2026-08-30**. Extension to 2026-11-01 is requestable in Console. **Unverified
+and deliberately not guessed:** whether an app already *in review* on Aug 31 is judged against the
+old level. Confirm in Console before betting the window on it.
+
+### Errors this session, and what caught each
+
+1. **Quoted a policy rule in full, then satisfied half of it.** Caught by `/codex review`, not by me.
+2. **Claimed the Gallery chat was a live surface** after checking that `LlmChatScreen` had callers —
+   without checking whether *those* had callers. Caught by my own reachability grep, but only after
+   the work was written.
+3. **Read comet's schema version as 0** and nearly concluded "no database". It was an
+   un-checkpointed WAL making the main-file header stale. Caught by checking the `-wal` file.
+4. **Said I drove the chat screen** when my `am start` had failed and JD had navigated by hand.
+
+All four are the same shape: **an accurate local fact extrapolated into a wrong global claim.** Only
+one was caught by review of my own reasoning. Device evidence and `/codex` caught the rest — round 2
+of codex on #259 stalled at 330s and produced no verdict, so the final diff merged on round-1 review
+plus green CI, which is a judgment call rather than verification.
+
+### Next
+
+Write the Worker + deploy runbook. Then steps 2-3 above, in one PR.
+
+---
+
+## 2026-08-05 (final) — v1.0.17 published. IzzyOnDroid closed, not planned. (superseded above)
 
 ### Current state
 
