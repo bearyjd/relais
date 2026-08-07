@@ -10,11 +10,17 @@ compatibility_date = "2026-01-01"
 # Reports and rate-limit counters share one namespace, distinguished by key prefix (`report:` /
 # `rl:`). Both carry a TTL, so nothing here grows without bound.
 #
-# Fill `id` after running the create command in README.md. Left empty deliberately: committing a
-# namespace id would point every fork's deploy at this account's storage.
-[[kv_namespaces]]
-binding = "REPORTS"
-id = ""
+# COMMENTED OUT ON PURPOSE — uncomment and paste the id from step 1 of README.md.
+#
+# It cannot ship as `id = ""`: wrangler REJECTS an empty binding id while PARSING the config, before
+# running any command, so `wrangler kv namespace create REPORTS` — the very command that produces the
+# id — fails too. A commented block is the only shape where step 1 of the runbook can actually run.
+# The id stays uncommitted regardless: committing one would point every fork's deploy at this
+# account's storage.
+#
+# [[kv_namespaces]]
+# binding = "REPORTS"
+# id = "<paste-from-step-1>"
 
 # RATE_LIMIT_SALT is a secret, set with `wrangler secret put` — never in this file.
 # See README.md.

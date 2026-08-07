@@ -188,6 +188,13 @@ export default {
     const contentType = request.headers.get('content-type') ?? '';
     if (!contentType.includes('application/json')) return reply(415, 'expected application/json');
 
+    // The `[[kv_namespaces]]` block in wrangler.toml ships COMMENTED OUT (see the comment there —
+    // an empty binding id breaks every wrangler command, including the one that creates the id).
+    // That makes it possible to deploy having skipped README step 1b, in which case this binding is
+    // undefined and every request would die on an unhandled TypeError. Say so instead: a
+    // misconfigured deploy should be obvious from one curl, not from a stack trace.
+    if (env.REPORTS === undefined) return reply(503, 'storage not configured');
+
     // Rate limit BEFORE touching the body. An abusive caller should be turned away without us
     // doing any stream work, and a flood of *malformed* requests has to count against the limit
     // too — checking after parsing would let junk traffic through the limiter for free.

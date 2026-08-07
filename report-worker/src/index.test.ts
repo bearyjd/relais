@@ -7,7 +7,8 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import {
+import worker, {
+  type Env,
   MAX_BODY_BYTES,
   MAX_EXCERPT,
   MAX_IDENT,
@@ -157,6 +158,34 @@ describe('readBoundedBody', () => {
  * smaller of the two, the endpoint 413s reports the schema calls valid — which is what an 8 KiB cap
  * did to any CJK or emoji report, silently breaking the operators this feature exists for.
  */
+/**
+ * The KV block ships commented out in wrangler.toml, so a deploy that skipped README step 1b has no
+ * binding. Without a guard every request would die on an unhandled TypeError; a misconfigured deploy
+ * should be diagnosable from one curl.
+ */
+describe('missing KV binding', () => {
+  const jsonPost = () =>
+    new Request('https://example.invalid/report', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(valid),
+    });
+
+  it('answers 503 rather than throwing when REPORTS is unbound', async () => {
+    const res = await worker.fetch(jsonPost(), {} as unknown as Env);
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ message: 'storage not configured' });
+  });
+
+  it('still rejects a bad method before reaching the storage check', async () => {
+    const res = await worker.fetch(
+      new Request('https://example.invalid/report'),
+      {} as unknown as Env,
+    );
+    expect(res.status).toBe(405);
+  });
+});
+
 describe('transport cap vs schema caps', () => {
   it('accepts a maximum-size CJK report — every field at its limit, all multi-byte', () => {
     const maximal = {

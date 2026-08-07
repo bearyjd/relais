@@ -46,8 +46,14 @@ npm run typecheck && npm test        # both must pass before deploying
 
 npx wrangler login
 
-# 1. Create the KV namespace and paste the printed id into wrangler.toml's `id = ""`.
+# 1. Create the KV namespace.
+#    The `[[kv_namespaces]]` block in wrangler.toml is COMMENTED OUT so this command can run —
+#    wrangler rejects an empty binding id while parsing the config, before running anything, which
+#    would otherwise make this step fail on the config it is meant to fill in.
 npx wrangler kv namespace create REPORTS
+
+# 1b. Uncomment the `[[kv_namespaces]]` block in wrangler.toml and paste the printed id.
+#     Do NOT commit the id — it would point every fork's deploy at your storage.
 
 # 2. Set the rate-limit salt. Any long random string; rotating it only resets in-flight windows.
 openssl rand -hex 32 | npx wrangler secret put RATE_LIMIT_SALT
