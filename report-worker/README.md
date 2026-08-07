@@ -38,7 +38,12 @@ Read the header comment in `src/index.ts` before changing any of that.
 
 ## Deploy
 
-Requires a Cloudflare account with Workers and KV. Run from this directory.
+**Prerequisites:** a Cloudflare account with Workers and KV, and **Node 22 or newer** — the pinned
+`wrangler` 4.120.0 declares `engines: node >=22.0.0`, so on Node 20 you install a CLI that will not
+reliably run the commands below. `package.json` carries the same constraint, so `npm install` warns
+you rather than letting it fail later at an unhelpful place.
+
+Run from this directory.
 
 ```bash
 npm install

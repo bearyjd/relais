@@ -5,6 +5,9 @@
   "description": "Receives opt-in AI-content reports from Relais (#258). See README.md.",
   "license": "AGPL-3.0-or-later",
   "type": "module",
+  "engines": {
+    "node": ">=22.0.0"
+  },
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
