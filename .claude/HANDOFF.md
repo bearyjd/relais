@@ -6,7 +6,82 @@ uncommitted section was once destroyed by `git reset --hard` and had to be rebui
 
 ---
 
-## 2026-08-06 — ⏩ START HERE. **#122 prep done; #258 is the blocker, and it needs a delivery path.**
+## 2026-08-08 — ⏩ START HERE. **An OPEN [P1] sits on `main`: the Data Safety guidance is wrong.**
+
+### Fix this first
+
+`docs/store-submission.md` gate 1 (and the same claim in `report-worker/README.md`, ~line 14) says an
+**opt-in, default-off** send keeps the Data Safety baseline at *"collects nothing"*. **That is wrong,
+and it is live guidance on `main` that would make JD file a false declaration with Google.**
+
+`/codex review` on the merged-but-unreviewed fix commits:
+
+> Sending a report to VentouxLabs transmits it off-device to the **first-party developer**, which
+> Google defines as data collection; default-off only makes that collection *optional*. The
+> user-initiated exception is for **sharing to a third party**, not first-party collection.
+
+**Correct answer once the send path ships:** Data Safety = **Yes**, the report content declared as
+**optional collection** with a moderation / app-functionality purpose, and the privacy policy updated
+in the same PR. Nothing false has been filed — no send path exists yet — so this is cheap to fix now
+and expensive at submission time. **Not yet fixed. Do it before building the client send path.**
+
+### Current state
+
+- `main` = `dd2074f3`. **One open PR: #263** — `report-worker` deploy fixes; CI CLEAN, reviewed at its
+  head (`77960330`), 24/24 tests, ready to merge.
+- **#260** (draft) — the capture half. Codex-reviewed with **0 findings**, device-verified end to end.
+  Correctly not merged: capture alone doesn't clear gate 1.
+- Merged this session: #259 (`7ae36370`), #262 (`24bf5999`), #261 (`dd2074f3`).
+
+### The one action that unblocks everything: deploy the Worker
+
+Needs **JD's Cloudflare credentials** — none are present in the environment and `wrangler login` is
+interactive. In a Claude Code session, `! npx wrangler login` in the prompt authenticates in-session
+and the agent can then drive namespace → secret → deploy → the curl checks.
+
+Then: client send path (hooks `persistContentReport()`), landing in the **same PR** as the privacy
+policy and Data Safety updates. **#122** is blocked behind that, and targetSdk 35 is submittable only
+until **2026-08-30**.
+
+### `report-worker` had FOUR defects after merging with two clean Codex passes and 22 tests
+
+All in #263, all found by **running the runbook** rather than re-reading it:
+
+1. `id = ""` — wrangler rejects an empty binding id while *parsing* the config, breaking every
+   command, including `kv namespace create` (README step 1, the command that produces that id). Ships
+   commented out now; that's the only shape where step 1 runs.
+2. `wrangler ^3` self-reported as out-of-date. Bumping it alone **does not install** — wrangler 4
+   needs `@cloudflare/workers-types ^5`.
+3. Commenting out the KV block let a deploy that skipped step 1b leave `env.REPORTS` undefined, so
+   every request died on a TypeError. Now a 503.
+4. wrangler 4.120.0 needs **Node >= 22**, undeclared. (`/codex review`.)
+
+**The category:** everything verified the *artifact*; nothing executed the *instructions*. Also note
+#4 — I *did* execute every command, on Node 22.22.2, so "I ran it and it worked" carried an unstated
+environment assumption. Execution beats inspection, but the environment is part of the surface.
+
+### Review hygiene — two process failures worth not repeating
+
+- **Three PRs merged with unreviewed final diffs** (#259, #262, #261). In each case review found
+  something, I fixed it, and merged **without re-reviewing the fix**. That is exactly what
+  `[[review-before-suggesting-merge]]` and the round-2 rule in `[[relais-dual-review-disjoint]]` say
+  not to do — and the [P1] at the top of this section is precisely such a fix commit. Scoping a
+  review to just the unreviewed fix commits found it in one run.
+- **`gstack-review-log` records the wrong SHA.** It's called *after* the fix commit, so it stamps
+  `HEAD` rather than the commit Codex examined (#263's entry claims `77960330`; the review ran on
+  `dba0eeb9`). Every entry written 2026-08-07 has this skew, so **the log overstates coverage** —
+  capture the reviewed SHA *before* making changes.
+
+### The session's error pattern, four for four
+
+Every mistake was **an accurate local fact extrapolated into a wrong global claim**: the GenAI policy
+half-satisfaction, the body-cap bypass, the CJK cap mismatch, and now the Data Safety baseline. Not
+one was caught by reviewing my own reasoning. What caught them: `/codex`, running things on real
+hardware, and reading state instead of predicting it. Keep all three.
+
+---
+
+## 2026-08-06 — #122 prep done; #258 is the blocker, and it needs a delivery path. (superseded above)
 
 ### Current state
 
