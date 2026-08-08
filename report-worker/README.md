@@ -92,19 +92,94 @@ invocations.
 answer is a property of the Cloudflare configuration, not of this code. A plain-HTTP route would make
 a filed declaration false without changing a line of the Worker.
 
-## Verify a deploy
+## Verify locally first — no Cloudflare account needed
+
+**Do this before deploying.** It runs the real Worker under the real runtime (`workerd`) with local
+KV, so it catches things no unit test can. It is how the "Incorrect type for map entry" bug was
+found: the Worker could not start *at all*, while this repo's suite was green and
+`wrangler deploy --dry-run` passed. Neither boots the runtime — `--dry-run` only bundles, and vitest
+imports the module into Node, where a value export is just a value.
 
 ```bash
+cd report-worker && npm ci
+
+# The committed wrangler.toml ships the KV block commented out (see the note there), so make a
+# local-only config that binds it. Both files are gitignored.
+sed 's/^# \[\[kv_namespaces\]\]/[[kv_namespaces]]/; s/^# binding = "REPORTS"/binding = "REPORTS"/; s/^# id = .*/id = "local"/' \
+  wrangler.toml > wrangler.local.toml
+echo 'RATE_LIMIT_SALT = "local-dev-only"' > .dev.vars
+
+npx wrangler dev -c wrangler.local.toml --port 8787 --local
+```
+
+In a second shell, run the checks under "Verify a deploy" below with
+`BASE=http://127.0.0.1:8787` — they are written against `$BASE` so the same three commands serve
+both local and deployed. Everything works locally except real TLS, so "encrypted in transit" is the
+one answer this cannot verify; that is a Cloudflare zone setting, see the deploy step above.
+
+Worth exercising beyond those three, since these are the behaviors the Data Safety declaration
+describes and they are cheap to confirm here:
+
+```bash
+BASE=http://127.0.0.1:8787
+
+# The limiter cuts at 10 per caller, and callers are independent.
+for i in $(seq 1 12); do
+  curl -s -o /dev/null -w "%{http_code} " -X POST "$BASE/report" \
+    -H 'content-type: application/json' -H 'cf-connecting-ip: 203.0.113.7' \
+    -d '{"reasonId":"other","surface":"chat","excerpt":"x"}'
+done; echo   # => ten 202s, then 429 429
+
+# The counter increments BEFORE parsing, so rejected bodies count against a caller even though no
+# report is stored. Three 400s and one 202 from a fresh caller => counter 4, one report: key.
+for i in 1 2 3; do
+  curl -s -o /dev/null -X POST "$BASE/report" -H 'content-type: application/json' \
+    -H 'cf-connecting-ip: 198.51.100.5' -d '{"reasonId":"BAD","surface":"chat","excerpt":"x"}'
+done
+curl -s -o /dev/null -X POST "$BASE/report" -H 'content-type: application/json' \
+  -H 'cf-connecting-ip: 198.51.100.5' -d '{"reasonId":"other","surface":"chat","excerpt":"ok"}'
+```
+
+Now read what actually landed. `kv key list` returns key **names only** — the claims gate 1 makes are
+about the stored **values**, so each one needs a `kv key get`:
+
+```bash
+KV="--binding REPORTS --local -c wrangler.local.toml"
+
+# The record must be exactly seven fields: the six schema fields plus receivedAt.
+KEY=$(npx wrangler kv key list $KV | python3 -c \
+  "import json,sys; print([k['name'] for k in json.load(sys.stdin) if k['name'].startswith('report:')][0])")
+npx wrangler kv key get "$KEY" $KV | python3 -m json.tool
+
+# Each rl: value must be a COUNT, not a flag. The 198.51.100.5 caller above should read 4,
+# against exactly one report: key of theirs — the counter outrunning stored reports.
+npx wrangler kv key get \
+  "rl:$(python3 -c "import hashlib; print(hashlib.sha256(b'local-dev-only:198.51.100.5').hexdigest())")" $KV
+```
+
+That last command also re-derives the identifier independently: if the key it builds resolves, then
+`callerHash` really is `sha256(salt + ":" + ip)`, which is what the declaration describes.
+
+## Verify a deploy
+
+These drive `$BASE`, so they serve both targets. Set it to whichever you are checking — and **skip
+that line entirely if you already set `BASE` for the local run above**, or you will point these at
+the wrong server.
+
+```bash
+BASE=https://report.ventouxlabs.com   # your deployed route
+# BASE=http://127.0.0.1:8787          # the local server from the section above
+
 # Expect 202
-curl -si https://<your-route>/report -H 'content-type: application/json' \
+curl -si "$BASE/report" -H 'content-type: application/json' \
   -d '{"reasonId":"other","surface":"chat","excerpt":"test","note":null,"modelId":null,"backend":null}' | head -1
 
 # Expect 400 — reason id outside the allowlist
-curl -si https://<your-route>/report -H 'content-type: application/json' \
+curl -si "$BASE/report" -H 'content-type: application/json' \
   -d '{"reasonId":"nope","surface":"chat","excerpt":"test"}' | head -1
 
 # Expect 405
-curl -si https://<your-route>/report | head -1
+curl -si "$BASE/report" | head -1
 ```
 
 ## Read the reports
