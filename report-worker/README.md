@@ -87,6 +87,11 @@ on a renewing TTL (the window only resets after an hour with no counted request)
 not exact under concurrency; the edge rule is what absorbs a real flood before it reaches Worker
 invocations.
 
+**Also turn on *Always Use HTTPS* for the zone, and confirm it.** The Data Safety form answers
+"encrypted in transit: yes" for this leg, and `index.ts` never inspects the request scheme — so that
+answer is a property of the Cloudflare configuration, not of this code. A plain-HTTP route would make
+a filed declaration false without changing a line of the Worker.
+
 ## Verify a deploy
 
 ```bash

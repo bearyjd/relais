@@ -100,8 +100,9 @@ report rather than from the KV write. The record is `{...report, receivedAt}` �
 | Required or optional? | **Optional** for every one — default off, chosen per report |
 | Purpose | Report contents and interactions: **App functionality** (content moderation), per the AI-Generated Content policy's "use reports to inform moderation". The identifier: **fraud prevention, security and compliance** |
 | Is it shared with third parties? | **No** — it reaches the developer's own endpoint and goes no further |
-| Encrypted in transit? | **Yes** — HTTPS to the Worker |
-| Can users request deletion? | **Yes** — reports expire 180 days after receipt; the identifier expires one hour after that caller's last **counted** request, **not** one hour after their first (see below). Ad-hoc deletion by request to the contact email |
+| Encrypted in transit? | **Yes** — HTTPS to the Worker. ⚠ Enforced by **Cloudflare, not by Worker code**: `index.ts` never inspects the scheme, so this answer is only true while the zone has *Always Use HTTPS* on. Confirm it at deploy time (`report-worker/README.md`) rather than inferring it from the source |
+| Can users request deletion? | **Yes**, with a caveat worth getting right — see the row below |
+| …what deletion actually means here | Reports expire 180 days after receipt; the identifier expires one hour after that caller's last **counted** request, not one hour after their first (see below). For **ad-hoc deletion by request to the contact email**, note that a report carries *no* user identifier — no account, no device id, nothing linking it to a person. That is deliberate, and it is a privacy strength, but it means the operator cannot look up "this person's reports": a requester has to identify the report by its **content** (the excerpt they submitted). Say that plainly if Play asks how the request is honored; do not imply a lookup capability the schema makes impossible |
 
 **Scope the Yes precisely — it is narrower than the app, and wider than it first looks.**
 
@@ -173,6 +174,11 @@ the single most expensive way to get this wrong:
   | **Messages** per-type | `:216` | "not collected" |
   | **Device IDs** per-type | `:219` | "Not read, not transmitted", which the rate-limit hash contradicts |
   | **App activity** per-type | `:220` | "Not collected today" — `reasonId`/`surface` |
+
+  Plus one row whose **answer** stays `Yes` but whose **justification** goes stale: the
+  encrypted-in-transit row (`:207`) enumerates the app's egress legs and will not mention the
+  Worker. Add that leg, and note the HTTPS guarantee there is a Cloudflare zone setting rather than
+  anything `index.ts` enforces.
 
   *(This list has been wrong twice. The first draft named two rows; the second named three and
   omitted **App activity** — the row gate 1's own declaration had just created — while quoting line
