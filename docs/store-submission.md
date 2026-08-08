@@ -124,14 +124,34 @@ repeat one back. That does not touch the rows above, but it does put a question 
 which `distribution.md`'s "Personal identifiers / credentials" row (`:218`) now carries as
 **unresolved** rather than as a settled *not collected*.
 
-The two candidate answers are (a) declare **Personal info → optional**, or (b) keep it undeclared
-because the field is not *intended* to collect it. **(b) does not follow from a UI warning alone.** A
-"don't include personal details" line asks for a behavior it cannot enforce: the excerpt is model
-output the user did not write, and a note is free text. Keeping the type undeclared needs an actual
-exclusion or redaction guarantee in the client, not an instruction — absent that, (a) is the
-defensible answer. Either way this is a **product change plus a policy call, not a doc edit**, it
-lands in the same PR as the send path, and `distribution.md:218` is transcribable only once it is
-settled.
+**An earlier draft of this block posed it as two answers — declare Personal info, or keep it
+undeclared behind a redaction guarantee — and called the first defensible. That was a false
+dichotomy written without reading Play's type list.** There is a third answer that fits better than
+either, and it is very likely the right one (#267):
+
+| Answer | Verdict |
+|---|---|
+| Declare **Personal info** | Over-declares. We collect no Name/Email/Address *as such* — no field parses one out — and those sub-types invite scrutiny we would then have to answer for |
+| Keep it undeclared, gated on client-side redaction | Solves a problem we do not have, at the cost of a real product change |
+| **Declare `note` as `App activity → Other user-generated content`** | **Fits.** Play defines that type as "user bios, notes, or **open-ended responses**" — which is precisely what the note field is |
+
+Two things settle it. Play's type list already contains the bucket free text is meant to go in, and
+Play's own instruction is that declaration tracks **actual** collection: *"You do not need to declare
+collection or sharing unless data is actually collected and/or shared."* A name someone chooses to
+type into an open-ended response is collected *as an open-ended response*, which is the type we would
+be declaring. **App activity** is already declared here for `reasonId`/`surface`, so this adds a type
+inside an existing category rather than opening a new one.
+
+**This also puts a question mark over how `note` is typed above.** The table declares both `excerpt`
+and `note` as **Messages**. That reads right for `excerpt` — model output the operator was reading —
+and wrong for `note`, which is not a message to or from anyone but an annotation written *about* the
+output. Check both when this is resolved. (Also confirm the exact Messages sub-type label in the
+Console: the Android developer taxonomy says **"Other messages"** where this runbook says **"Other
+in-app messages"**.)
+
+Still **JD's call, not a doc edit** — it is a policy interpretation, well-supported but not a quoted
+ruling. It lands in the same PR as the send path, and `distribution.md:218` is transcribable only
+once it is settled. Reasoning and sources: **#267**.
 
 **The rate-limit identifier counts too, and it is not part of the report.** The Worker derives a
 salted SHA-256 of `cf-connecting-ip` and retains it in KV to link a caller's requests, on a one-hour
