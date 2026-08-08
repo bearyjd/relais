@@ -101,7 +101,7 @@ report rather than from the KV write. The record is `{...report, receivedAt}` �
 | Purpose | Report contents and interactions: **App functionality** (content moderation), per the AI-Generated Content policy's "use reports to inform moderation". The identifier: **fraud prevention, security and compliance** |
 | Is it shared with third parties? | **No** — it reaches the developer's own endpoint and goes no further |
 | Encrypted in transit? | **Yes** — HTTPS to the Worker |
-| Can users request deletion? | **Yes** — reports expire 180 days after receipt; the identifier expires one hour after that caller's **last** request, **not** one hour after their first (see below). Ad-hoc deletion by request to the contact email |
+| Can users request deletion? | **Yes** — reports expire 180 days after receipt; the identifier expires one hour after that caller's last **counted** request, **not** one hour after their first (see below). Ad-hoc deletion by request to the contact email |
 
 **Scope the Yes precisely — it is narrower than the app, and wider than it first looks.**
 
@@ -127,14 +127,21 @@ bought: the privacy engineering was right, the declaration conclusion drawn from
 Declare it as **Device or other IDs → optional**, purpose **fraud prevention, security and
 compliance** (it exists solely to rate-limit an unauthenticated endpoint).
 
-**Do not describe the one hour as a retention cap — it is a sliding window, and this is the third
-time this section has stated a local fact as a stronger guarantee than the code provides.**
-`overRateLimit` calls `put()` with `expirationTtl: RATE_WINDOW_SECONDS` on *every* request it does
-not reject, so each new request **resets** the hour. A caller submitting under the limit once an hour
-keeps the same identifier alive **indefinitely**; it expires an hour after their last request, not an
-hour after their first. Answer any Play retention question in those terms. *(Caught by
-`/codex review`, reading `overRateLimit` rather than the sentence describing it — the same check that
-caught the two rounds before.)*
+**Do not describe the one hour as a retention cap — it is a renewing TTL, and this section has now
+stated a local fact as a stronger guarantee than the code provides three rounds running.**
+`overRateLimit` calls `put()` with `expirationTtl: RATE_WINDOW_SECONDS` on every request it
+**counts**, so each counted request **resets** the hour. A caller submitting under the limit once an
+hour keeps the same identifier alive **indefinitely**.
+
+Be exact about which requests renew it: the function returns at `current >= RATE_LIMIT` *before*
+`put()`, so a request that is already over the limit does **not** refresh the TTL. The identifier
+expires one hour after that caller's last **counted** request — not their last request, and not an
+hour after their first. Answer any Play retention question in those terms.
+
+*(Both the original error and the over-correction were caught by `/codex review` reading
+`overRateLimit` rather than the sentence describing it. The first draft said "retained one hour"; the
+fix for it said "one hour after their last request", which is wrong in the other direction. A claim
+about when data expires has to be read off the branch that writes the TTL, not off the constant.)*
 
 **If you would rather not declare it:** delete `overRateLimit` and rely on the Cloudflare edge Rate
 Limiting rule instead — platform infrastructure rather than app collection. That is a real code
@@ -249,7 +256,7 @@ Transcribe (today, pre-send-path):
 | Data collected (sent off-device to the developer) | **None** → report contents + the rate-limit identifier (gate 1) |
 | Data shared (with third parties, by the developer) | **None** — unchanged; a report reaches the developer's own endpoint and goes no further |
 | Is all data encrypted in transit? | **Yes** |
-| Way to request data deletion? | **Data not collected** (n/a) → **Yes** once the send path ships (gate 1). Today: all data is on-device; in-app *Clear data* / uninstall removes it, and no server-side data exists. After: reports expire after 180 days and the rate-limit identifier after one hour, with ad-hoc deletion by request to the contact email |
+| Way to request data deletion? | **Data not collected** (n/a) → **Yes** once the send path ships (gate 1). Today: all data is on-device; in-app *Clear data* / uninstall removes it, and no server-side data exists. After: reports expire 180 days after receipt, and the rate-limit identifier one hour after that caller's last **counted** request (a renewing TTL, not a one-hour cap — see gate 1), with ad-hoc deletion by request to the contact email |
 
 > Reviewer-note nuance to keep on file (not entered in the form): the app *does* transmit data the
 > **user directs** — a typed model-search query and optional HF token to `huggingface.co`, and

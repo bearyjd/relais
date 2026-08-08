@@ -173,9 +173,17 @@ async function callerHash(ip: string, salt: string): Promise<string> {
 }
 
 /**
- * Fixed-window rate limit. Not exact under concurrency — two simultaneous requests can both read the
- * same count — but a caller racing themselves to send an 11th report is not the threat this guards
- * against, and an exact limiter would need a Durable Object for no practical gain.
+ * Rate limit: a per-caller counter on a **renewing** TTL, not a fixed window. `put()` re-sets
+ * `expirationTtl` on every request this counts, so the window only lapses after an hour with no
+ * counted request — a caller must go idle to get their budget back. Requests already over the limit
+ * return before `put()` and so do not extend it.
+ *
+ * That renewal is also why the identifier's retention is not "one hour" on the Data Safety form; see
+ * `docs/store-submission.md` gate 1, which got this wrong twice.
+ *
+ * Not exact under concurrency — two simultaneous requests can both read the same count — but a
+ * caller racing themselves to send an 11th report is not the threat this guards against, and an
+ * exact limiter would need a Durable Object for no practical gain.
  */
 async function overRateLimit(env: Env, ip: string): Promise<boolean> {
   const key = `rl:${await callerHash(ip, env.RATE_LIMIT_SALT)}`;
