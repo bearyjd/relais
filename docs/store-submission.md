@@ -97,8 +97,24 @@ the payload actually carries.
 
 | | |
 |---|---|
-| **Collected** (optional) | **Only what a report carries, and only when one is sent**: the flagged excerpt and the operator's note, both **Messages → Other in-app messages**, plus the model id / backend |
-| **Still not collected** | Chat content the operator never reports · prompts · audio in or out · photos · the HF token (user-directed to `huggingface.co`, never to us) · device ids |
+| **Collected** (optional) | The report payload — flagged excerpt and operator note, both **Messages → Other in-app messages** — plus the model id / backend, **plus the rate-limit identifier below** |
+| **Still not collected** | Chat content the operator never reports · prompts · audio in or out · photos · the HF token (user-directed to `huggingface.co`, never to us) |
+
+**The rate-limit identifier counts too, and it is not part of the report.** The Worker derives a
+salted SHA-256 of `cf-connecting-ip` and retains it in KV for an hour to link a caller's requests
+(`report-worker/src/index.ts`, `overRateLimit`). **Not storing the raw IP does not make this
+uncollected** — Play treats a stable identifier retained off-device as collection regardless of
+reversibility. *(Caught by `/codex review`, which read the Worker source rather than trusting the
+doc. I had designed the hash specifically to avoid retaining an IP and then over-claimed what that
+bought: the privacy engineering was right, the declaration conclusion drawn from it was not.)*
+
+Declare it as **Device or other IDs → optional**, purpose **fraud prevention, security and
+compliance** (it exists solely to rate-limit an unauthenticated endpoint), retained one hour.
+
+**If you would rather not declare it:** delete `overRateLimit` and rely on the Cloudflare edge Rate
+Limiting rule instead — platform infrastructure rather than app collection. That is a real code
+change to a reviewed Worker and leaves the edge rule as the only defense, which is why the current
+decision is to declare rather than remove.
 
 The distinction is **reported vs. unreported**, not chat vs. non-chat. Unreported conversations never
 leave the device, which is why the type is declared as *optional* rather than required — but the type
@@ -107,9 +123,14 @@ itself must be declared, because a sent report contains it.
 **Land these together, in the same PR as the client send path** — the declaration becoming false is
 the single most expensive way to get this wrong:
 
-- `docs/privacy-policy.md` **and** its `.html` twin (bump the effective date)
-- `docs/distribution.md` §"Play Data Safety form" — its "no developer server; nothing is transmitted
-  to VentouxLabs" wording becomes false the moment the send path ships
+- **THIS file's own "Google Play — Data Safety form" table below** — it still reads `No` / `None` and
+  is the table an operator actually transcribes. Listing every *other* document and forgetting the
+  primary one in the same runbook is how the stale answer reaches the console. *(Missed in the first
+  draft of this list; caught by `/codex review`.)*
+- `docs/privacy-policy.md` **and** its `.html` twin (bump the effective date) — must cover the
+  rate-limit identifier as well as the report contents
+- `docs/distribution.md` — §"Play Data Safety form" overview row `:206` **and** the Messages
+  per-type row `:214`; both carry markers pointing here
 - `report-worker/README.md` — same correction
 
 **Open and blocking #258:** *where* an opt-in send delivers to. There is no VentouxLabs endpoint
@@ -164,13 +185,20 @@ request). Expect a reviewer question on the download path; no code change is req
 ## Google Play — Data Safety form
 
 Derivation and per-data-type reviewer notes: [`distribution.md`](distribution.md) §"Play Data Safety
-form". Transcribe:
+form".
+
+> ⚠ **This table is the answer sheet only while #258's report send is UNBUILT.** The moment the
+> client send path ships, the first two rows below become **false** and gate 1's table replaces them.
+> Two tables in one runbook is a trap — the stale one looks like the answer sheet — so **whichever PR
+> ships the send path must edit THIS table**, not just the ones listed in gate 1.
+
+Transcribe (today, pre-send-path):
 
 | Console question | Answer |
 |---|---|
-| Does your app collect or share any of the required user data types? | **No** |
-| Data collected (sent off-device to the developer) | **None** |
-| Data shared (with third parties, by the developer) | **None** |
+| Does your app collect or share any of the required user data types? | **No** → **Yes** once the send path ships (gate 1) |
+| Data collected (sent off-device to the developer) | **None** → report contents + the rate-limit identifier (gate 1) |
+| Data shared (with third parties, by the developer) | **None** — unchanged; a report reaches the developer's own endpoint and goes no further |
 | Is all data encrypted in transit? | **Yes** |
 | Way to request data deletion? | **Data not collected** (n/a) — all data is on-device; in-app *Clear data* / uninstall removes it, and no server-side data exists |
 

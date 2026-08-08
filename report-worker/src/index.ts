@@ -14,7 +14,13 @@
  * PRIVACY. Reports are user-authored content the operator chose to send. We store the report and
  * nothing else: **no raw IP is ever persisted.** The rate limiter needs to distinguish callers, so
  * it keys on a salted SHA-256 of the IP, which is not reversible to an address and expires with the
- * window. This is what lets the privacy policy say the only thing collected is the report itself.
+ * window.
+ *
+ * **Do not over-read that.** An earlier version of this comment claimed it let the privacy policy say
+ * the only thing collected is the report itself. It does not: Play counts a stable identifier
+ * retained off-device as collection regardless of reversibility, so the hash must be DECLARED
+ * (Device or other IDs, optional, fraud-prevention purpose) — see docs/store-submission.md gate 1.
+ * The hash is still worth having; it just buys a better posture, not an absent one.
  */
 
 export interface Env {

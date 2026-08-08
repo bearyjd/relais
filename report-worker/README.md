@@ -31,7 +31,8 @@ collecting nothing.
 | | |
 |---|---|
 | **Stored** | reason id, the reported excerpt, the operator's optional note, the model id and backend that produced it, which surface it came from, and a server timestamp |
-| **Not stored** | **the caller's IP address.** Rate limiting keys on a salted SHA-256 of the IP, which is not reversible and expires with the window |
+| **Retained for one hour** | a **salted SHA-256 of the caller's IP**, used to link a caller's requests for rate limiting. The **raw IP is never stored** and the hash is not reversible — but do not over-read that: Play counts a stable identifier retained off-device as **collection**, so it must be declared (Device or other IDs, optional, fraud-prevention purpose). See `docs/store-submission.md` gate 1 |
+| **Not stored** | the raw IP, and anything not listed above |
 | **Retention** | 180 days, then dropped automatically by KV TTL |
 
 Both facts above are load-bearing for the privacy policy. If you change what is stored, update
