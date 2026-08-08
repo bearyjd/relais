@@ -124,19 +124,29 @@ repeat one back. That does not touch the rows above, but it does put a question 
 which `distribution.md`'s "Personal identifiers / credentials" row (`:218`) now carries as
 **unresolved** rather than as a settled *not collected*.
 
-**An earlier draft of this block posed it as two answers — declare Personal info, or keep it
-undeclared behind a redaction guarantee — and called the first defensible. That was a false
-dichotomy written without reading Play's type list.** There is a third answer that fits better than
-either, and it is very likely the right one (#267):
+**Researching this turned up a second, separate question, and earlier drafts of this block kept
+running the two together — first as a false dichotomy, then by presenting the answer to Q2 as if it
+were a third answer to Q1. They are different questions with different confidence (#267):**
 
-| Answer | Verdict |
+**Q1 — must `Personal info` be declared?** *Genuinely open. Nothing below leans it either way.*
+
+| Answer | Note |
 |---|---|
-| Declare **Personal info** | **Genuinely unresolved — do not read this table as ruling it out.** No field parses a name out, and those sub-types invite scrutiny; but a name an operator types *is* received, and the type below explicitly does not absorb it. This is the live question |
-| Keep it undeclared, gated on client-side redaction | The redaction gate is a real product change. Worth it only if the answer above turns out to be "declare", and you would rather not |
-| **Declare `note` as `App activity → Other user-generated content`** | **Right type for the note itself** — Play defines it as "user bios, notes, or **open-ended responses**". Does **not** by itself dispose of the Personal-info question; see the limits below |
+| Declare it | No field parses a name out, and those sub-types invite scrutiny — but a name an operator types **is** received, and Q2's type explicitly does not absorb it |
+| Keep it undeclared, gated on client-side redaction | The redaction gate is a real product change. Worth it only if you land on "declare" and would rather not |
 
-**This narrows the question; it does not settle it, and an earlier draft of this paragraph claimed it
-did.** Two limits, both worth stating plainly:
+This is a judgement call about how likely operators are to put personal details in a moderation note.
+It is **JD's**, and the research below does not decide it.
+
+**Q2 — is `note` typed correctly today?** *Probably not, and this part is well-supported.* The table
+above types it **Messages** alongside `excerpt`. Play has a type defined as "user bios, notes, or
+**open-ended responses**" — `App activity → Other user-generated content` — which describes a
+moderation note, while "message to or from someone" does not. `App activity` is already declared here
+for `reasonId`/`surface`. Q2 stands whichever way Q1 goes.
+
+**Why Q2 does not answer Q1** — the tempting shortcut is "the note is `Other user-generated content`,
+so personal details typed into it are covered." An earlier draft of this block took exactly that
+shortcut. Two reasons it does not hold:
 
 - Play's *"You do not need to declare collection or sharing unless data is **actually collected**
   and/or shared"* says **when** a declaration is owed. It is not a ruling that a name typed into a
@@ -145,22 +155,14 @@ did.** Two limits, both worth stating plainly:
   section**."* Name, Email address and Address **are** listed elsewhere. So that type is not a
   catch-all that absorbs personal details typed into it — its own definition excludes them.
 
-What the third option does establish is the right type **for the note as such**: an open-ended
-response is `Other user-generated content`, not a message. Whether **Personal info** must *also* be
-declared on top of it is the part that stays open, and it is a genuine judgement call about how
-likely operators are to put personal details in a moderation note. **App activity** is already
-declared here for `reasonId`/`surface`, so the new type at least lands inside an existing category.
+So Q1 is a judgement call and Q2 is a typing correction, and answering one leaves the other standing.
 
-**This also puts a question mark over how `note` is typed above.** The table declares both `excerpt`
-and `note` as **Messages**. That reads right for `excerpt` — model output the operator was reading —
-and wrong for `note`, which is not a message to or from anyone but an annotation written *about* the
-output. Check both when this is resolved. (Also confirm the exact Messages sub-type label in the
-Console: the Android developer taxonomy says **"Other messages"** where this runbook says **"Other
-in-app messages"**.)
+While checking Q2, confirm the exact **Messages** sub-type label in the Console too: the Android
+developer taxonomy says **"Other messages"** where this runbook says **"Other in-app messages"**.
 
-Still **JD's call, not a doc edit** — it is a policy interpretation, well-supported but not a quoted
-ruling. It lands in the same PR as the send path, and `distribution.md:218` is transcribable only
-once it is settled. Reasoning and sources: **#267**.
+Neither question is a doc edit — Q1 is JD's call, Q2 is a policy interpretation that is
+well-supported but not a quoted ruling. Both land in the same PR as the send path, and
+`distribution.md:218` is transcribable only once Q1 is settled. Reasoning and sources: **#267**.
 
 **The rate-limit identifier counts too, and it is not part of the report.** The Worker derives a
 salted SHA-256 of `cf-connecting-ip` and retains it in KV to link a caller's requests, on a one-hour
