@@ -90,7 +90,7 @@ report rather than from the KV write. The record is `{...report, receivedAt}` �
 | `surface` — which in-app surface it came from (`chat` / `gallery_chat`) | **App activity → App interactions** |
 | `modelId`, `backend` — what produced the output | Not a Play *user* data type (app configuration), but disclose it in the privacy policy for completeness |
 | `receivedAt` — server timestamp | Part of the record; no separate type |
-| `rl:<salted-hash>` — the rate-limit identifier, separate KV key | **Device or other IDs** (see below) |
+| `rl:<salted-hash>` — a **second KV key**, written by the rate limiter, not part of the report record. Both halves are data: the **key** is the salted caller identifier, and the **value** is `String(current + 1)` — that caller's running submission count for the window | **Device or other IDs** (see below) |
 
 | Console question | Answer once delivery ships |
 |---|---|
@@ -144,11 +144,21 @@ the single most expensive way to get this wrong:
   draft of this list; caught by `/codex review`.)*
 - `docs/privacy-policy.md` **and** its `.html` twin (bump the effective date) — must cover the
   rate-limit identifier as well as the report contents
-- `docs/distribution.md` — **three** rows, not one: the §"Play Data Safety form" overview `:206`, the
-  **Messages** per-type row `:214`, and the **Device IDs** row `:217` (currently "Not read, not
-  transmitted", which the rate-limit hash contradicts). Each carries a marker pointing here.
-  *(The first draft of this list named only two; a checklist that enumerates rows is only as good as
-  its enumeration — derive it by grepping the per-type table, not from memory.)*
+- `docs/distribution.md` — **five** rows, not one, across its two tables. Each carries a marker
+  pointing here; **re-grep before trusting the line numbers**, which have already gone stale once:
+
+  | Row | Where | What it says today |
+  |---|---|---|
+  | §"Play Data Safety form" overview | `:206` | "No" |
+  | Deletion request | `:208` | "Data not collected — nothing exists server-side" |
+  | **Messages** per-type | `:216` | "not collected" |
+  | **Device IDs** per-type | `:219` | "Not read, not transmitted", which the rate-limit hash contradicts |
+  | **App activity** per-type | `:220` | "Not collected today" — `reasonId`/`surface` |
+
+  *(This list has been wrong twice. The first draft named two rows; the second named three and
+  omitted **App activity** — the row gate 1's own declaration had just created — while quoting line
+  numbers that inserting that row had already invalidated. Derive the list by grepping the per-type
+  table, not from memory, and re-derive the line numbers in the same pass.)*
 - `report-worker/README.md` — same correction
 
 **Open and blocking #258:** *where* an opt-in send delivers to. There is no VentouxLabs endpoint
@@ -206,7 +216,10 @@ Derivation and per-data-type reviewer notes: [`distribution.md`](distribution.md
 form".
 
 > ⚠ **This table is the answer sheet only while #258's report send is UNBUILT.** The moment the
-> client send path ships, the first two rows below become **false** and gate 1's table replaces them.
+> client send path ships, **three** of the rows below become **false** — the first two *and the
+> deletion row*, which is the one most easily missed because "no server-side data exists" reads like
+> a property of the app rather than a claim the Worker's 180-day retention falsifies — and gate 1's
+> table replaces them.
 > Two tables in one runbook is a trap — the stale one looks like the answer sheet — so **whichever PR
 > ships the send path must edit THIS table**, not just the ones listed in gate 1.
 
@@ -218,7 +231,7 @@ Transcribe (today, pre-send-path):
 | Data collected (sent off-device to the developer) | **None** → report contents + the rate-limit identifier (gate 1) |
 | Data shared (with third parties, by the developer) | **None** — unchanged; a report reaches the developer's own endpoint and goes no further |
 | Is all data encrypted in transit? | **Yes** |
-| Way to request data deletion? | **Data not collected** (n/a) — all data is on-device; in-app *Clear data* / uninstall removes it, and no server-side data exists |
+| Way to request data deletion? | **Data not collected** (n/a) → **Yes** once the send path ships (gate 1). Today: all data is on-device; in-app *Clear data* / uninstall removes it, and no server-side data exists. After: reports expire after 180 days and the rate-limit identifier after one hour, with ad-hoc deletion by request to the contact email |
 
 > Reviewer-note nuance to keep on file (not entered in the form): the app *does* transmit data the
 > **user directs** — a typed model-search query and optional HF token to `huggingface.co`, and
