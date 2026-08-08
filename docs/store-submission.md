@@ -133,14 +133,23 @@ either, and it is very likely the right one (#267):
 |---|---|
 | Declare **Personal info** | Over-declares. We collect no Name/Email/Address *as such* — no field parses one out — and those sub-types invite scrutiny we would then have to answer for |
 | Keep it undeclared, gated on client-side redaction | Solves a problem we do not have, at the cost of a real product change |
-| **Declare `note` as `App activity → Other user-generated content`** | **Fits.** Play defines that type as "user bios, notes, or **open-ended responses**" — which is precisely what the note field is |
+| **Declare `note` as `App activity → Other user-generated content`** | **Right type for the note itself** — Play defines it as "user bios, notes, or **open-ended responses**". Does **not** by itself dispose of the Personal-info question; see the limits below |
 
-Two things settle it. Play's type list already contains the bucket free text is meant to go in, and
-Play's own instruction is that declaration tracks **actual** collection: *"You do not need to declare
-collection or sharing unless data is actually collected and/or shared."* A name someone chooses to
-type into an open-ended response is collected *as an open-ended response*, which is the type we would
-be declaring. **App activity** is already declared here for `reasonId`/`surface`, so this adds a type
-inside an existing category rather than opening a new one.
+**This narrows the question; it does not settle it, and an earlier draft of this paragraph claimed it
+did.** Two limits, both worth stating plainly:
+
+- Play's *"You do not need to declare collection or sharing unless data is **actually collected**
+  and/or shared"* says **when** a declaration is owed. It is not a ruling that a name typed into a
+  free-text box is uncollected. Once the report reaches us, whatever is in it is collected.
+- "Other user-generated content" is defined as content *"not listed here, **or in any other
+  section**."* Name, Email address and Address **are** listed elsewhere. So that type is not a
+  catch-all that absorbs personal details typed into it — its own definition excludes them.
+
+What the third option does establish is the right type **for the note as such**: an open-ended
+response is `Other user-generated content`, not a message. Whether **Personal info** must *also* be
+declared on top of it is the part that stays open, and it is a genuine judgement call about how
+likely operators are to put personal details in a moderation note. **App activity** is already
+declared here for `reasonId`/`surface`, so the new type at least lands inside an existing category.
 
 **This also puts a question mark over how `note` is typed above.** The table declares both `excerpt`
 and `note` as **Messages**. That reads right for `excerpt` — model output the operator was reading —
@@ -219,6 +228,12 @@ the single most expensive way to get this wrong:
   - `:218`, personal identifiers / credentials — **answer not yet decided.** Free-text `excerpt` /
     `note` may carry personal details, so this row depends on the OPEN question above. It cannot be
     transcribed either way until that is settled.
+
+- **Whatever #267 decides, re-type `note` everywhere in THIS file in the same pass.** It is currently
+  declared **Messages** in three places — the persistence table, the Console answer table's "Data
+  types" row, and the scope table's "Collected" row — and the App activity entry above describes only
+  `reasonId`/`surface`. Following this checklist literally would therefore leave `note` typed as a
+  message even after deciding it is an open-ended response. Grep for it; do not fix one and stop.
 
   *(This list has been wrong twice. The first draft named two rows; the second named three and
   omitted **App activity** — the row gate 1's own declaration had just created — while quoting line
