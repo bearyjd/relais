@@ -49,6 +49,18 @@ enum class ReportReason(val id: String, val label: String) {
 const val MAX_REPORT_NOTE_CHARS = 500
 
 /**
+ * Cap on the provenance identifiers (`modelId`, `backend`), mirroring `MAX_IDENT` in
+ * `report-worker/src/index.ts`.
+ *
+ * The receiver rejects either field when it is **blank** or over this cap — its `isBoundedString`
+ * requires `length > 0`. Neither is reachable from a normal turn, but a manually entered model id
+ * can be arbitrary, and nothing upstream bounds it. Without normalizing here, such a report saves
+ * fine on-device and then fails with a flat 400 the moment a delivery path exists — the kind of
+ * drift `schema-parity.test.ts` exists to stop.
+ */
+const val MAX_REPORT_IDENT_CHARS = 200
+
+/**
  * Cap on the stored excerpt of the reported output. A model turn can be arbitrarily long and the
  * report only needs to be enough to identify what went wrong — this bounds the row rather than
  * copying an unbounded blob into the database.
@@ -114,8 +126,19 @@ fun buildContentReportDraft(
       reasonId = reason.id,
       excerpt = excerpt,
       note = trimmedNote.ifEmpty { null },
-      modelId = modelId,
-      backend = backend,
+      modelId = usableIdent(modelId),
+      backend = usableIdent(backend),
     )
   )
 }
+
+/**
+ * Normalizes a provenance identifier to something the receiver will accept, or to null.
+ *
+ * Dropped rather than truncated on purpose: these are identifiers, and a truncated model id is a
+ * *wrong* one — it would read as provenance while pointing at nothing. Null already means "this
+ * turn has no usable provenance", which is honest and is a case the schema models. Losing the
+ * label is much cheaper than losing the report, so this never rejects the draft.
+ */
+private fun usableIdent(value: String?): String? =
+  value?.trim()?.takeIf { it.isNotEmpty() && it.length <= MAX_REPORT_IDENT_CHARS }

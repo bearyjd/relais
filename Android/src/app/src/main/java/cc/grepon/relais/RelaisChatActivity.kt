@@ -59,6 +59,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -154,8 +155,12 @@ internal fun ChatScreen() {
   // Transient reason an attach was rejected (e.g. text-only model, undecodable file). Surfaced to
   // the user near the input and auto-cleared — otherwise a failed attach silently does nothing.
   var attachError by remember { mutableStateOf<String?>(null) }
-  // The assistant turn awaiting a report (#258); non-null shows the reason picker.
-  var reportingTurn by remember { mutableStateOf<ChatTurn?>(null) }
+  // The assistant turn awaiting a report (#258); non-null shows the reason picker. Held by ID and
+  // re-resolved rather than kept as a ChatTurn, so it survives rotation — ChatTurn is a Room entity,
+  // not Parcelable, and keeping the object here would drop the dialog on a configuration change even
+  // though the dialog's own state is saveable.
+  var reportingTurnId by rememberSaveable { mutableStateOf<String?>(null) }
+  val reportingTurn = reportingTurnId?.let { id -> turns.firstOrNull { it.id == id } }
   var showModelSheet by remember { mutableStateOf(false) }
   var showOverflowMenu by remember { mutableStateOf(false) }
   val drawerState = rememberDrawerState(DrawerValue.Closed)
@@ -353,7 +358,7 @@ internal fun ChatScreen() {
         onSpeak = { vm.speak(it) },
         onStopSpeaking = { vm.stopSpeaking() },
         onSpeechNoticeShown = { vm.clearSpeechNotice(it) },
-        onReport = { reportingTurn = it },
+        onReport = { reportingTurnId = it.id },
         modifier = Modifier.weight(1f).fillMaxWidth().padding(horizontal = 16.dp),
       )
 
@@ -395,10 +400,10 @@ internal fun ChatScreen() {
       // the Column is immaterial.
       reportingTurn?.let { turn ->
         ContentReportDialog(
-          onDismiss = { reportingTurn = null },
+          onDismiss = { reportingTurnId = null },
           onSubmit = { reason, note ->
             vm.reportContent(turn, reason, note)
-            reportingTurn = null
+            reportingTurnId = null
           },
         )
       }

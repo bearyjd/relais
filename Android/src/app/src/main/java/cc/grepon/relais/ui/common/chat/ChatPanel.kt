@@ -54,6 +54,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ThumbDown
 import androidx.compose.material.icons.filled.ThumbUp
+import androidx.compose.material.icons.outlined.Flag
 import androidx.compose.material.icons.outlined.ThumbDown
 import androidx.compose.material.icons.outlined.ThumbUp
 import androidx.compose.material.icons.outlined.Timer
@@ -79,7 +80,13 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import cc.grepon.relais.chat.ContentReportDialog
+import cc.grepon.relais.chat.ReportDraftResult
+import cc.grepon.relais.chat.buildContentReportDraft
+import cc.grepon.relais.chat.persistContentReport
+import cc.grepon.relais.data.ReportSurface
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -198,6 +205,14 @@ fun ChatPanel(
   val density = LocalDensity.current
   var showBenchmarkConfigsDialog by remember { mutableStateOf(false) }
   val benchmarkMessage: MutableState<ChatMessage?> = remember { mutableStateOf(null) }
+
+  // The agent output awaiting an AI-content report (#258); non-null shows the reason picker.
+  //
+  // Held as the two strings a report actually needs rather than as the ChatMessage: this inherited
+  // class has no stable id and is not saveable, so keeping the object would drop the dialog (and the
+  // operator's typed note) on rotation. Content and accelerator are all the report takes from it.
+  var reportingContent by rememberSaveable { mutableStateOf<String?>(null) }
+  var reportingAccelerator by rememberSaveable { mutableStateOf("") }
 
   var showErrorDialog by remember { mutableStateOf(false) }
   var showFeedbackDialog by remember { mutableStateOf(false) }
@@ -556,6 +571,24 @@ fun ChatPanel(
                             modifier = Modifier.size(18.dp),
                           )
                         }
+                        // Report AI output (#258). Play's AI-Generated Content policy asks that a
+                        // user can flag offensive output from WITHIN the app, and it does not care
+                        // which of our two chat stacks produced it — output generated here was
+                        // unreportable while the Relais surface had the affordance.
+                        IconButton(
+                          onClick = {
+                            reportingContent = message.content
+                            reportingAccelerator = message.accelerator
+                          },
+                          modifier = Modifier.size(28.dp),
+                        ) {
+                          Icon(
+                            imageVector = Icons.Outlined.Flag,
+                            contentDescription = stringResource(R.string.report_output),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+                            modifier = Modifier.size(18.dp),
+                          )
+                        }
                       }
                     }
                   } else if (message.side == ChatSide.USER) {
@@ -600,6 +633,46 @@ fun ChatPanel(
         }
 
         SnackbarHost(hostState = snackbarHostState, modifier = Modifier.padding(vertical = 4.dp))
+
+        // Reason picker for the agent output being reported (#258). Deliberately the SAME dialog the
+        // Relais chat uses: a second implementation would be a second copy of the reason vocabulary,
+        // and the two would drift — which is the failure `schema-parity.test.ts` guards at the other
+        // boundary. Writes through `persistContentReport`, the one write path, tagged GALLERY_CHAT.
+        reportingContent?.let { content ->
+          ContentReportDialog(
+            onDismiss = { reportingContent = null },
+            onSubmit = { reason, note ->
+              val draft =
+                buildContentReportDraft(
+                  reason = reason,
+                  content = content,
+                  note = note,
+                  modelId = selectedModel.name,
+                  backend = reportingAccelerator,
+                )
+              reportingContent = null
+              scope.launch {
+                val saved =
+                  when (draft) {
+                    is ReportDraftResult.Valid ->
+                      persistContentReport(
+                        context = context,
+                        draft = draft.draft,
+                        surface = ReportSurface.GALLERY_CHAT,
+                        nowMs = System.currentTimeMillis(),
+                      )
+                    // Unreachable from this UI (the dialog caps the note and the button needs a
+                    // reason), but a silent no-op here would tell the operator a flag was recorded
+                    // when it was not.
+                    is ReportDraftResult.Rejected -> false
+                  }
+                snackbarHostState.showSnackbar(
+                  if (saved) "Reported — saved on this device" else "Could not save that report"
+                )
+              }
+            },
+          )
+        }
 
         // Show empty state.
         if (messages.isEmpty() && pickedImagesCount == 0 && pickedAudioClipsCount == 0) {

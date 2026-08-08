@@ -17,7 +17,7 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { parseReport } from './index';
-import { MAX_EXCERPT, MAX_NOTE } from './limits';
+import { MAX_EXCERPT, MAX_IDENT, MAX_NOTE } from './limits';
 
 const SHAPING_KT = new URL(
   '../../Android/src/app/src/main/java/cc/grepon/relais/chat/ContentReportShaping.kt',
@@ -57,6 +57,19 @@ function clientCap(name: string): number {
   return Number(value);
 }
 
+/**
+ * The Worker's own allowlists, read from source for the same reason the client's are: asserting
+ * against a list restated here would only prove this file agrees with itself.
+ *
+ * `const REASONS = new Set(['harmful', ...]);` -> the members.
+ */
+function workerSet(name: 'REASONS' | 'SURFACES'): string[] {
+  const src = readFileSync(new URL('./index.ts', import.meta.url), 'utf8');
+  const body = src.match(new RegExp(`const ${name} = new Set\\(\\[([^\\]]*)\\]`))?.[1];
+  if (body === undefined) throw new Error(`could not find the ${name} set`);
+  return captures(body, /'([a-z_]+)'/g);
+}
+
 describe('client/worker schema parity', () => {
   // Guards the extractors themselves: a rename that made these return [] would otherwise let the
   // parity assertions below pass vacuously, which is the failure mode this whole file exists to stop.
@@ -79,15 +92,22 @@ describe('client/worker schema parity', () => {
     }
   });
 
-  // The reverse direction: a reason the Worker accepts but no client sends is dead vocabulary. Not
-  // an outage, but it means the two lists have diverged and the next edit is likelier to break.
-  it('accepts nothing the client cannot produce', () => {
-    const client = new Set(clientReasonIds());
-    for (const candidate of ['harmful', 'sexual', 'hate', 'violent', 'misinformation', 'other']) {
-      if (client.has(candidate)) continue;
-      const parsed = parseReport({ reasonId: candidate, surface: 'chat', excerpt: 'x' });
-      expect(parsed, `Worker accepts "${candidate}", which no client reason produces`).toBeNull();
-    }
+  // The reverse direction. An earlier version iterated a hard-coded list of the six reasons, which
+  // could only ever catch a reason the CLIENT gained — a reason added to the Worker alone was
+  // invisible to it, and surfaces had no reverse check at all. Compare the two sets directly.
+  it('the reason vocabularies are equal, not merely overlapping', () => {
+    expect(workerSet('REASONS').slice().sort()).toEqual(clientReasonIds().slice().sort());
+  });
+
+  it('the surface vocabularies are equal, not merely overlapping', () => {
+    expect(workerSet('SURFACES').slice().sort()).toEqual(clientSurfaces().slice().sort());
+  });
+
+  // Guards the Worker-side extractor, mirroring the client-side guard above: a rename that made
+  // workerSet() return [] would make both equality assertions pass against an empty client list.
+  it('actually extracts the Worker vocabulary', () => {
+    expect(workerSet('REASONS').length).toBeGreaterThan(0);
+    expect(workerSet('SURFACES').length).toBeGreaterThan(0);
   });
 
   // The Worker's caps are documented as mirroring the client's so a well-behaved app can never trip
@@ -95,5 +115,25 @@ describe('client/worker schema parity', () => {
   it('caps are at least as large as the client permits', () => {
     expect(MAX_EXCERPT).toBeGreaterThanOrEqual(clientCap('MAX_REPORT_EXCERPT_CHARS'));
     expect(MAX_NOTE).toBeGreaterThanOrEqual(clientCap('MAX_REPORT_NOTE_CHARS'));
+    // The client normalizes modelId/backend to null past its own cap, so a client cap ABOVE this
+    // one would emit identifiers the Worker rejects with a 400.
+    expect(MAX_IDENT).toBeGreaterThanOrEqual(clientCap('MAX_REPORT_IDENT_CHARS'));
+  });
+
+  // Blank is rejected too — `isBoundedString` requires length > 0 — which is why the client
+  // normalizes empty identifiers to null rather than passing them through.
+  it('rejects a blank identifier, so the client must never send one', () => {
+    expect(parseReport({ reasonId: 'other', surface: 'chat', excerpt: 'x', modelId: '' })).toBeNull();
+  });
+
+  it('accepts a null identifier, which is what the client sends when it has none', () => {
+    const parsed = parseReport({
+      reasonId: 'other',
+      surface: 'chat',
+      excerpt: 'x',
+      modelId: null,
+      backend: null,
+    });
+    expect(parsed).not.toBeNull();
   });
 });

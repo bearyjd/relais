@@ -116,4 +116,42 @@ class ContentReportShapingTest {
     assertEquals(ids.size, ids.toSet().size)
     assertTrue("ids are persisted verbatim", ids.none { it.isBlank() })
   }
+
+  // The receiver rejects a blank or over-200 modelId/backend outright (`isBoundedString` in
+  // report-worker/src/index.ts requires length > 0). Anything this builder emits has to survive that,
+  // or the report saves on-device and 400s the moment a delivery path exists.
+  private fun draftWith(modelId: String?, backend: String?) =
+    draftOf(buildContentReportDraft(ReportReason.OTHER, "output", null, modelId, backend))
+
+  @Test
+  fun `an over-long model id is dropped, not truncated — a cut identifier is a wrong one`() {
+    val draft = draftWith("m".repeat(MAX_REPORT_IDENT_CHARS + 1), "GPU")
+    assertNull(draft.modelId)
+    assertEquals("GPU", draft.backend)
+  }
+
+  @Test
+  fun `an identifier at exactly the cap is kept`() {
+    val exact = "m".repeat(MAX_REPORT_IDENT_CHARS)
+    assertEquals(exact, draftWith(exact, null).modelId)
+  }
+
+  @Test
+  fun `blank identifiers normalize to null — the receiver rejects empty strings too`() {
+    val draft = draftWith("", "   ")
+    assertNull(draft.modelId)
+    assertNull(draft.backend)
+  }
+
+  @Test
+  fun `surrounding whitespace is trimmed off identifiers rather than sent verbatim`() {
+    assertEquals("gemma-4-E2B", draftWith("  gemma-4-E2B  ", null).modelId)
+  }
+
+  @Test
+  fun `an unusable identifier never rejects the report — the flag matters, the label does not`() {
+    val result =
+      buildContentReportDraft(ReportReason.OTHER, "output", null, "x".repeat(9_999), "")
+    assertTrue("report must survive bad provenance", result is ReportDraftResult.Valid)
+  }
 }

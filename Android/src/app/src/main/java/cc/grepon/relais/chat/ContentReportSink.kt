@@ -27,6 +27,12 @@ import cc.grepon.relais.data.RelaisDatabase
  * chat (via `ChatViewModel`) and the inherited Gallery chat (via `ChatPanel`, which has no view
  * model of its own). One function so the two surfaces cannot drift on what a report stores.
  *
+ * That second caller was missing for the whole of this feature's first review pass — this KDoc
+ * described it, `ReportSurface.GALLERY_CHAT` existed for it, and the commit extracting "the single
+ * write path" was written for it, but only the Relais surface ever called here. Output from the
+ * Gallery/agent chat was simply unreportable, which is the one thing Play's AI-Generated Content
+ * policy asks for. **If a third surface can render model output, it calls this too.**
+ *
  * Returns true when the row was written. Callers must surface a false — a report that silently
  * fails to save leaves the operator believing a flag was recorded when it wasn't.
  *

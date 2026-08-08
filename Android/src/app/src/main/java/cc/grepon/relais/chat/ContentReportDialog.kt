@@ -32,6 +32,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.Saver
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -63,10 +65,21 @@ import cc.grepon.relais.StopRed
  * rejection in [buildContentReportDraft] is unreachable from here — that guard remains for non-UI
  * callers. Styling follows `DESIGN.md`: amber on near-black, monospace, no second accent colour.
  */
+/**
+ * Saves the picked reason across configuration changes by its stable [ReportReason.id] — the same
+ * value a report persists, so the saved state cannot drift from what is stored. Saving null means
+ * "nothing picked", which restores as null.
+ */
+private val ReasonSaver: Saver<ReportReason?, String> =
+  Saver(save = { it?.id }, restore = { id -> ReportReason.entries.firstOrNull { it.id == id } })
+
 @Composable
 fun ContentReportDialog(onDismiss: () -> Unit, onSubmit: (ReportReason, String) -> Unit) {
-  var selected by remember { mutableStateOf<ReportReason?>(null) }
-  var note by remember { mutableStateOf("") }
+  // Saveable, not just remembered: a rotation (or the IME resizing the window, or process death
+  // while the note field is focused) would otherwise silently discard a reason the operator picked
+  // and a note they had typed, with the dialog still open and looking untouched.
+  var selected by rememberSaveable(stateSaver = ReasonSaver) { mutableStateOf<ReportReason?>(null) }
+  var note by rememberSaveable { mutableStateOf("") }
 
   Dialog(onDismissRequest = onDismiss) {
     Column(
