@@ -6,7 +6,76 @@ uncommitted section was once destroyed by `git reset --hard` and had to be rebui
 
 ---
 
-## 2026-08-08 — ⏩ START HERE. **An OPEN [P1] sits on `main`: the Data Safety guidance is wrong.**
+## 2026-08-08 (latest) — ⏩ START HERE. **Gate 1 is merged and Codex-clean. The Worker has still never served a request.**
+
+### Do these in order
+
+1. **Deploy the Worker.** This is the only thing standing between here and a testable gate 1, and it
+   needs **JD's Cloudflare credentials** — none are in the environment and `wrangler login` is
+   interactive. In a Claude Code session, `! npx wrangler login` in the prompt authenticates
+   in-session; the agent can then drive namespace → secret → deploy → the README curl checks.
+   While you are in the dashboard: turn on **Always Use HTTPS** for the zone. The Data Safety form
+   answers "encrypted in transit: yes" for that leg and `index.ts` never checks the scheme, so a
+   plain-HTTP route would falsify a filed declaration without touching a line of code.
+2. **Settle #267** — whether free-text `excerpt`/`note` make **Personal info** a declared type. It
+   blocks transcribing `distribution.md:218`, and it is a product + policy call, not a doc edit.
+3. **Then** the client send path + privacy policy + all the Data Safety updates, in ONE PR.
+
+**#122 is blocked behind all of that, and targetSdk 35 is submittable only until 2026-08-30.**
+
+### Gate 1 is done — and it took ten review rounds to get there
+
+`#265` merged as `29bab687`. `main` no longer tells you to file a false declaration. **Ten rounds of
+`/codex review`; rounds 5-10 each found the defect *inside the previous round's fix*, and two of
+those were self-contradictions introduced by the very commit that fixed the prior one** (a
+cross-reference describing a row's *old* state, one edit later). Round 10 returned clean.
+
+**Every defect had one shape: an accurate local fact extrapolated one step too far.**
+
+| Read correctly | Extrapolated wrongly |
+|---|---|
+| no raw IP is persisted | "so we collect nothing" — Play counts a retained stable identifier as collection |
+| `RATE_WINDOW_SECONDS` is 3600 | "retained one hour" — `put()` renews the TTL, so it is a sliding window |
+| *(the fix for that)* | "expires an hour after their **last request**" — `overRateLimit` returns *before* `put()` at the limit, so it is the last **counted** request |
+| no identity **field** in the schema | "nothing links a report to a person" — `excerpt`/`note` are free text `parseReport` only length-bounds |
+
+The generalizable rule, now in agent memory: **read a claim about when data expires off the branch
+that sets the TTL, never off the constant; read a claim about what is stored off the `put()` calls,
+keys AND values.** And do not treat "I fixed the finding" as "the section is correct" — that
+inference is the same extrapolation. Re-run `/codex` until a round comes back clean.
+
+### What is settled vs. still open in gate 1
+
+**Settled:** Data Safety = **Yes**. Three types — **Messages → Other in-app messages** (excerpt,
+note), **App activity → App interactions** (`reasonId`, `surface`), **Device or other IDs** (the
+rate-limit hash). All optional. Reports expire 180 days after receipt; the identifier one hour after
+that caller's last **counted** request. Five `distribution.md` rows flip (`:206 :208 :216 :219 :220`),
+`:207` keeps its answer but needs the Worker leg added to its justification.
+
+**Open:** `:218` **Personal info** — see #267 above. Also worth knowing when you read the section:
+`modelId`/`backend` are called "app configuration" but are only length-bounded, so a hostile caller
+can persist arbitrary text there; and "deletion by request" means a manual scan of the KV namespace
+against content the requester supplies, because nothing links a report to a person.
+
+### Also landed
+
+- **`.gitignore`**: `.omc/*` contains a slash, so git anchored it to the repo root and never covered
+  the `.omc/` dirs hooks scatter under `Android/src/`, `.github/workflows/`, `.claude/PRPs/`. One
+  `git add -A` swept **150 untracked scratch files** into a docs commit. Fixed with `*/**/.omc/`,
+  verified with `git check-ignore`. **Stage explicit paths in this repo regardless.**
+- `overRateLimit`'s own doc comment said "Fixed-window rate limit". It is a counter on a renewing
+  TTL — the window only lapses after an idle hour. Comment-only change; 24/24 tests unchanged.
+
+### Everything else
+
+- **#260** (draft) — the capture half: Codex-reviewed **0 findings**, device-verified end to end on
+  comet. Correctly unmerged; capture alone does not clear gate 1.
+- `report-worker` is on `main`, 24/24 tests green, and **has still never handled a real HTTP request.**
+- Merged this session: **#265** `29bab687`. Filed: **#267**.
+
+---
+
+## 2026-08-08 (earlier) — an open [P1] on `main`: the Data Safety guidance is wrong. (superseded above)
 
 ### Fix this first
 
