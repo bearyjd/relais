@@ -5,5 +5,11 @@ Android/src/app/src/main/res/raw/relais_keystore.p12
 *.p12
 
 # oh-my-claudecode local orchestration state (ephemeral; scattered through the tree by hooks)
-.omc/
+# `.omc/*` rather than `.omc/`: a trailing-slash exclusion stops git descending into the directory,
+# so a negation inside it cannot re-include anything. This shape lets `.omc/skills/` be tracked.
+.omc/*
+# Learned skills ARE worth keeping — they are hard-won, repo-specific findings, and were silently
+# dropped from commits while the whole directory was ignored. Everything else under .omc/ (state,
+# logs, notepad, plans, research) stays ephemeral.
+!.omc/skills/
 .gstack/
