@@ -30,10 +30,10 @@ collecting nothing.
 
 | | |
 |---|---|
-| **Stored** | reason id, the reported excerpt, the operator's optional note, the model id and backend that produced it, which surface it came from, and a server timestamp |
-| **Retained for one hour** | a second KV entry, `rl:<hash>`, where the **key** is a **salted SHA-256 of the caller's IP** and the **value** is that caller's running submission count for the window (`overRateLimit`, `src/index.ts`). The **raw IP is never stored** and the hash is not reversible — but do not over-read that: Play counts a stable identifier retained off-device as **collection**, so it must be declared (Device or other IDs, optional, fraud-prevention purpose). See `docs/store-submission.md` gate 1 |
+| **Stored** | under the key `report:<receivedAt>:<uuid>`: reason id, the reported excerpt, the operator's optional note, the model id and backend that produced it, which surface it came from, and a server timestamp. `reasonId` and `surface` are allowlisted; `modelId` and `backend` are only length-bounded, so a hostile caller can put arbitrary text in those two |
+| **Retained on a sliding one-hour window** | a second KV entry, `rl:<hash>`, where the **key** is a **salted SHA-256 of the caller's IP** and the **value** counts that caller's requests which got past the limiter — not accepted reports: it increments *before* parsing, so malformed and oversized bodies count too, and it is only written when `cf-connecting-ip` is non-empty (`overRateLimit`, `src/index.ts`). The **raw IP is never stored** and the hash is not reversible — but do not over-read that: Play counts a stable identifier retained off-device as **collection**, so it must be declared (Device or other IDs, optional, fraud-prevention purpose). See `docs/store-submission.md` gate 1 |
 | **Not stored** | the raw IP, and anything not listed above |
-| **Retention** | 180 days, then dropped automatically by KV TTL |
+| **Retention** | reports: 180 days from receipt, then dropped by KV TTL. Identifier: one hour from that caller's **last** request — `put()` re-sets `expirationTtl` every time, so sustained under-limit traffic keeps one alive indefinitely. It is a sliding window, **not** a one-hour retention cap; do not describe it as one on a privacy form |
 
 Every row above is load-bearing for the privacy policy, and "anything not listed above" is a
 completeness claim — derive it from the `put()` calls in `src/index.ts`, both of them, key *and*

@@ -88,9 +88,10 @@ report rather than from the KV write. The record is `{...report, receivedAt}` �
 | `note` — operator's free text | **Messages → Other in-app messages** |
 | `reasonId` — which category the operator chose | **App activity → App interactions** |
 | `surface` — which in-app surface it came from (`chat` / `gallery_chat`) | **App activity → App interactions** |
-| `modelId`, `backend` — what produced the output | Not a Play *user* data type (app configuration), but disclose it in the privacy policy for completeness |
+| `modelId`, `backend` — what produced the output | Intended as app configuration, so **not** a Play *user* data type — but note the Worker does not enforce that. `reasonId` and `surface` are allowlisted against `REASONS`/`SURFACES`; these two are only length-bounded (`isBoundedOrNull(…, MAX_IDENT)`), so any caller can persist arbitrary text in them. The declaration holds for what *the app* sends; disclose both in the privacy policy, and treat the "configuration" label as an intent, not a validated guarantee |
 | `receivedAt` — server timestamp | Part of the record; no separate type |
-| `rl:<salted-hash>` — a **second KV key**, written by the rate limiter, not part of the report record. Both halves are data: the **key** is the salted caller identifier, and the **value** is `String(current + 1)` — that caller's running submission count for the window | **Device or other IDs** (see below) |
+| the report **key** itself, `report:<receivedAt>:<uuid>` | Not a separate type — the timestamp is already declared above and the UUID is `crypto.randomUUID()`, unlinked to any caller. Listed so the inventory matches the `put()` call rather than only its value |
+| `rl:<salted-hash>` — a **second KV key**, written by the rate limiter, not part of the report record. Both halves are data: the **key** is the salted caller identifier, and the **value** is `String(current + 1)` — a count of that caller's requests that got *past the limiter*, which is not the same as accepted reports: it increments before parsing, so malformed and oversized bodies count too, and it is only written when `cf-connecting-ip` is non-empty | **Device or other IDs** (see below) |
 
 | Console question | Answer once delivery ships |
 |---|---|
@@ -100,7 +101,7 @@ report rather than from the KV write. The record is `{...report, receivedAt}` �
 | Purpose | Report contents and interactions: **App functionality** (content moderation), per the AI-Generated Content policy's "use reports to inform moderation". The identifier: **fraud prevention, security and compliance** |
 | Is it shared with third parties? | **No** — it reaches the developer's own endpoint and goes no further |
 | Encrypted in transit? | **Yes** — HTTPS to the Worker |
-| Can users request deletion? | **Yes** — reports expire after 180 days, the identifier after one hour; ad-hoc deletion by request to the contact email |
+| Can users request deletion? | **Yes** — reports expire 180 days after receipt; the identifier expires one hour after that caller's **last** request, **not** one hour after their first (see below). Ad-hoc deletion by request to the contact email |
 
 **Scope the Yes precisely — it is narrower than the app, and wider than it first looks.**
 
@@ -124,7 +125,16 @@ doc. I had designed the hash specifically to avoid retaining an IP and then over
 bought: the privacy engineering was right, the declaration conclusion drawn from it was not.)*
 
 Declare it as **Device or other IDs → optional**, purpose **fraud prevention, security and
-compliance** (it exists solely to rate-limit an unauthenticated endpoint), retained one hour.
+compliance** (it exists solely to rate-limit an unauthenticated endpoint).
+
+**Do not describe the one hour as a retention cap — it is a sliding window, and this is the third
+time this section has stated a local fact as a stronger guarantee than the code provides.**
+`overRateLimit` calls `put()` with `expirationTtl: RATE_WINDOW_SECONDS` on *every* request it does
+not reject, so each new request **resets** the hour. A caller submitting under the limit once an hour
+keeps the same identifier alive **indefinitely**; it expires an hour after their last request, not an
+hour after their first. Answer any Play retention question in those terms. *(Caught by
+`/codex review`, reading `overRateLimit` rather than the sentence describing it — the same check that
+caught the two rounds before.)*
 
 **If you would rather not declare it:** delete `overRateLimit` and rely on the Cloudflare edge Rate
 Limiting rule instead — platform infrastructure rather than app collection. That is a real code
@@ -159,6 +169,14 @@ the single most expensive way to get this wrong:
   omitted **App activity** — the row gate 1's own declaration had just created — while quoting line
   numbers that inserting that row had already invalidated. Derive the list by grepping the per-type
   table, not from memory, and re-derive the line numbers in the same pass.)*
+- **The two "no developer endpoint" egress claims**, which are separate from every row above and
+  were missed by the first *three* drafts of this list:
+  - `docs/distribution.md` §"Egress inventory backing the 'No'" — it calls itself **"complete, from
+    source sweep 2026-07-07"** and does not list a VentouxLabs endpoint, because none existed. The
+    send path adds one, and a self-described complete inventory that omits it is worse than one that
+    never claimed completeness.
+  - **THIS file's** permission table — the `INTERNET`, `ACCESS_NETWORK_STATE` row reads
+    *"None — no developer endpoint"* in its Data Safety consequence column.
 - `report-worker/README.md` — same correction
 
 **Open and blocking #258:** *where* an opt-in send delivers to. There is no VentouxLabs endpoint
