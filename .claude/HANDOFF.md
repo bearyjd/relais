@@ -6,7 +6,70 @@ uncommitted section was once destroyed by `git reset --hard` and had to be rebui
 
 ---
 
-## 2026-08-08 (final) — ⏩ START HERE. **The Worker was undeployable; that is fixed. It now needs one interactive login.**
+## 2026-08-08 (end of day) — ⏩ START HERE. **Both halves of #258 are on `main` and have met. Zero open PRs. Next: one Cloudflare login.**
+
+### Do these in order
+
+1. **Deploy the Worker.** Still the only blocker, and still the one thing an agent cannot supply:
+   **`! npx wrangler login`** in the prompt authenticates in-session, then the agent can drive
+   namespace → secret → deploy → the curl checks unattended.
+   **Also turn on *Always Use HTTPS* for the zone.** The Data Safety form answers "encrypted in
+   transit: yes" for that leg and `index.ts` never inspects the scheme — the one claim local
+   verification cannot check.
+2. **Settle #267** — whether free-text `excerpt`/`note` make **Personal info** a declared type. It
+   blocks transcribing `distribution.md:218`, and it is a product + policy call, not a doc edit.
+   A UI warning alone does not support leaving it undeclared; that needs real redaction.
+3. **Then** the client send path + privacy policy + all Data Safety updates, in ONE PR.
+
+**#122 is blocked behind that, and targetSdk 35 is submittable only until 2026-08-30.**
+
+### State: everything merged, nothing open
+
+`main` = `2722675c`. **No open PRs.** Merged today: **#265** gate 1 · **#266**/**#269** handoffs ·
+**#268** the undeployable Worker · **#260** the capture half. Filed: **#267**.
+
+### The two halves of #258 have met — verified, not asserted
+
+On comet, the real screen: REPORT → dialog → SUBMIT → the row lands in `content_reports` with every
+field right (`reasonId='misinformation'` while the UI reads "MISLEADING" — the stored id is the
+Worker's vocabulary, not the label). That exact row, POSTed to the Worker, returned **202**, and the
+KV record was the six client fields byte-identical plus `receivedAt`.
+
+That confirms by observation what ten rounds of review could only assert:
+
+| Declared in gate 1 | Observed |
+|---|---|
+| record is `{...report, receivedAt}` | exactly **7 fields** |
+| `rl:` value is a count, not a flag | `10`, `1`, `5` |
+| counter increments *before* parsing | 3 rejected + 1 accepted → counter **4**, **1** stored report |
+| identifier is `sha256(salt + ":" + ip)` | key re-derived in Python resolved |
+
+Runbook: `report-worker/README.md` §"Verify locally first" — no Cloudflare account needed.
+
+### Two traps this repo keeps re-learning
+
+**Nothing had ever started the Worker.** #268: workerd rejects value exports from the entry module,
+so `report-worker` was undeployable from the day it merged, with 24 green tests, a clean
+`deploy --dry-run` and two clean Codex passes. `report-worker.yml` now boots workerd and issues a
+request — the only step that can see that class of defect.
+
+**Gate 1 took ten `/codex` rounds**, and rounds 5-10 each found the defect *inside the previous
+round's fix*. Every one had the same shape: **an accurate local fact extrapolated one step too far.**
+Do not treat "I fixed the finding" as "the section is correct."
+
+### One correction to carry forward
+
+#260 wires REPORT into the Gallery/agent chat. That was first reported as a live Play-policy gap on
+the grounds the surface is deep-link reachable. **It is not** — a cold start of
+`com.ventouxlabs.relais://llm_agent_chat/` lands on the Relais shell, and no shell route renders a
+Gallery task screen. That stack is compiled in but **unreachable today**, so the wiring is defensive.
+It earns its place by making `ReportSurface.GALLERY_CHAT` and `ContentReportSink`'s KDoc true, both
+of which described a second caller that did not exist. Deleting the constant instead is a legitimate
+alternative if the Gallery stack is ever removed.
+
+---
+
+## 2026-08-08 (final) — the Worker was undeployable; fixed. (superseded above)
 
 ### Do these in order
 
