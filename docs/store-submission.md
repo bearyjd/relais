@@ -102,7 +102,7 @@ report rather than from the KV write. The record is `{...report, receivedAt}` �
 | Is it shared with third parties? | **No** — it reaches the developer's own endpoint and goes no further |
 | Encrypted in transit? | **Yes** — HTTPS to the Worker. ⚠ Enforced by **Cloudflare, not by Worker code**: `index.ts` never inspects the scheme, so this answer is only true while the zone has *Always Use HTTPS* on. Confirm it at deploy time (`report-worker/README.md`) rather than inferring it from the source |
 | Can users request deletion? | **Yes**, with a caveat worth getting right — see the row below |
-| …what deletion actually means here | Reports expire 180 days after receipt; the identifier expires one hour after that caller's last **counted** request, not one hour after their first (see below). For **ad-hoc deletion by request to the contact email**, note that a report carries *no* user identifier — no account, no device id, nothing linking it to a person. That is deliberate, and it is a privacy strength, but it means the operator cannot look up "this person's reports": a requester has to identify the report by its **content** (the excerpt they submitted). Say that plainly if Play asks how the request is honored; do not imply a lookup capability the schema makes impossible |
+| …what deletion actually means here | Reports expire 180 days after receipt; the identifier expires one hour after that caller's last **counted** request, not one hour after their first (see below). For **ad-hoc deletion by request to the contact email**: the record has no dedicated identity field and stores no link from a report back to its caller, so the operator cannot query "this person's reports" — honoring a request means the requester supplies enough of the report for a manual scan of the KV namespace. Do not imply a lookup capability the schema makes impossible. **And do not overstate the anonymity either:** `excerpt` and `note` are free text (`parseReport` only length-bounds them), so a report *can* contain identifying information the user typed or the model emitted — the absence of an identity **field** is not an absence of identifying **content**. The `rl:<hash>` record is separate, cannot be reached from report content at all, and only ages out on its TTL |
 
 **Scope the Yes precisely — it is narrower than the app, and wider than it first looks.**
 
@@ -116,6 +116,18 @@ the payload actually carries.
 |---|---|
 | **Collected** (optional) | The report payload — flagged excerpt and operator note, both **Messages → Other in-app messages** — plus the model id / backend, **plus the rate-limit identifier below** |
 | **Still not collected** | Chat content the operator never reports · prompts · audio in or out · photos · the HF token (user-directed to `huggingface.co`, never to us) |
+
+**⚠ OPEN — resolve before transcribing, do not answer it from this table.** `excerpt` and `note` are
+free text. A user can type a name, an email or an address into a note, and a flagged model output can
+repeat one back. That does not touch the rows above, but it does put a question mark over
+**Personal info** as a declared type — a category nothing in this runbook currently declares, and
+which `distribution.md`'s "Personal identifiers / credentials" row still answers *not collected*.
+
+The two defensible answers are (a) declare **Personal info → optional**, or (b) keep it undeclared
+and put a "don't include personal details" line in the report UI so the field is not *intended* to
+collect it. (b) is cheaper and matches how the screen is meant to be used, but it is a **product
+change plus a policy answer, not a doc edit**, so it is not settled here. Whichever way it goes, it
+lands in the same PR as the send path, and `distribution.md:218` changes with it.
 
 **The rate-limit identifier counts too, and it is not part of the report.** The Worker derives a
 salted SHA-256 of `cf-connecting-ip` and retains it in KV to link a caller's requests, on a one-hour
@@ -175,10 +187,14 @@ the single most expensive way to get this wrong:
   | **Device IDs** per-type | `:219` | "Not read, not transmitted", which the rate-limit hash contradicts |
   | **App activity** per-type | `:220` | "Not collected today" — `reasonId`/`surface` |
 
-  Plus one row whose **answer** stays `Yes` but whose **justification** goes stale: the
-  encrypted-in-transit row (`:207`) enumerates the app's egress legs and will not mention the
-  Worker. Add that leg, and note the HTTPS guarantee there is a Cloudflare zone setting rather than
-  anything `index.ts` enforces.
+  Plus two rows that are neither in that five nor safe to skip:
+
+  - `:207`, encrypted-in-transit — the **answer** stays `Yes`, but the **justification** enumerates
+    the app's egress legs and will not mention the Worker. Add that leg, and note the HTTPS
+    guarantee is a Cloudflare zone setting rather than anything `index.ts` enforces.
+  - `:218`, personal identifiers / credentials — **answer not yet decided.** Free-text `excerpt` /
+    `note` may carry personal details, so this row depends on the OPEN question above. It cannot be
+    transcribed either way until that is settled.
 
   *(This list has been wrong twice. The first draft named two rows; the second named three and
   omitted **App activity** — the row gate 1's own declaration had just created — while quoting line
