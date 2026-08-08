@@ -7,5 +7,7 @@ node_modules/
 # Local-only config used to run the Worker under `wrangler dev` with the KV binding attached; the
 # committed wrangler.toml ships that block commented out on purpose (see the note there).
 wrangler.local.toml
+wrangler.ci.toml
+dev.log
 # Build output from `wrangler deploy --dry-run --outdir`.
 dist/
