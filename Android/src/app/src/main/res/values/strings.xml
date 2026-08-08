@@ -81,6 +81,9 @@
   <string name="continue_button_label" translatable="false">Continue</string>
   <string name="conversation_history" translatable="false">Conversation History</string>
   <string name="copy" translatable="false">Copy</string>
+  <!-- Content description for the AI-content report affordance (#258) on the inherited Gallery
+       chat surface. Play's AI-Generated Content policy requires in-app reporting of AI output. -->
+  <string name="report_output" translatable="false">Report this output</string>
   <string name="create" translatable="false">Create</string>
   <string name="delete" translatable="false">Delete</string>
   <string name="description_required" translatable="false">Description*</string>

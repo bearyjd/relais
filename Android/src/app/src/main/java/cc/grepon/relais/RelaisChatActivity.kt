@@ -59,6 +59,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -74,11 +75,13 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import cc.grepon.relais.chat.ChatConversationList
 import cc.grepon.relais.chat.ChatMessageList
+import cc.grepon.relais.chat.ContentReportDialog
 import cc.grepon.relais.chat.RefreshOnResume
 import cc.grepon.relais.chat.SendStopButton
 import cc.grepon.relais.chat.SpeakingStopStrip
 import cc.grepon.relais.chat.SpeechState
 import cc.grepon.relais.chat.conversationToMarkdown
+import cc.grepon.relais.data.ChatTurn
 import java.io.ByteArrayOutputStream
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -142,6 +145,7 @@ internal fun ChatScreen() {
   val activeConversationId by vm.activeConversationId.collectAsState()
   val speechState by vm.speech.collectAsState()
   val speechOffered by vm.speechOffered.collectAsState()
+  val reportNotice by vm.reportNotice.collectAsState()
 
   // Speech availability changes at NODE startup, not app startup — see RefreshOnResume's KDoc.
   RefreshOnResume { vm.refreshSpeechOffered() }
@@ -151,6 +155,12 @@ internal fun ChatScreen() {
   // Transient reason an attach was rejected (e.g. text-only model, undecodable file). Surfaced to
   // the user near the input and auto-cleared — otherwise a failed attach silently does nothing.
   var attachError by remember { mutableStateOf<String?>(null) }
+  // The assistant turn awaiting a report (#258); non-null shows the reason picker. Held by ID and
+  // re-resolved rather than kept as a ChatTurn, so it survives rotation — ChatTurn is a Room entity,
+  // not Parcelable, and keeping the object here would drop the dialog on a configuration change even
+  // though the dialog's own state is saveable.
+  var reportingTurnId by rememberSaveable { mutableStateOf<String?>(null) }
+  val reportingTurn = reportingTurnId?.let { id -> turns.firstOrNull { it.id == id } }
   var showModelSheet by remember { mutableStateOf(false) }
   var showOverflowMenu by remember { mutableStateOf(false) }
   val drawerState = rememberDrawerState(DrawerValue.Closed)
@@ -348,6 +358,7 @@ internal fun ChatScreen() {
         onSpeak = { vm.speak(it) },
         onStopSpeaking = { vm.stopSpeaking() },
         onSpeechNoticeShown = { vm.clearSpeechNotice(it) },
+        onReport = { reportingTurnId = it.id },
         modifier = Modifier.weight(1f).fillMaxWidth().padding(horizontal = 16.dp),
       )
 
@@ -368,6 +379,32 @@ internal fun ChatScreen() {
           fontFamily = FontFamily.Monospace,
           fontSize = 12.sp,
           modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
+        )
+      }
+      // Report outcome (#258). Amber for a saved report, StopRed for a failure — a report that did
+      // not save must not look like one that did. Auto-clears like the attach notice.
+      reportNotice?.let { msg ->
+        LaunchedEffect(msg) {
+          delay(5000)
+          vm.clearReportNotice()
+        }
+        Text(
+          msg,
+          color = if (msg.startsWith("REPORTED")) Amber else StopRed,
+          fontFamily = FontFamily.Monospace,
+          fontSize = 12.sp,
+          modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
+        )
+      }
+      // Reason picker for the turn being reported. Renders in its own window, so its position in
+      // the Column is immaterial.
+      reportingTurn?.let { turn ->
+        ContentReportDialog(
+          onDismiss = { reportingTurnId = null },
+          onSubmit = { reason, note ->
+            vm.reportContent(turn, reason, note)
+            reportingTurnId = null
+          },
         )
       }
       // Attachment preview chip — shows what is staged for the next send.

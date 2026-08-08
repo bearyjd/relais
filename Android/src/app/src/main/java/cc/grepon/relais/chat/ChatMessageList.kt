@@ -71,6 +71,10 @@ fun ChatMessageList(
   onSpeak: (ChatTurn) -> Unit,
   onStopSpeaking: () -> Unit,
   onSpeechNoticeShown: (String) -> Unit,
+  // Required, not defaulted, for the same reason as the speech callbacks — and with more at stake:
+  // Play's AI-Generated Content policy requires this affordance, so a no-op default would let a
+  // caller ship the app policy-non-compliant while still compiling and passing CI (#258).
+  onReport: (ChatTurn) -> Unit,
   modifier: Modifier = Modifier,
 ) {
   val listState = rememberLazyListState()
@@ -97,6 +101,7 @@ fun ChatMessageList(
           onSpeak = onSpeak,
           onStopSpeaking = onStopSpeaking,
           onSpeechNoticeShown = onSpeechNoticeShown,
+          onReport = onReport,
         )
       }
     }
@@ -182,6 +187,7 @@ private fun AssistantTurnRow(
   onSpeak: (ChatTurn) -> Unit,
   onStopSpeaking: () -> Unit,
   onSpeechNoticeShown: (String) -> Unit,
+  onReport: (ChatTurn) -> Unit,
 ) {
   MarkdownText(
     text = turn.content,
@@ -214,6 +220,8 @@ private fun AssistantTurnRow(
         onNoticeShown = onSpeechNoticeShown,
       )
     }
+    // Muted, not amber: reporting is always available but is never the action we're steering toward.
+    ActionLabel(text = "REPORT", color = Muted, onClick = { onReport(turn) })
   }
 }
 

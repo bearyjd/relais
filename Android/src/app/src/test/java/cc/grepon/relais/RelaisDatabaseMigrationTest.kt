@@ -113,6 +113,7 @@ class RelaisDatabaseMigrationTest {
           RelaisDatabase.MIGRATION_2_3,
           RelaisDatabase.MIGRATION_3_4,
           RelaisDatabase.MIGRATION_4_5,
+          RelaisDatabase.MIGRATION_5_6,
         )
         .allowMainThreadQueries()
         .build()
@@ -157,6 +158,7 @@ class RelaisDatabaseMigrationTest {
           RelaisDatabase.MIGRATION_2_3,
           RelaisDatabase.MIGRATION_3_4,
           RelaisDatabase.MIGRATION_4_5,
+          RelaisDatabase.MIGRATION_5_6,
         )
         .allowMainThreadQueries()
         .build()
@@ -204,6 +206,7 @@ class RelaisDatabaseMigrationTest {
           RelaisDatabase.MIGRATION_2_3,
           RelaisDatabase.MIGRATION_3_4,
           RelaisDatabase.MIGRATION_4_5,
+          RelaisDatabase.MIGRATION_5_6,
         )
         .allowMainThreadQueries()
         .build()
@@ -243,6 +246,7 @@ class RelaisDatabaseMigrationTest {
           RelaisDatabase.MIGRATION_2_3,
           RelaisDatabase.MIGRATION_3_4,
           RelaisDatabase.MIGRATION_4_5,
+          RelaisDatabase.MIGRATION_5_6,
         )
         .allowMainThreadQueries()
         .build()
@@ -282,6 +286,46 @@ class RelaisDatabaseMigrationTest {
     }
     assertTrue(idxNames.contains("index_chat_turns_conversationId"))
     assertTrue(idxNames.contains("index_chat_turns_conversationId_createdAt"))
+
+    db.close()
+  }
+
+  @Test
+  fun `v5 to v6 migration runs and validates against the compiled v6 schema`() {
+    // Full chain v1->…->6; Room validates the final identity hash against compiled 6.json. Drift
+    // between MIGRATION_5_6's SQL and the ContentReport entity throws on open (#258). An upgrading
+    // device must not be bricked by the Play-mandated reporting table.
+    createV1Database()
+
+    val db =
+      Room.databaseBuilder(context, RelaisDatabase::class.java, TEST_DB)
+        .addMigrations(
+          RelaisDatabase.MIGRATION_1_2,
+          RelaisDatabase.MIGRATION_2_3,
+          RelaisDatabase.MIGRATION_3_4,
+          RelaisDatabase.MIGRATION_4_5,
+          RelaisDatabase.MIGRATION_5_6,
+        )
+        .allowMainThreadQueries()
+        .build()
+    val supportDb = db.openHelper.writableDatabase
+
+    val cols = mutableListOf<String>()
+    supportDb.query("PRAGMA table_info(`content_reports`)").use { c ->
+      val nameCol = c.getColumnIndexOrThrow("name")
+      while (c.moveToNext()) cols.add(c.getString(nameCol))
+    }
+    assertEquals(
+      listOf("id", "reasonId", "excerpt", "note", "modelId", "backend", "surface", "createdAt"),
+      cols,
+    )
+
+    val idxNames = mutableListOf<String>()
+    supportDb.query("PRAGMA index_list(`content_reports`)").use { c ->
+      val nameCol = c.getColumnIndexOrThrow("name")
+      while (c.moveToNext()) idxNames.add(c.getString(nameCol))
+    }
+    assertTrue(idxNames.contains("index_content_reports_createdAt"))
 
     db.close()
   }

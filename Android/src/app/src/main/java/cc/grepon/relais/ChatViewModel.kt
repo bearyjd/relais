@@ -19,11 +19,17 @@ import androidx.lifecycle.viewModelScope
 import cc.grepon.relais.chat.ChatStreamRequest
 import cc.grepon.relais.chat.ChatTransportSelector
 import cc.grepon.relais.chat.ERROR_BACKEND
+import cc.grepon.relais.chat.ReportDraftResult
+import cc.grepon.relais.chat.ReportReason
+import cc.grepon.relais.chat.ReportRejection
 import cc.grepon.relais.chat.SpeechState
+import cc.grepon.relais.chat.buildContentReportDraft
+import cc.grepon.relais.chat.persistContentReport
 import cc.grepon.relais.chat.historyForRequest
 import cc.grepon.relais.data.ChatTurn
 import cc.grepon.relais.data.Conversation
 import cc.grepon.relais.data.RelaisDatabase
+import cc.grepon.relais.data.ReportSurface
 import cc.grepon.relais.tts.RelaisTtsEngine
 import cc.grepon.relais.tts.RelaisTtsEngineProvider
 import cc.grepon.relais.tts.TtsAvailability
@@ -66,6 +72,7 @@ class ChatViewModel @JvmOverloads constructor(
 
   private val repo = ChatRepository(app, RelaisDatabase.get(app).chatDao())
 
+
   /** One selector (and one owned [HttpClient]) for the ViewModel's lifetime; closed in [onCleared]. */
   private val transportSelector = ChatTransportSelector(app)
 
@@ -106,6 +113,14 @@ class ChatViewModel @JvmOverloads constructor(
 
   private val _reloadingModel = MutableStateFlow(false)
   val reloadingModel: StateFlow<Boolean> = _reloadingModel.asStateFlow()
+
+  /**
+   * Transient outcome of the last [reportContent], shown as a strip under the chat. Never null-on-
+   * failure: a report that could not be saved says so, because silently dropping it would leave the
+   * operator believing a flag was recorded when it wasn't.
+   */
+  private val _reportNotice = MutableStateFlow<String?>(null)
+  val reportNotice: StateFlow<String?> = _reportNotice.asStateFlow()
 
   /** The in-flight reload-observation poll, cancelled and replaced on each model switch. */
   private var reloadJob: kotlinx.coroutines.Job? = null
@@ -291,6 +306,50 @@ class ChatViewModel @JvmOverloads constructor(
   fun clearSpeechNotice(turnId: String) {
     val state = _speech.value
     if (state is SpeechState.Failed && state.turnId == turnId) _speech.value = SpeechState.Idle
+  }
+
+  /**
+   * Record an operator report of assistant output (#258), satisfying Play's AI-Generated Content
+   * policy requirement for in-app flagging.
+   *
+   * The report is written to this device and never transmitted — Relais has no developer server, and
+   * adding one would change the Data Safety declaration from "collects nothing". Validation happens
+   * in [buildContentReportDraft] before anything reaches Room.
+   */
+  fun reportContent(turn: ChatTurn, reason: ReportReason, note: String) {
+    val result =
+      buildContentReportDraft(
+        reason = reason,
+        content = turn.content,
+        note = note,
+        modelId = turn.answeredByModelId,
+        backend = turn.answeredByBackend,
+      )
+    when (result) {
+      is ReportDraftResult.Rejected ->
+        _reportNotice.value =
+          when (result.error) {
+            ReportRejection.EMPTY_CONTENT -> "Nothing to report — that turn is empty."
+            ReportRejection.NOTE_TOO_LONG -> "That note is too long."
+          }
+      is ReportDraftResult.Valid ->
+        viewModelScope.launch {
+          val saved =
+            persistContentReport(
+              context = getApplication(),
+              draft = result.draft,
+              surface = ReportSurface.CHAT,
+              nowMs = System.currentTimeMillis(),
+            )
+          _reportNotice.value =
+            if (saved) "REPORTED — saved on this device" else "Could not save that report."
+        }
+    }
+  }
+
+  /** Dismisses the [reportNotice] strip. */
+  fun clearReportNotice() {
+    _reportNotice.value = null
   }
 
   /** Clears the active conversation; a new one is created lazily on the next [send]. */

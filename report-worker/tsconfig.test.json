@@ -1,0 +1,11 @@
+{
+  // Test-only typecheck. Tests run under vitest in Node, so they get Node types the Worker source is
+  // deliberately denied (see the note in tsconfig.json) — `schema-parity.test.ts` reads the client's
+  // Kotlin source off disk to compare vocabularies rather than restating them.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "types": ["@cloudflare/workers-types", "node"]
+  },
+  "include": ["src/**/*.ts"],
+  "exclude": []
+}

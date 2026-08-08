@@ -260,6 +260,15 @@
 
         <!-- NFC tag writer (#15). Internal screen launched only from the control panel — not exported.
              Picks a workflow id and writes it to a presented tag via foreground dispatch. -->
+        <!-- Operator review of on-device AI-content reports (#258). Play's AI-Generated Content
+             policy requires reports to inform moderation; with no developer server, this screen is
+             where that happens. Present in EVERY policy flavor — playsafe needs it most. -->
+        <activity
+            android:name=".chat.ContentReportsActivity"
+            android:exported="false"
+            android:label="Reported output"
+            android:parentActivityName=".MainActivity" />
+
         <activity
             android:name=".nfc.NfcWriteActivity"
             android:exported="false"
