@@ -117,8 +117,10 @@ the payload actually carries.
 | **Still not collected** | Chat content the operator never reports · prompts · audio in or out · photos · the HF token (user-directed to `huggingface.co`, never to us) |
 
 **The rate-limit identifier counts too, and it is not part of the report.** The Worker derives a
-salted SHA-256 of `cf-connecting-ip` and retains it in KV for an hour to link a caller's requests
-(`report-worker/src/index.ts`, `overRateLimit`). **Not storing the raw IP does not make this
+salted SHA-256 of `cf-connecting-ip` and retains it in KV to link a caller's requests, on a one-hour
+TTL that renews on each counted request — so it lives until an hour after that caller's last counted
+request, not an hour flat (`report-worker/src/index.ts`, `overRateLimit`; the mechanism is spelled
+out below). **Not storing the raw IP does not make this
 uncollected** — Play treats a stable identifier retained off-device as collection regardless of
 reversibility. *(Caught by `/codex review`, which read the Worker source rather than trusting the
 doc. I had designed the hash specifically to avoid retaining an IP and then over-claimed what that
