@@ -4,11 +4,16 @@
     "module": "es2022",
     "moduleResolution": "bundler",
     "lib": ["es2022"],
+    // Workers types ONLY, deliberately. The Worker runs in workerd, not Node: if `@types/node` were
+    // visible here, `src/index.ts` could reference `node:fs` or `process` and typecheck clean while
+    // failing at runtime. Test files need Node APIs to read the client's Kotlin source, so they are
+    // excluded here and covered by `tsconfig.test.json` instead. `npm run typecheck` runs both.
     "types": ["@cloudflare/workers-types"],
     "strict": true,
     "noUncheckedIndexedAccess": true,
     "noEmit": true,
     "skipLibCheck": true
   },
-  "include": ["src/**/*.ts"]
+  "include": ["src/**/*.ts"],
+  "exclude": ["src/**/*.test.ts"]
 }

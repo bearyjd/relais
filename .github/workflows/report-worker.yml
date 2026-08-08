@@ -3,10 +3,24 @@ name: report-worker
 on:
   push:
     branches: ["**"]
-    paths: ["report-worker/**", ".github/workflows/report-worker.yml"]
+    paths:
+      - "report-worker/**"
+      - ".github/workflows/report-worker.yml"
+      # The client half of the report vocabulary. `schema-parity.test.ts` reads these to check the
+      # Kotlin enum against the Worker's allowlist, so a reason added on the CLIENT side has to
+      # trigger this workflow too — otherwise the drift it guards against lands untested.
+      - "Android/src/app/src/main/java/cc/grepon/relais/chat/ContentReportShaping.kt"
+      - "Android/src/app/src/main/java/cc/grepon/relais/data/ReportEntities.kt"
   pull_request:
     branches: ["**"]
-    paths: ["report-worker/**", ".github/workflows/report-worker.yml"]
+    paths:
+      - "report-worker/**"
+      - ".github/workflows/report-worker.yml"
+      # The client half of the report vocabulary. `schema-parity.test.ts` reads these to check the
+      # Kotlin enum against the Worker's allowlist, so a reason added on the CLIENT side has to
+      # trigger this workflow too — otherwise the drift it guards against lands untested.
+      - "Android/src/app/src/main/java/cc/grepon/relais/chat/ContentReportShaping.kt"
+      - "Android/src/app/src/main/java/cc/grepon/relais/data/ReportEntities.kt"
 
 permissions:
   contents: read
