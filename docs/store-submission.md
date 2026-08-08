@@ -131,8 +131,8 @@ either, and it is very likely the right one (#267):
 
 | Answer | Verdict |
 |---|---|
-| Declare **Personal info** | Over-declares. We collect no Name/Email/Address *as such* — no field parses one out — and those sub-types invite scrutiny we would then have to answer for |
-| Keep it undeclared, gated on client-side redaction | Solves a problem we do not have, at the cost of a real product change |
+| Declare **Personal info** | **Genuinely unresolved — do not read this table as ruling it out.** No field parses a name out, and those sub-types invite scrutiny; but a name an operator types *is* received, and the type below explicitly does not absorb it. This is the live question |
+| Keep it undeclared, gated on client-side redaction | The redaction gate is a real product change. Worth it only if the answer above turns out to be "declare", and you would rather not |
 | **Declare `note` as `App activity → Other user-generated content`** | **Right type for the note itself** — Play defines it as "user bios, notes, or **open-ended responses**". Does **not** by itself dispose of the Personal-info question; see the limits below |
 
 **This narrows the question; it does not settle it, and an earlier draft of this paragraph claimed it
@@ -229,11 +229,14 @@ the single most expensive way to get this wrong:
     `note` may carry personal details, so this row depends on the OPEN question above. It cannot be
     transcribed either way until that is settled.
 
-- **Whatever #267 decides, re-type `note` everywhere in THIS file in the same pass.** It is currently
-  declared **Messages** in three places — the persistence table, the Console answer table's "Data
-  types" row, and the scope table's "Collected" row — and the App activity entry above describes only
-  `reasonId`/`surface`. Following this checklist literally would therefore leave `note` typed as a
-  message even after deciding it is an open-ended response. Grep for it; do not fix one and stop.
+- **Whatever #267 decides, re-type `note` in EVERY declaration-bearing table, both files, same pass.**
+  It is currently **Messages** in three places here — the persistence table, the Console answer
+  table's "Data types" row, and the scope table's "Collected" row — and in `distribution.md` the
+  **App activity** per-type row (`:220`) describes only `reasonId`/`surface`, so it would need an
+  `Other user-generated content` entry too. Neither the App activity bullet above nor a "this file"
+  sweep reaches all of them: a PR could follow this checklist literally and still ship `note` typed as
+  a message in one table and absent from another. **Grep `note` across both files; do not fix one and
+  stop.** This checklist has been incomplete four times now — assume it is again.
 
   *(This list has been wrong twice. The first draft named two rows; the second named three and
   omitted **App activity** — the row gate 1's own declaration had just created — while quoting line
