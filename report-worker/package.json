@@ -5,6 +5,9 @@
   "description": "Receives opt-in AI-content reports from Relais (#258). See README.md.",
   "license": "AGPL-3.0-or-later",
   "type": "module",
+  "engines": {
+    "node": ">=22.0.0"
+  },
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
@@ -12,9 +15,9 @@
     "deploy": "wrangler deploy"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "^4.20260101.0",
+    "@cloudflare/workers-types": "^5.20260801.1",
     "typescript": "^5.7.0",
     "vitest": "^3.0.0",
-    "wrangler": "^3.100.0"
+    "wrangler": "^4.0.0"
   }
 }
