@@ -124,14 +124,45 @@ repeat one back. That does not touch the rows above, but it does put a question 
 which `distribution.md`'s "Personal identifiers / credentials" row (`:218`) now carries as
 **unresolved** rather than as a settled *not collected*.
 
-The two candidate answers are (a) declare **Personal info → optional**, or (b) keep it undeclared
-because the field is not *intended* to collect it. **(b) does not follow from a UI warning alone.** A
-"don't include personal details" line asks for a behavior it cannot enforce: the excerpt is model
-output the user did not write, and a note is free text. Keeping the type undeclared needs an actual
-exclusion or redaction guarantee in the client, not an instruction — absent that, (a) is the
-defensible answer. Either way this is a **product change plus a policy call, not a doc edit**, it
-lands in the same PR as the send path, and `distribution.md:218` is transcribable only once it is
-settled.
+**Researching this turned up a second, separate question, and earlier drafts of this block kept
+running the two together — first as a false dichotomy, then by presenting the answer to Q2 as if it
+were a third answer to Q1. They are different questions with different confidence (#267):**
+
+**Q1 — must `Personal info` be declared?** *Genuinely open. Nothing below leans it either way.*
+
+| Answer | Note |
+|---|---|
+| Declare it | No field parses a name out, and those sub-types invite scrutiny — but a name an operator types **is** received, and Q2's type explicitly does not absorb it |
+| Keep it undeclared, gated on client-side redaction | The redaction gate is a real product change. Worth it only if you land on "declare" and would rather not |
+
+This is a judgement call about how likely operators are to put personal details in a moderation note.
+It is **JD's**, and the research below does not decide it.
+
+**Q2 — is `note` typed correctly today?** *Probably not, and this part is well-supported.* The table
+above types it **Messages** alongside `excerpt`. Play has a type defined as "user bios, notes, or
+**open-ended responses**" — `App activity → Other user-generated content` — which describes a
+moderation note, while "message to or from someone" does not. `App activity` is already declared here
+for `reasonId`/`surface`. Q2 stands whichever way Q1 goes.
+
+**Why Q2 does not answer Q1** — the tempting shortcut is "the note is `Other user-generated content`,
+so personal details typed into it are covered." An earlier draft of this block took exactly that
+shortcut. Two reasons it does not hold:
+
+- Play's *"You do not need to declare collection or sharing unless data is **actually collected**
+  and/or shared"* says **when** a declaration is owed. It is not a ruling that a name typed into a
+  free-text box is uncollected. Once the report reaches us, whatever is in it is collected.
+- "Other user-generated content" is defined as content *"not listed here, **or in any other
+  section**."* Name, Email address and Address **are** listed elsewhere. So that type is not a
+  catch-all that absorbs personal details typed into it — its own definition excludes them.
+
+So Q1 is a judgement call and Q2 is a typing correction, and answering one leaves the other standing.
+
+While checking Q2, confirm the exact **Messages** sub-type label in the Console too: the Android
+developer taxonomy says **"Other messages"** where this runbook says **"Other in-app messages"**.
+
+Neither question is a doc edit — Q1 is JD's call, Q2 is a policy interpretation that is
+well-supported but not a quoted ruling. Both land in the same PR as the send path, and
+`distribution.md:218` is transcribable only once Q1 is settled. Reasoning and sources: **#267**.
 
 **The rate-limit identifier counts too, and it is not part of the report.** The Worker derives a
 salted SHA-256 of `cf-connecting-ip` and retains it in KV to link a caller's requests, on a one-hour
@@ -199,6 +230,15 @@ the single most expensive way to get this wrong:
   - `:218`, personal identifiers / credentials — **answer not yet decided.** Free-text `excerpt` /
     `note` may carry personal details, so this row depends on the OPEN question above. It cannot be
     transcribed either way until that is settled.
+
+- **Whatever #267 decides, re-type `note` in EVERY declaration-bearing table, both files, same pass.**
+  It is currently **Messages** in three places here — the persistence table, the Console answer
+  table's "Data types" row, and the scope table's "Collected" row — and in `distribution.md` the
+  **App activity** per-type row (`:220`) describes only `reasonId`/`surface`, so it would need an
+  `Other user-generated content` entry too. Neither the App activity bullet above nor a "this file"
+  sweep reaches all of them: a PR could follow this checklist literally and still ship `note` typed as
+  a message in one table and absent from another. **Grep `note` across both files; do not fix one and
+  stop.** This checklist has been incomplete four times now — assume it is again.
 
   *(This list has been wrong twice. The first draft named two rows; the second named three and
   omitted **App activity** — the row gate 1's own declaration had just created — while quoting line
