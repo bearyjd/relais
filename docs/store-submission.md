@@ -77,15 +77,30 @@ collection.
 
 **Transcribe this once the send path ships — not before, since nothing transmits today:**
 
+**Derive the declaration from what the Worker actually persists, not from "the report".** Three
+review rounds each found this table under-declaring, because it was written from the *idea* of a
+report rather than from the KV write. The record is `{...report, receivedAt}` —
+`report-worker/src/index.ts` — which is **seven fields**, plus a second key the rate limiter writes:
+
+| Field actually stored | Play data type to declare |
+|---|---|
+| `excerpt` — the flagged model output | **Messages → Other in-app messages** |
+| `note` — operator's free text | **Messages → Other in-app messages** |
+| `reasonId` — which category the operator chose | **App activity → App interactions** |
+| `surface` — which in-app surface it came from (`chat` / `gallery_chat`) | **App activity → App interactions** |
+| `modelId`, `backend` — what produced the output | Not a Play *user* data type (app configuration), but disclose it in the privacy policy for completeness |
+| `receivedAt` — server timestamp | Part of the record; no separate type |
+| `rl:<salted-hash>` — the rate-limit identifier, separate KV key | **Device or other IDs** (see below) |
+
 | Console question | Answer once delivery ships |
 |---|---|
 | Does your app collect or share any of the required user data types? | **Yes** |
-| What is collected | The **report contents only** — but name the data **type**, not just the payload: the flagged excerpt is model output the operator was reading in chat, so declare it under **Messages → Other in-app messages** (the same type `distribution.md` already maps completions to). Plus the operator's optional free-text note, which is also Other in-app messages, and the model id / backend that produced it |
-| Required or optional? | **Optional** — default off, chosen per report |
-| Purpose | **App functionality** (content moderation), per the AI-Generated Content policy's "use reports to inform moderation" |
+| Data types | **Messages → Other in-app messages**, **App activity → App interactions**, **Device or other IDs** — all three, per the table above |
+| Required or optional? | **Optional** for every one — default off, chosen per report |
+| Purpose | Report contents and interactions: **App functionality** (content moderation), per the AI-Generated Content policy's "use reports to inform moderation". The identifier: **fraud prevention, security and compliance** |
 | Is it shared with third parties? | **No** — it reaches the developer's own endpoint and goes no further |
 | Encrypted in transit? | **Yes** — HTTPS to the Worker |
-| Can users request deletion? | **Yes** — reports expire after 180 days; ad-hoc deletion is by request to the contact email |
+| Can users request deletion? | **Yes** — reports expire after 180 days, the identifier after one hour; ad-hoc deletion by request to the contact email |
 
 **Scope the Yes precisely — it is narrower than the app, and wider than it first looks.**
 
@@ -129,8 +144,11 @@ the single most expensive way to get this wrong:
   draft of this list; caught by `/codex review`.)*
 - `docs/privacy-policy.md` **and** its `.html` twin (bump the effective date) — must cover the
   rate-limit identifier as well as the report contents
-- `docs/distribution.md` — §"Play Data Safety form" overview row `:206` **and** the Messages
-  per-type row `:214`; both carry markers pointing here
+- `docs/distribution.md` — **three** rows, not one: the §"Play Data Safety form" overview `:206`, the
+  **Messages** per-type row `:214`, and the **Device IDs** row `:217` (currently "Not read, not
+  transmitted", which the rate-limit hash contradicts). Each carries a marker pointing here.
+  *(The first draft of this list named only two; a checklist that enumerates rows is only as good as
+  its enumeration — derive it by grepping the per-type table, not from memory.)*
 - `report-worker/README.md` — same correction
 
 **Open and blocking #258:** *where* an opt-in send delivers to. There is no VentouxLabs endpoint

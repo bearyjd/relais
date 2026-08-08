@@ -207,14 +207,17 @@ traceable to code; the release workflow's permission gate enforces the playsafe 
 | Is all of the user data collected by your app encrypted in transit? | **Yes** (for what little transits) | Model downloads + HF search/resolve are HTTPS (`RelaisHuggingFace`, `ImageModelProvisioner`, `EmbeddingModelProvisioner`, `DownloadWorker`); allowlist/release checks are HTTPS; webhooks are HTTPS-only unless the operator explicitly allowlists a host (`WebhookGuard`, `RelaisConfig.KEY_WEBHOOK_ALLOWLIST`); LAN API offers HTTPS :8443 (self-signed) alongside loopback HTTP :8080. |
 | Do you provide a way for users to request that their data is deleted? | **Data not collected** (n/a) | Nothing exists server-side; on-device data is deleted via in-app controls / Clear data / uninstall — stated in the privacy policy. |
 
-**Per-data-type notes a reviewer may probe (all "not collected"):**
+**Per-data-type notes a reviewer may probe.** All "not collected" **today**; three rows below —
+Messages, App activity, Device IDs — flip to *optional collection* when #258's report send ships, and
+each says so inline. Do not read this heading as covering the whole table after that lands:
 
 | Data type | Why "not collected" holds |
 |---|---|
 | Messages / "Other in-app messages" | ⚠ **This is the type #258's report send collects** — a flagged excerpt is model output, so once the client send path ships this row becomes "optional collection, moderation purpose" rather than "not collected". See `store-submission.md` gate 1; change it in the SAME PR as the send path. Until then: prompts + completions processed in-process by the resident LiteRT-LM engine (`RelaisEngine`); never transmitted off-device by the app. Clients on the operator's LAN receive responses over the operator's own network — the app is the server, not a collector. |
 | Audio / Photos+videos | `RECORD_AUDIO`/`CAMERA` feed on-device transcription (`/v1/audio/transcriptions` bridges to the local engine) and on-device vision; no upload path exists in the code. |
 | Personal identifiers / credentials | The HF token is user-provided, stored in `EncryptedSharedPreferences` (`RelaisConfig`), sent solely as a Bearer to `huggingface.co` on downloads the user initiates (one-way auth-drop on redirect, `ImageModelProvisioner`/`SkillSourceFetcher` patterns). The node access key never leaves the device except displayed/shared by the operator. |
-| Device IDs | Not read, not transmitted. |
+| Device IDs | Not read, not transmitted. ⚠ **Changes with #258**: the report Worker retains a salted SHA-256 of `cf-connecting-ip` for one hour to rate-limit an unauthenticated endpoint. Play counts a retained stable identifier as collection regardless of reversibility, so this row becomes "optional collection, fraud-prevention purpose" in the SAME PR as the client send path. See `store-submission.md` gate 1. |
+| App activity / "App interactions" | Not collected today. ⚠ **Becomes collected with #258**: a sent report carries `reasonId` (which category the operator chose) and `surface` (which in-app surface the output came from), both of which describe how the user interacted with the app. Declare as optional, app-functionality purpose, in the SAME PR as the client send path. *(This row did not exist until 2026-08-08 — the type was introduced by gate 1's declaration and had no entry here, which is exactly the gap a per-type table is supposed to close.)* |
 | Web browsing / location / contacts / calendar / health / financial | No code paths; `READ_CALENDAR` is stripped from the playsafe manifest (`src/playsafe/AndroidManifest.xml`, CI-gated). |
 
 **Egress inventory backing the "No" (complete, from source sweep 2026-07-07):** `huggingface.co`
