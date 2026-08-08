@@ -211,7 +211,7 @@ traceable to code; the release workflow's permission gate enforces the playsafe 
 
 | Data type | Why "not collected" holds |
 |---|---|
-| Messages / "Other in-app messages" | Prompts + completions processed in-process by the resident LiteRT-LM engine (`RelaisEngine`); never transmitted off-device by the app. Clients on the operator's LAN receive responses over the operator's own network — the app is the server, not a collector. |
+| Messages / "Other in-app messages" | ⚠ **This is the type #258's report send collects** — a flagged excerpt is model output, so once the client send path ships this row becomes "optional collection, moderation purpose" rather than "not collected". See `store-submission.md` gate 1; change it in the SAME PR as the send path. Until then: prompts + completions processed in-process by the resident LiteRT-LM engine (`RelaisEngine`); never transmitted off-device by the app. Clients on the operator's LAN receive responses over the operator's own network — the app is the server, not a collector. |
 | Audio / Photos+videos | `RECORD_AUDIO`/`CAMERA` feed on-device transcription (`/v1/audio/transcriptions` bridges to the local engine) and on-device vision; no upload path exists in the code. |
 | Personal identifiers / credentials | The HF token is user-provided, stored in `EncryptedSharedPreferences` (`RelaisConfig`), sent solely as a Bearer to `huggingface.co` on downloads the user initiates (one-way auth-drop on redirect, `ImageModelProvisioner`/`SkillSourceFetcher` patterns). The node access key never leaves the device except displayed/shared by the operator. |
 | Device IDs | Not read, not transmitted. |

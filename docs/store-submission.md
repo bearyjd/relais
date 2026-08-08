@@ -80,16 +80,29 @@ collection.
 | Console question | Answer once delivery ships |
 |---|---|
 | Does your app collect or share any of the required user data types? | **Yes** |
-| What is collected | The **report contents only**: the flagged model output, the operator's optional note, and the model/backend that produced it |
+| What is collected | The **report contents only** — but name the data **type**, not just the payload: the flagged excerpt is model output the operator was reading in chat, so declare it under **Messages → Other in-app messages** (the same type `distribution.md` already maps completions to). Plus the operator's optional free-text note, which is also Other in-app messages, and the model id / backend that produced it |
 | Required or optional? | **Optional** — default off, chosen per report |
 | Purpose | **App functionality** (content moderation), per the AI-Generated Content policy's "use reports to inform moderation" |
 | Is it shared with third parties? | **No** — it reaches the developer's own endpoint and goes no further |
 | Encrypted in transit? | **Yes** — HTTPS to the Worker |
 | Can users request deletion? | **Yes** — reports expire after 180 days; ad-hoc deletion is by request to the contact email |
 
-**Everything else on this page stays "not collected".** The Yes above covers the report payload and
-nothing more — chat content, prompts, models, audio and the HF token are all still on-device or
-user-directed. Do not let one Yes turn the whole form into a Yes.
+**Scope the Yes precisely — it is narrower than the app, and wider than it first looks.**
+
+An earlier draft of this section said "chat content stays not-collected", which was **wrong in the
+same paragraph that declares the report contents**: the flagged excerpt *is* chat content — model
+output the operator was reading — so a report transmits it to the developer. Caught by
+`/codex review`; a guard written against over-declaring produced an under-declaration on the one type
+the payload actually carries.
+
+| | |
+|---|---|
+| **Collected** (optional) | **Only what a report carries, and only when one is sent**: the flagged excerpt and the operator's note, both **Messages → Other in-app messages**, plus the model id / backend |
+| **Still not collected** | Chat content the operator never reports · prompts · audio in or out · photos · the HF token (user-directed to `huggingface.co`, never to us) · device ids |
+
+The distinction is **reported vs. unreported**, not chat vs. non-chat. Unreported conversations never
+leave the device, which is why the type is declared as *optional* rather than required — but the type
+itself must be declared, because a sent report contains it.
 
 **Land these together, in the same PR as the client send path** — the declaration becoming false is
 the single most expensive way to get this wrong:
