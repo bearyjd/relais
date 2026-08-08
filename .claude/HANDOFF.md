@@ -6,7 +6,77 @@ uncommitted section was once destroyed by `git reset --hard` and had to be rebui
 
 ---
 
-## 2026-08-08 (latest) — ⏩ START HERE. **Gate 1 is merged and Codex-clean. The Worker has still never served a request.**
+## 2026-08-08 (final) — ⏩ START HERE. **The Worker was undeployable; that is fixed. It now needs one interactive login.**
+
+### Do these in order
+
+1. **Deploy the Worker.** Everything else is ready; this needs **JD's Cloudflare credentials**, which
+   are the one thing an agent cannot supply — none are in the environment and `wrangler login` is a
+   browser OAuth flow. In a Claude Code session, **`! npx wrangler login`** in the prompt
+   authenticates in-session, and the agent can then drive namespace → secret → deploy → the curl
+   checks unattended.
+   **In the dashboard, also turn on *Always Use HTTPS* for the zone.** The Data Safety form answers
+   "encrypted in transit: yes" for that leg and `index.ts` never inspects the scheme, so a plain-HTTP
+   route would falsify a filed declaration without touching a line of code.
+2. **Settle #267** — whether free-text `excerpt`/`note` make **Personal info** a declared type. It
+   blocks transcribing `distribution.md:218`, and it is a product + policy call, not a doc edit.
+3. **Then** the client send path + privacy policy + all the Data Safety updates, in ONE PR.
+
+**#122 is blocked behind all of that, and targetSdk 35 is submittable only until 2026-08-30.**
+
+### The Worker could not start at all. #268 fixed it. (`a8a96489`)
+
+Attempting the deploy found that `report-worker` had been **undeployable since it merged**:
+
+```
+service core:user:relais-report: Uncaught TypeError: Incorrect type for map entry
+'MAX_BODY_BYTES': the provided value is not of type 'function or ExportedHandler'
+```
+
+workerd treats every named export of the entry module as a service entrypoint and requires each to
+be a function or `ExportedHandler`. `index.ts` exported four numeric size constants. Not a bad
+response — **no response, ever.**
+
+Nothing could see it: the 24 tests import the module into **Node**, where a number export is just a
+number; `wrangler deploy --dry-run` **bundles without booting the runtime** and reported success;
+two `/codex` passes read it as source. And **`report-worker` had no CI at all**, so "24 green tests"
+meant only that someone had once run them by hand.
+
+Constants now live in `limits.ts`; `index.ts` exports only functions and the default handler. A
+module-shape test and a new `report-worker.yml` CI job pin it — the job **boots workerd and issues a
+request**, which is the only step that can see this class of defect, and needs no Cloudflare account.
+Both gates were mutation-tested: one value export reintroduced turns each red.
+
+### Gate 1 is verified by observation now, not just by review
+
+Running the Worker locally (`wrangler dev --local`, no credentials needed — runbook in
+`report-worker/README.md` §"Verify locally first") confirmed what ten rounds of review could only
+assert:
+
+| Declared in gate 1 | Observed |
+|---|---|
+| record is `{...report, receivedAt}` | **exactly 7 fields** |
+| `rl:` value is a count, not a flag | `10`, `1`, `5` |
+| counter increments *before* parsing | caller with 3 rejected + 1 accepted reads **4**, against **1** stored report |
+| identifier is `sha256(salt + ":" + ip)` | key re-derived independently in Python resolved |
+
+Also confirmed: `202`/`400`/`405` (the three documented checks), `404`/`415`/`413`, the limiter
+cutting at exactly 10 per caller with callers independent, and `503 storage not configured` from the
+committed config. **The one thing local cannot verify is TLS** — that is the zone setting in step 1.
+
+### Everything else
+
+- **#260** (draft) — the capture half: Codex-reviewed **0 findings**, device-verified on comet.
+  Correctly unmerged; capture alone does not clear gate 1.
+- Gate 1 itself (#265, `29bab687`) took **ten `/codex` rounds**; rounds 5-10 each found the defect
+  inside the previous round's fix. Every one had the same shape: **an accurate local fact
+  extrapolated one step too far.** Do not treat "I fixed the finding" as "the section is correct."
+- Merged this session: **#265** `29bab687` · **#266** `a31a15c1` · **#268** `a8a96489`.
+  Filed: **#267**.
+
+---
+
+## 2026-08-08 (later) — Gate 1 is merged and Codex-clean. (superseded above — the Worker has since served requests)
 
 ### Do these in order
 
