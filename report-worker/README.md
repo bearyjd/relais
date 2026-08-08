@@ -162,11 +162,13 @@ That last command also re-derives the identifier independently: if the key it bu
 
 ## Verify a deploy
 
-Set `BASE` to your route (`BASE=https://report.ventouxlabs.com`), or to `http://127.0.0.1:8787` to
-run these against the local server from the section above.
+These drive `$BASE`, so they serve both targets. Set it to whichever you are checking — and **skip
+that line entirely if you already set `BASE` for the local run above**, or you will point these at
+the wrong server.
 
 ```bash
-BASE=https://<your-route>
+BASE=https://report.ventouxlabs.com   # your deployed route
+# BASE=http://127.0.0.1:8787          # the local server from the section above
 
 # Expect 202
 curl -si "$BASE/report" -H 'content-type: application/json' \
