@@ -21,7 +21,15 @@
  * retained off-device as collection regardless of reversibility, so the hash must be DECLARED
  * (Device or other IDs, optional, fraud-prevention purpose) — see docs/store-submission.md gate 1.
  * The hash is still worth having; it just buys a better posture, not an absent one.
+ *
+ * EXPORTS. The Workers runtime treats every named export of this module as a service entrypoint and
+ * requires each to be a function or an `ExportedHandler`. Exporting a plain value here — a size
+ * constant, a Set, a config object — makes workerd refuse to start the Worker at all, which no unit
+ * test and no `--dry-run` will catch. Values live in `limits.ts`; keep this module's exports to
+ * functions and the default handler.
  */
+
+import { MAX_BODY_BYTES, MAX_EXCERPT, MAX_IDENT, MAX_NOTE } from './limits';
 
 export interface Env {
   /** KV namespace holding submitted reports and rate-limit counters. */
@@ -29,34 +37,6 @@ export interface Env {
   /** Secret salt for rate-limit IP hashing. Rotating it just resets in-flight windows. */
   RATE_LIMIT_SALT: string;
 }
-
-/**
- * Field caps. These mirror the client's own limits (`ContentReportShaping.kt`) so a well-behaved app
- * can never trip them — they exist to bound a hostile caller, not to validate our own UI.
- */
-export const MAX_EXCERPT = 2000;
-export const MAX_NOTE = 500;
-export const MAX_IDENT = 200;
-
-/**
- * Hard cap on the request body, enforced on the stream before any parsing.
- *
- * **Must stay above the largest schema-valid report, or the transport rejects reports the schema
- * accepts.** An 8 KiB cap did exactly that: the field caps above count UTF-16 code units, while
- * this counts bytes, so a CJK or emoji report well inside every field limit was refused with 413
- * and never reached the maintainer — silently breaking the operators this feature exists for.
- *
- * Sized from the schema rather than guessed. Worst case is a JSON serializer that escapes every
- * character as `\uXXXX`, 6 bytes per UTF-16 unit:
- *
- *   (2000 excerpt + 500 note + 200 modelId + 200 backend + 64 reasonId + 64 surface) * 6
- *     ≈ 18.2 KB, plus structural overhead.
- *
- * 32 KiB clears that with room to spare and is still small enough to bound abuse.
- * `maximum valid report fits under the transport cap` in the tests pins this relationship, so the
- * two limits cannot drift apart again.
- */
-export const MAX_BODY_BYTES = 32 * 1024;
 
 /** Reason ids the client can send. Anything else is a malformed or forged report. */
 const REASONS = new Set(['harmful', 'sexual', 'hate', 'violent', 'misinformation', 'other']);

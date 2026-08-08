@@ -92,6 +92,51 @@ invocations.
 answer is a property of the Cloudflare configuration, not of this code. A plain-HTTP route would make
 a filed declaration false without changing a line of the Worker.
 
+## Verify locally first — no Cloudflare account needed
+
+**Do this before deploying.** It runs the real Worker under the real runtime (`workerd`) with local
+KV, so it catches things no unit test can. It is how the "Incorrect type for map entry" bug was
+found: the Worker could not start *at all*, while this repo's suite was green and
+`wrangler deploy --dry-run` passed. Neither boots the runtime — `--dry-run` only bundles, and vitest
+imports the module into Node, where a value export is just a value.
+
+```bash
+cd report-worker && npm ci
+
+# The committed wrangler.toml ships the KV block commented out (see the note there), so make a
+# local-only config that binds it. Both files are gitignored.
+sed 's/^# \[\[kv_namespaces\]\]/[[kv_namespaces]]/; s/^# binding = "REPORTS"/binding = "REPORTS"/; s/^# id = .*/id = "local"/' \
+  wrangler.toml > wrangler.local.toml
+echo 'RATE_LIMIT_SALT = "local-dev-only"' > .dev.vars
+
+npx wrangler dev -c wrangler.local.toml --port 8787 --local
+```
+
+Then run the curl checks below against `http://127.0.0.1:8787`. Everything works locally except real
+TLS, so the "encrypted in transit" answer is the one thing this cannot verify — that is a Cloudflare
+zone setting, see the deploy step above.
+
+Worth exercising beyond the three checks, since these are the behaviors the Data Safety declaration
+describes and they are cheap to confirm here:
+
+```bash
+# The limiter cuts at 10 per caller, and callers are independent.
+for i in $(seq 1 12); do
+  curl -s -o /dev/null -w "%{http_code} " -X POST http://127.0.0.1:8787/report \
+    -H 'content-type: application/json' -H 'cf-connecting-ip: 203.0.113.7' \
+    -d '{"reasonId":"other","surface":"chat","excerpt":"x"}'
+done   # => ten 202s, then 429 429
+
+# What actually landed. The report record must be exactly seven fields, and each `rl:` value must
+# be a COUNT, not a flag — docs/store-submission.md gate 1 declares both.
+npx wrangler kv key list --binding REPORTS --local -c wrangler.local.toml
+```
+
+Running the limiter checks and then reading the `rl:` counters is also the cheapest way to confirm a
+claim gate 1 makes and the tests do not: the counter increments *before* parsing, so malformed and
+oversized bodies count against a caller even though no report is stored. Send a few `400`s and watch
+the counter outrun the number of `report:` keys.
+
 ## Verify a deploy
 
 ```bash

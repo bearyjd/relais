@@ -7,15 +7,8 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import worker, {
-  type Env,
-  MAX_BODY_BYTES,
-  MAX_EXCERPT,
-  MAX_IDENT,
-  MAX_NOTE,
-  parseReport,
-  readBoundedBody,
-} from './index';
+import worker, { type Env, parseReport, readBoundedBody } from './index';
+import { MAX_BODY_BYTES, MAX_EXCERPT, MAX_IDENT, MAX_NOTE } from './limits';
 
 /** Builds a stream that delivers `parts` as separate chunks, like a real chunked request. */
 function streamOf(...parts: Uint8Array[]): ReadableStream<Uint8Array> {
@@ -210,5 +203,32 @@ describe('transport cap vs schema caps', () => {
     const maxUnits = MAX_EXCERPT + MAX_NOTE + MAX_IDENT * 2 + 64 + 64;
     const worstCaseBytes = maxUnits * 6 + 200; // + structural overhead
     expect(worstCaseBytes).toBeLessThan(MAX_BODY_BYTES);
+  });
+});
+
+describe('module shape (what the Workers runtime will accept)', () => {
+  // The runtime treats every named export of the entry module as a service entrypoint and requires
+  // each to be a function or an ExportedHandler. Four `export const` size caps here once made
+  // workerd refuse to start the Worker outright — "Incorrect type for map entry 'MAX_BODY_BYTES'"
+  // — so the Worker was undeployable while this suite was fully green and `deploy --dry-run`
+  // passed. Neither catches it: vitest imports the module into Node, where a number export is just
+  // a number, and --dry-run bundles without ever booting the runtime.
+  it('exports nothing but functions and the default handler', async () => {
+    const mod: Record<string, unknown> = await import('./index');
+
+    for (const [name, value] of Object.entries(mod)) {
+      if (name === 'default') continue;
+      expect(
+        typeof value,
+        `export "${name}" is a ${typeof value}; workerd only accepts functions or ExportedHandlers ` +
+          `as named exports. Move plain values to limits.ts.`,
+      ).toBe('function');
+    }
+  });
+
+  it('default-exports a handler object with a fetch method', async () => {
+    const mod = await import('./index');
+    expect(typeof mod.default).toBe('object');
+    expect(typeof mod.default.fetch).toBe('function');
   });
 });
