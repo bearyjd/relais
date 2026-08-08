@@ -12,8 +12,19 @@ This exists to satisfy the *"to developers"* half of Play's
 does not.
 
 **Nothing sends here by default.** The app records reports on-device; transmission is a per-report
-action the operator chooses. That is what keeps the baseline Data Safety answer ("collects nothing")
-true, and it is why the default must stay off.
+action the operator chooses.
+
+**Default-off does NOT keep the Data Safety answer at "collects nothing".** An earlier version of
+this file claimed it did. Wrong: a report arriving here is transmitted off-device to the
+**first-party developer**, which Google counts as collection. Default-off makes that collection
+*optional*, not absent — Play's user-initiated carve-out covers **sharing to third parties**, which
+is not what this is. Once the client send path ships, the form answers **Yes** with the report
+contents declared as optional collection for app functionality. Full wording in
+[`docs/store-submission.md`](../docs/store-submission.md) gate 1.
+
+The default still matters — optional collection is a materially better posture than mandatory, and
+it is what lets everything else on the form stay "not collected". It just is not the same as
+collecting nothing.
 
 ## What it stores, and what it does not
 

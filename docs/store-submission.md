@@ -58,11 +58,46 @@ is usually also the user, a purely local record is self-reporting. *(Raised by `
 | "to developers" | Each report offers an explicit, per-report **send to the maintainer**, chosen by the operator. |
 | "use reports to inform moderation" | Reports are reviewable in-app (`CONFIGURE › REPORTED OUTPUT`), so the operator can act on them whether or not one is sent. |
 
-**This changes the Data Safety answers, and the change must be declared honestly.** With a send path
-the app can transmit user-authored content to the developer. Keep the default **off** and the
-transmission **per-report and user-initiated**, so the baseline stays "collects nothing" and the
-optional path is disclosed rather than hidden. Update `distribution.md` §"Play Data Safety form" when
-it lands — do not leave the "no developer server, nothing transmitted" wording standing unqualified.
+### ⚠ The send path FLIPS the Data Safety answer to "Yes". Default-off does not preserve it.
+
+An earlier draft of this section said keeping the send **default-off, per-report and user-initiated**
+lets the baseline stay "collects nothing". **That is wrong, and it would have produced a false
+declaration.** Corrected by `/codex review`, which is worth quoting because the distinction is easy
+to get backwards:
+
+> Sending a report to VentouxLabs transmits it off-device to the **first-party developer**, which
+> Google defines as data collection; default-off only makes that collection *optional*. The
+> user-initiated exception is for **sharing to a third party**, not first-party collection.
+
+That is the trap: Play's user-initiated carve-out is about *sharing*, and everywhere else in this
+runbook Relais relies on it correctly (HF search queries, webhooks — all user-directed traffic to
+**third parties**, with no developer intermediary). A report sent to VentouxLabs is the one case
+where **we are the recipient**, so the carve-out does not apply and optional collection is still
+collection.
+
+**Transcribe this once the send path ships — not before, since nothing transmits today:**
+
+| Console question | Answer once delivery ships |
+|---|---|
+| Does your app collect or share any of the required user data types? | **Yes** |
+| What is collected | The **report contents only**: the flagged model output, the operator's optional note, and the model/backend that produced it |
+| Required or optional? | **Optional** — default off, chosen per report |
+| Purpose | **App functionality** (content moderation), per the AI-Generated Content policy's "use reports to inform moderation" |
+| Is it shared with third parties? | **No** — it reaches the developer's own endpoint and goes no further |
+| Encrypted in transit? | **Yes** — HTTPS to the Worker |
+| Can users request deletion? | **Yes** — reports expire after 180 days; ad-hoc deletion is by request to the contact email |
+
+**Everything else on this page stays "not collected".** The Yes above covers the report payload and
+nothing more — chat content, prompts, models, audio and the HF token are all still on-device or
+user-directed. Do not let one Yes turn the whole form into a Yes.
+
+**Land these together, in the same PR as the client send path** — the declaration becoming false is
+the single most expensive way to get this wrong:
+
+- `docs/privacy-policy.md` **and** its `.html` twin (bump the effective date)
+- `docs/distribution.md` §"Play Data Safety form" — its "no developer server; nothing is transmitted
+  to VentouxLabs" wording becomes false the moment the send path ships
+- `report-worker/README.md` — same correction
 
 **Open and blocking #258:** *where* an opt-in send delivers to. There is no VentouxLabs endpoint
 today, and standing one up is a real commitment for a project whose pitch is no cloud. Resolve this
@@ -152,8 +187,10 @@ along with the notification-listener component. What remains, and the reviewer a
 
 ### Audio-output modality (#212)
 
-`POST /v1/audio/speech` (on-device Piper/sherpa-onnx TTS) was reviewed against the form and **the
-answers above are unchanged — still "collects nothing."** Synthesis runs entirely on-device; the
+`POST /v1/audio/speech` (on-device Piper/sherpa-onnx TTS) was reviewed against the form and **adds no
+collected data type of its own.** (Phrased as a statement about TTS, not about the form as a whole —
+the report send above does change the form's overall answer, and this section must not be read as
+contradicting it.) Synthesis runs entirely on-device; the
 WAV/PCM returns over the LAN socket. It added one network host (the voice bundle downloads from
 `github.com/k2-fsa/sherpa-onnx`, SHA-256-pinned), now disclosed in the privacy policy
 §"When the app talks to the internet" item 1. "Audio files → Voice or sound recordings" does **not**
