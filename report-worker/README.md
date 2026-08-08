@@ -112,44 +112,72 @@ echo 'RATE_LIMIT_SALT = "local-dev-only"' > .dev.vars
 npx wrangler dev -c wrangler.local.toml --port 8787 --local
 ```
 
-Then run the curl checks below against `http://127.0.0.1:8787`. Everything works locally except real
-TLS, so the "encrypted in transit" answer is the one thing this cannot verify — that is a Cloudflare
-zone setting, see the deploy step above.
+In a second shell, run the checks under "Verify a deploy" below with
+`BASE=http://127.0.0.1:8787` — they are written against `$BASE` so the same three commands serve
+both local and deployed. Everything works locally except real TLS, so "encrypted in transit" is the
+one answer this cannot verify; that is a Cloudflare zone setting, see the deploy step above.
 
-Worth exercising beyond the three checks, since these are the behaviors the Data Safety declaration
+Worth exercising beyond those three, since these are the behaviors the Data Safety declaration
 describes and they are cheap to confirm here:
 
 ```bash
+BASE=http://127.0.0.1:8787
+
 # The limiter cuts at 10 per caller, and callers are independent.
 for i in $(seq 1 12); do
-  curl -s -o /dev/null -w "%{http_code} " -X POST http://127.0.0.1:8787/report \
+  curl -s -o /dev/null -w "%{http_code} " -X POST "$BASE/report" \
     -H 'content-type: application/json' -H 'cf-connecting-ip: 203.0.113.7' \
     -d '{"reasonId":"other","surface":"chat","excerpt":"x"}'
-done   # => ten 202s, then 429 429
+done; echo   # => ten 202s, then 429 429
 
-# What actually landed. The report record must be exactly seven fields, and each `rl:` value must
-# be a COUNT, not a flag — docs/store-submission.md gate 1 declares both.
-npx wrangler kv key list --binding REPORTS --local -c wrangler.local.toml
+# The counter increments BEFORE parsing, so rejected bodies count against a caller even though no
+# report is stored. Three 400s and one 202 from a fresh caller => counter 4, one report: key.
+for i in 1 2 3; do
+  curl -s -o /dev/null -X POST "$BASE/report" -H 'content-type: application/json' \
+    -H 'cf-connecting-ip: 198.51.100.5' -d '{"reasonId":"BAD","surface":"chat","excerpt":"x"}'
+done
+curl -s -o /dev/null -X POST "$BASE/report" -H 'content-type: application/json' \
+  -H 'cf-connecting-ip: 198.51.100.5' -d '{"reasonId":"other","surface":"chat","excerpt":"ok"}'
 ```
 
-Running the limiter checks and then reading the `rl:` counters is also the cheapest way to confirm a
-claim gate 1 makes and the tests do not: the counter increments *before* parsing, so malformed and
-oversized bodies count against a caller even though no report is stored. Send a few `400`s and watch
-the counter outrun the number of `report:` keys.
+Now read what actually landed. `kv key list` returns key **names only** — the claims gate 1 makes are
+about the stored **values**, so each one needs a `kv key get`:
+
+```bash
+KV="--binding REPORTS --local -c wrangler.local.toml"
+
+# The record must be exactly seven fields: the six schema fields plus receivedAt.
+KEY=$(npx wrangler kv key list $KV | python3 -c \
+  "import json,sys; print([k['name'] for k in json.load(sys.stdin) if k['name'].startswith('report:')][0])")
+npx wrangler kv key get "$KEY" $KV | python3 -m json.tool
+
+# Each rl: value must be a COUNT, not a flag. The 198.51.100.5 caller above should read 4,
+# against exactly one report: key of theirs — the counter outrunning stored reports.
+npx wrangler kv key get \
+  "rl:$(python3 -c "import hashlib; print(hashlib.sha256(b'local-dev-only:198.51.100.5').hexdigest())")" $KV
+```
+
+That last command also re-derives the identifier independently: if the key it builds resolves, then
+`callerHash` really is `sha256(salt + ":" + ip)`, which is what the declaration describes.
 
 ## Verify a deploy
 
+Set `BASE` to your route (`BASE=https://report.ventouxlabs.com`), or to `http://127.0.0.1:8787` to
+run these against the local server from the section above.
+
 ```bash
+BASE=https://<your-route>
+
 # Expect 202
-curl -si https://<your-route>/report -H 'content-type: application/json' \
+curl -si "$BASE/report" -H 'content-type: application/json' \
   -d '{"reasonId":"other","surface":"chat","excerpt":"test","note":null,"modelId":null,"backend":null}' | head -1
 
 # Expect 400 — reason id outside the allowlist
-curl -si https://<your-route>/report -H 'content-type: application/json' \
+curl -si "$BASE/report" -H 'content-type: application/json' \
   -d '{"reasonId":"nope","surface":"chat","excerpt":"test"}' | head -1
 
 # Expect 405
-curl -si https://<your-route>/report | head -1
+curl -si "$BASE/report" | head -1
 ```
 
 ## Read the reports
