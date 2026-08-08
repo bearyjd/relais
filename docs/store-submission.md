@@ -121,13 +121,17 @@ the payload actually carries.
 free text. A user can type a name, an email or an address into a note, and a flagged model output can
 repeat one back. That does not touch the rows above, but it does put a question mark over
 **Personal info** as a declared type — a category nothing in this runbook currently declares, and
-which `distribution.md`'s "Personal identifiers / credentials" row still answers *not collected*.
+which `distribution.md`'s "Personal identifiers / credentials" row (`:218`) now carries as
+**unresolved** rather than as a settled *not collected*.
 
-The two defensible answers are (a) declare **Personal info → optional**, or (b) keep it undeclared
-and put a "don't include personal details" line in the report UI so the field is not *intended* to
-collect it. (b) is cheaper and matches how the screen is meant to be used, but it is a **product
-change plus a policy answer, not a doc edit**, so it is not settled here. Whichever way it goes, it
-lands in the same PR as the send path, and `distribution.md:218` changes with it.
+The two candidate answers are (a) declare **Personal info → optional**, or (b) keep it undeclared
+because the field is not *intended* to collect it. **(b) does not follow from a UI warning alone.** A
+"don't include personal details" line asks for a behavior it cannot enforce: the excerpt is model
+output the user did not write, and a note is free text. Keeping the type undeclared needs an actual
+exclusion or redaction guarantee in the client, not an instruction — absent that, (a) is the
+defensible answer. Either way this is a **product change plus a policy call, not a doc edit**, it
+lands in the same PR as the send path, and `distribution.md:218` is transcribable only once it is
+settled.
 
 **The rate-limit identifier counts too, and it is not part of the report.** The Worker derives a
 salted SHA-256 of `cf-connecting-ip` and retains it in KV to link a caller's requests, on a one-hour
