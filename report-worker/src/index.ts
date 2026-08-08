@@ -14,7 +14,13 @@
  * PRIVACY. Reports are user-authored content the operator chose to send. We store the report and
  * nothing else: **no raw IP is ever persisted.** The rate limiter needs to distinguish callers, so
  * it keys on a salted SHA-256 of the IP, which is not reversible to an address and expires with the
- * window. This is what lets the privacy policy say the only thing collected is the report itself.
+ * window.
+ *
+ * **Do not over-read that.** An earlier version of this comment claimed it let the privacy policy say
+ * the only thing collected is the report itself. It does not: Play counts a stable identifier
+ * retained off-device as collection regardless of reversibility, so the hash must be DECLARED
+ * (Device or other IDs, optional, fraud-prevention purpose) — see docs/store-submission.md gate 1.
+ * The hash is still worth having; it just buys a better posture, not an absent one.
  */
 
 export interface Env {
@@ -167,9 +173,17 @@ async function callerHash(ip: string, salt: string): Promise<string> {
 }
 
 /**
- * Fixed-window rate limit. Not exact under concurrency — two simultaneous requests can both read the
- * same count — but a caller racing themselves to send an 11th report is not the threat this guards
- * against, and an exact limiter would need a Durable Object for no practical gain.
+ * Rate limit: a per-caller counter on a **renewing** TTL, not a fixed window. `put()` re-sets
+ * `expirationTtl` on every request this counts, so the window only lapses after an hour with no
+ * counted request — a caller must go idle to get their budget back. Requests already over the limit
+ * return before `put()` and so do not extend it.
+ *
+ * That renewal is also why the identifier's retention is not "one hour" on the Data Safety form; see
+ * `docs/store-submission.md` gate 1, which got this wrong twice.
+ *
+ * Not exact under concurrency — two simultaneous requests can both read the same count — but a
+ * caller racing themselves to send an 11th report is not the threat this guards against, and an
+ * exact limiter would need a Durable Object for no practical gain.
  */
 async function overRateLimit(env: Env, ip: string): Promise<boolean> {
   const key = `rl:${await callerHash(ip, env.RATE_LIMIT_SALT)}`;

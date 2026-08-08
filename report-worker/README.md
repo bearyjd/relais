@@ -12,18 +12,32 @@ This exists to satisfy the *"to developers"* half of Play's
 does not.
 
 **Nothing sends here by default.** The app records reports on-device; transmission is a per-report
-action the operator chooses. That is what keeps the baseline Data Safety answer ("collects nothing")
-true, and it is why the default must stay off.
+action the operator chooses.
+
+**Default-off does NOT keep the Data Safety answer at "collects nothing".** An earlier version of
+this file claimed it did. Wrong: a report arriving here is transmitted off-device to the
+**first-party developer**, which Google counts as collection. Default-off makes that collection
+*optional*, not absent — Play's user-initiated carve-out covers **sharing to third parties**, which
+is not what this is. Once the client send path ships, the form answers **Yes** with the report
+contents declared as optional collection for app functionality. Full wording in
+[`docs/store-submission.md`](../docs/store-submission.md) gate 1.
+
+The default still matters — optional collection is a materially better posture than mandatory, and
+it is what lets everything else on the form stay "not collected". It just is not the same as
+collecting nothing.
 
 ## What it stores, and what it does not
 
 | | |
 |---|---|
-| **Stored** | reason id, the reported excerpt, the operator's optional note, the model id and backend that produced it, which surface it came from, and a server timestamp |
-| **Not stored** | **the caller's IP address.** Rate limiting keys on a salted SHA-256 of the IP, which is not reversible and expires with the window |
-| **Retention** | 180 days, then dropped automatically by KV TTL |
+| **Stored** | under the key `report:<receivedAt>:<uuid>`: reason id, the reported excerpt, the operator's optional note, the model id and backend that produced it, which surface it came from, and a server timestamp. `reasonId` and `surface` are allowlisted; `modelId` and `backend` are only length-bounded, so a hostile caller can put arbitrary text in those two |
+| **Retained on a sliding one-hour window** | a second KV entry, `rl:<hash>`, where the **key** is a **salted SHA-256 of the caller's IP** and the **value** counts that caller's requests which got past the limiter — not accepted reports: it increments *before* parsing, so malformed and oversized bodies count too, and it is only written when `cf-connecting-ip` is non-empty (`overRateLimit`, `src/index.ts`). The **raw IP is never stored** and the hash is not reversible — but do not over-read that: Play counts a stable identifier retained off-device as **collection**, so it must be declared (Device or other IDs, optional, fraud-prevention purpose). See `docs/store-submission.md` gate 1 |
+| **Not stored** | the raw IP, and anything not listed above |
+| **Retention** | reports: 180 days from receipt, then dropped by KV TTL. Identifier: one hour from that caller's last **counted** request — `put()` re-sets `expirationTtl` each time it runs, and it does not run once the caller is over the limit (`overRateLimit` returns first), so sustained *under-limit* traffic keeps one alive indefinitely. A renewing TTL, **not** a one-hour retention cap; do not shorten it to "retained one hour" on a privacy form |
 
-Both facts above are load-bearing for the privacy policy. If you change what is stored, update
+Every row above is load-bearing for the privacy policy, and "anything not listed above" is a
+completeness claim — derive it from the `put()` calls in `src/index.ts`, both of them, key *and*
+value. If you change what is stored, update
 `docs/privacy-policy.md`, its `.html` twin, and `docs/distribution.md` §"Play Data Safety form" in
 the same change.
 
@@ -68,9 +82,15 @@ npm run deploy
 ```
 
 Then map a route (`report.ventouxlabs.com/report`, or a path on an existing zone) in the Cloudflare
-dashboard, and **add a Rate Limiting rule at the edge as well** — the in-Worker limiter is a fixed
-window and is deliberately not exact under concurrency; the edge rule is what absorbs a real flood
-before it reaches Worker invocations.
+dashboard, and **add a Rate Limiting rule at the edge as well** — the in-Worker limiter is a counter
+on a renewing TTL (the window only resets after an hour with no counted request) and is deliberately
+not exact under concurrency; the edge rule is what absorbs a real flood before it reaches Worker
+invocations.
+
+**Also turn on *Always Use HTTPS* for the zone, and confirm it.** The Data Safety form answers
+"encrypted in transit: yes" for this leg, and `index.ts` never inspects the request scheme — so that
+answer is a property of the Cloudflare configuration, not of this code. A plain-HTTP route would make
+a filed declaration false without changing a line of the Worker.
 
 ## Verify a deploy
 
