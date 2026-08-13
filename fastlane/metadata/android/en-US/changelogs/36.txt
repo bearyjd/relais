@@ -1,0 +1,1 @@
+1.0.18: you can now report AI output from inside the app. Pick a reason, add an optional note, and the report is saved on this device and listed in the control panel for review. Nothing is transmitted — Relais has no server to send it to. Available on both chat surfaces.

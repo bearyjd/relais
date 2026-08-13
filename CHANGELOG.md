@@ -16,6 +16,69 @@ user-visible releases, and every release also bumps the Android `versionCode`.
 
 ### Security
 
+## [1.0.18] - 2026-08-08
+
+versionCode 36. Adds in-app reporting for AI-generated output, which is what
+Google Play's AI-Generated Content policy asks for. Reports stay on the device:
+there is no delivery path yet, and the Data Safety declaration is unchanged
+because nothing is transmitted.
+
+### Added
+
+- Report AI output from inside the app, on both chat surfaces: pick one of six
+  reasons, add an optional note, and the report is written to the device. A
+  confirmation says plainly that it stays there. (#260)
+- A review screen in the control panel listing the reports saved on this
+  device. (#260)
+- `report-worker`, a Cloudflare Worker that receives reports — **not deployed,
+  and the app has no send path to it**. It is here so the delivery half can be
+  reviewed and tested before anything transmits. (#262, #263, #268)
+
+### Fixed
+
+- The report Worker could not start at all: the Workers runtime rejects a
+  non-function named export from the entry module, and four size constants were
+  exported from it. Unit tests and `wrangler deploy --dry-run` both pass on the
+  broken shape, because neither boots the runtime. (#268)
+
+### Security
+
+- Nothing in this release transmits a report. The receiver, when deployed, rate
+  limits per caller on a salted, non-reversible hash of the caller IP; the raw
+  address is never stored. (#262)
+
+## [1.0.17] - 2026-08-04
+
+versionCode 35. *(Backfilled 2026-08-08 — 1.0.16 and 1.0.17 shipped without an
+entry here, which this file's own opening line promises not to happen.)*
+
+### Fixed
+
+- The compatibility gate now parses a download URL's authority with
+  `java.net.URI` instead of slicing the string, so an unusual host spelling —
+  odd casing, an explicit port, a userinfo prefix — can no longer read as
+  "unidentifiable" and let a model already measured as incompatible start a
+  multi-gigabyte download that was always going to fail. (#243)
+
+### Changed
+
+- Refusal messages read the same wherever they appear, and the API explains an
+  unloadable model rather than reporting it as missing. (#243)
+
+## [1.0.16] - 2026-08-04
+
+versionCode 34. *(Backfilled 2026-08-08 — see the note under 1.0.17.)*
+
+### Fixed
+
+- A long model ID no longer pushes the chat actions out of view. (#241)
+
+### Changed
+
+- Verified chat sharing, Markdown export, and audio attachment flows; added
+  on-device multimodal HTTP coverage. The Pixel 10 image-generation CPU
+  fallback is preserved while Vulkan driver retests stay isolated. (#241)
+
 ## [1.0.15] - 2026-07-04
 
 First public release (versionCode 33). Relais is a headless on-device LLM
