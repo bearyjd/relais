@@ -82,6 +82,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import cc.grepon.relais.chat.ContentReportDelivery
 import cc.grepon.relais.chat.ContentReportDialog
 import cc.grepon.relais.chat.ReportDraftResult
 import cc.grepon.relais.chat.buildContentReportDraft
@@ -122,10 +123,12 @@ import cc.grepon.relais.ui.common.ScrollToBottomButton
 import cc.grepon.relais.ui.modelmanager.ModelInitializationStatusType
 import cc.grepon.relais.ui.modelmanager.ModelManagerViewModel
 import cc.grepon.relais.ui.theme.customColors
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.android.awaitFrame
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 private const val TAG = "AGChatPanel"
 private const val SCROLL_ANIMATION_DURATION_MS = 300
@@ -641,7 +644,7 @@ fun ChatPanel(
         reportingContent?.let { content ->
           ContentReportDialog(
             onDismiss = { reportingContent = null },
-            onSubmit = { reason, note ->
+            onSubmit = { reason, note, alsoSend ->
               val draft =
                 buildContentReportDraft(
                   reason = reason,
@@ -666,9 +669,27 @@ fun ChatPanel(
                     // when it was not.
                     is ReportDraftResult.Rejected -> false
                   }
-                snackbarHostState.showSnackbar(
-                  if (saved) "Reported — saved on this device" else "Could not save that report"
-                )
+                // Shown immediately, not after the (up to ~35s) send below — the save already
+                // completed, and a silent gap here reads as "nothing happened" and invites a
+                // duplicate report while the send is still in flight. Cancelling this job dismisses
+                // the snackbar early, so the final result replaces it rather than queuing behind it.
+                val savedNotice =
+                  launch {
+                    snackbarHostState.showSnackbar(
+                      if (saved) "Reported — saved on this device" else "Could not save that report"
+                    )
+                  }
+                if (saved && alsoSend && draft is ReportDraftResult.Valid) {
+                  val sent =
+                    withContext(Dispatchers.IO) {
+                      ContentReportDelivery.send(draft.draft, ReportSurface.GALLERY_CHAT)
+                    }
+                  savedNotice.cancel()
+                  snackbarHostState.showSnackbar(
+                    if (sent) "Reported — saved on this device and sent to the developer"
+                    else "Reported — saved on this device. Could not reach the developer."
+                  )
+                }
               }
             },
           )

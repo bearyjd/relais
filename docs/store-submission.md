@@ -27,7 +27,7 @@ IzzyOnDroid (#123) was **closed as not planned** on 2026-08-05 — reasoning in
 
 ---
 
-## ⚠ Gate 1 — GenAI in-app content reporting (BLOCKER, code not paperwork)
+## Gate 1 — GenAI in-app content reporting (DONE, pending two dashboard steps)
 
 Play's [AI-Generated Content policy](https://support.google.com/googleplay/android-developer/answer/13985936)
 requires that apps generating content with AI **"contain in-app user reporting or flagging features
@@ -38,9 +38,12 @@ on-device carve-out.
 Relais generates AI content on three surfaces that ship in `fullPlaysafe`: the in-app chat UI, the
 LAN chat/completions API, and image generation (`:imagegen` — see Gate 3, it *is* in this variant).
 
-**As of `main` there is no report/flag affordance anywhere in the app** (verified: no such string,
-no such handler). This is the one item on this page that cannot be transcribed — it has to be built.
-Tracked as **#258**; do not submit before it lands.
+**Both halves are built.** Local capture (reason picker, on-device persistence, `CONFIGURE › REPORTED
+OUTPUT` review screen) shipped in v1.0.18. The opt-in send to the maintainer (`ContentReportDelivery`
+→ `report.ventouxlabs.com`, default off, decided per report) ships in this PR, alongside the Data
+Safety declaration update it requires. Tracked as **#258**. Remaining before this gate is fully clear:
+the two dashboard-only steps `report-worker/README.md` still lists (edge Rate Limiting rule, confirm
+*Always Use HTTPS*) — neither is a code or doc change.
 
 ### The requirement has two halves, and only one is easy
 
@@ -85,18 +88,19 @@ report rather than from the KV write. The record is `{...report, receivedAt}` �
 | Field actually stored | Play data type to declare |
 |---|---|
 | `excerpt` — the flagged model output | **Messages → Other in-app messages** |
-| `note` — operator's free text | **Messages → Other in-app messages** |
+| `note` — operator's free text | **App activity → Other user-generated content** — not Messages; see Q2 below |
 | `reasonId` — which category the operator chose | **App activity → App interactions** |
 | `surface` — which in-app surface it came from (`chat` / `gallery_chat`) | **App activity → App interactions** |
+| `excerpt`, `note` — both free text, again | Also **Personal info → optional** (declared #267, Q1 below) — free text can carry a name, email or address the user typed, or that a flagged excerpt repeats back from the model. Not a separate field; a second type on the same two rows above. |
 | `modelId`, `backend` — what produced the output | Intended as app configuration, so **not** a Play *user* data type — but note the Worker does not enforce that. `reasonId` and `surface` are allowlisted against `REASONS`/`SURFACES`; these two are only length-bounded (`isBoundedOrNull(…, MAX_IDENT)`), so any caller can persist arbitrary text in them. The declaration holds for what *the app* sends; disclose both in the privacy policy, and treat the "configuration" label as an intent, not a validated guarantee |
 | `receivedAt` — server timestamp | Part of the record; no separate type |
 | the report **key** itself, `report:<receivedAt>:<uuid>` | Not a separate type — the timestamp is already declared above and the UUID is `crypto.randomUUID()`, unlinked to any caller. Listed so the inventory matches the `put()` call rather than only its value |
 | `rl:<salted-hash>` — a **second KV key**, written by the rate limiter, not part of the report record. Both halves are data: the **key** is the salted caller identifier, and the **value** is `String(current + 1)` — a count of that caller's requests that got *past the limiter*, which is not the same as accepted reports: it increments before parsing, so malformed and oversized bodies count too, and it is only written when `cf-connecting-ip` is non-empty | **Device or other IDs** (see below) |
 
-| Console question | Answer once delivery ships |
+| Console question | Answer |
 |---|---|
 | Does your app collect or share any of the required user data types? | **Yes** |
-| Data types | **Messages → Other in-app messages**, **App activity → App interactions**, **Device or other IDs** — all three, per the table above |
+| Data types | **Messages → Other in-app messages** (`excerpt` only), **App activity → App interactions** (`reasonId`, `surface`) **and → Other user-generated content** (`note`), **Personal info** (optional — see below), **Device or other IDs** — per the table above |
 | Required or optional? | **Optional** for every one — default off, chosen per report |
 | Purpose | Report contents and interactions: **App functionality** (content moderation), per the AI-Generated Content policy's "use reports to inform moderation". The identifier: **fraud prevention, security and compliance** |
 | Is it shared with third parties? | **No** — it reaches the developer's own endpoint and goes no further |
@@ -114,35 +118,27 @@ the payload actually carries.
 
 | | |
 |---|---|
-| **Collected** (optional) | The report payload — flagged excerpt and operator note, both **Messages → Other in-app messages** — plus the model id / backend, **plus the rate-limit identifier below** |
+| **Collected** (optional) | The report payload — flagged excerpt (**Messages → Other in-app messages**), operator note (**App activity → Other user-generated content**) and both free-text fields again under **Personal info** — plus the model id / backend, **plus the rate-limit identifier below** |
 | **Still not collected** | Chat content the operator never reports · prompts · audio in or out · photos · the HF token (user-directed to `huggingface.co`, never to us) |
 
-**⚠ OPEN — resolve before transcribing, do not answer it from this table.** `excerpt` and `note` are
-free text. A user can type a name, an email or an address into a note, and a flagged model output can
-repeat one back. That does not touch the rows above, but it does put a question mark over
-**Personal info** as a declared type — a category nothing in this runbook currently declares, and
-which `distribution.md`'s "Personal identifiers / credentials" row (`:218`) now carries as
-**unresolved** rather than as a settled *not collected*.
+**#267 is resolved: declare `Personal info`, and `note` is typed as `App activity → Other
+user-generated content`, not Messages.** `distribution.md`'s "Personal identifiers / credentials" row
+(`:218`) is transcribable now. This block preserves the reasoning that settled it, since the same
+research also surfaced a second, separate question the earlier drafts of this block kept running
+together with the first — first as a false dichotomy, then by presenting the answer to Q2 as if it
+were a third answer to Q1. They were different questions with different confidence (#267):
 
-**Researching this turned up a second, separate question, and earlier drafts of this block kept
-running the two together — first as a false dichotomy, then by presenting the answer to Q2 as if it
-were a third answer to Q1. They are different questions with different confidence (#267):**
+**Q1 — must `Personal info` be declared? Decided: yes, declare it.** No field parses a name out of a
+report, and that fact invites the shortcut of leaving the type undeclared — but a name an operator
+types into `note` **is** received, and Q2's type (below) explicitly does not absorb it. Declaring is
+the defensible default absent a real client-side redaction guarantee, which does not exist today; a
+UI warning alone does not substitute for one. This was a judgement call, made by **JD**.
 
-**Q1 — must `Personal info` be declared?** *Genuinely open. Nothing below leans it either way.*
-
-| Answer | Note |
-|---|---|
-| Declare it | No field parses a name out, and those sub-types invite scrutiny — but a name an operator types **is** received, and Q2's type explicitly does not absorb it |
-| Keep it undeclared, gated on client-side redaction | The redaction gate is a real product change. Worth it only if you land on "declare" and would rather not |
-
-This is a judgement call about how likely operators are to put personal details in a moderation note.
-It is **JD's**, and the research below does not decide it.
-
-**Q2 — is `note` typed correctly today?** *Probably not, and this part is well-supported.* The table
-above types it **Messages** alongside `excerpt`. Play has a type defined as "user bios, notes, or
-**open-ended responses**" — `App activity → Other user-generated content` — which describes a
-moderation note, while "message to or from someone" does not. `App activity` is already declared here
-for `reasonId`/`surface`. Q2 stands whichever way Q1 goes.
+**Q2 — is `note` typed correctly? Decided: no, it was Messages; it is now `Other user-generated
+content`.** Play has a type defined as "user bios, notes, or **open-ended responses**" —
+`App activity → Other user-generated content` — which describes a moderation note, while "message to
+or from someone" does not. `App activity` was already declared here for `reasonId`/`surface`. Q2
+holds independently of how Q1 was decided.
 
 **Why Q2 does not answer Q1** — the tempting shortcut is "the note is `Other user-generated content`,
 so personal details typed into it are covered." An earlier draft of this block took exactly that
@@ -155,14 +151,16 @@ shortcut. Two reasons it does not hold:
   section**."* Name, Email address and Address **are** listed elsewhere. So that type is not a
   catch-all that absorbs personal details typed into it — its own definition excludes them.
 
-So Q1 is a judgement call and Q2 is a typing correction, and answering one leaves the other standing.
+So Q1 was a judgement call and Q2 was a typing correction, and one being settled did not settle the
+other — both had to be decided explicitly, which is why this block keeps them visibly separate rather
+than folding Q2's answer into Q1's.
 
-While checking Q2, confirm the exact **Messages** sub-type label in the Console too: the Android
-developer taxonomy says **"Other messages"** where this runbook says **"Other in-app messages"**.
+While checking Q2, the exact **Messages** sub-type label in the Console is also worth confirming for
+`excerpt`: the Android developer taxonomy says **"Other messages"** where this runbook has been saying
+**"Other in-app messages"** — verify against the current Console copy when transcribing, since that is
+a label check this doc cannot make authoritatively.
 
-Neither question is a doc edit — Q1 is JD's call, Q2 is a policy interpretation that is
-well-supported but not a quoted ruling. Both land in the same PR as the send path, and
-`distribution.md:218` is transcribable only once Q1 is settled. Reasoning and sources: **#267**.
+Both land in this PR, alongside the client send path. Reasoning and sources: **#267**.
 
 **The rate-limit identifier counts too, and it is not part of the report.** The Worker derives a
 salted SHA-256 of `cf-connecting-ip` and retains it in KV to link a caller's requests, on a one-hour
@@ -202,62 +200,31 @@ The distinction is **reported vs. unreported**, not chat vs. non-chat. Unreporte
 leave the device, which is why the type is declared as *optional* rather than required — but the type
 itself must be declared, because a sent report contains it.
 
-**Land these together, in the same PR as the client send path** — the declaration becoming false is
-the single most expensive way to get this wrong:
+**Landed together, in the PR that ships the client send path** — the declaration becoming false is
+the single most expensive way to get this wrong, which is why this checklist stayed in the doc rather
+than being deleted once satisfied (it had already been incomplete four times before this pass):
 
-- **THIS file's own "Google Play — Data Safety form" table below** — it still reads `No` / `None` and
-  is the table an operator actually transcribes. Listing every *other* document and forgetting the
-  primary one in the same runbook is how the stale answer reaches the console. *(Missed in the first
-  draft of this list; caught by `/codex review`.)*
-- `docs/privacy-policy.md` **and** its `.html` twin (bump the effective date) — must cover the
-  rate-limit identifier as well as the report contents
-- `docs/distribution.md` — **five** rows, not one, across its two tables. Each carries a marker
-  pointing here; **re-grep before trusting the line numbers**, which have already gone stale once:
+- [x] **THIS file's own "Google Play — Data Safety form" table below** — no longer reads `No` / `None`.
+- [x] `docs/privacy-policy.md` **and** its `.html` twin (effective date bumped) — cover the rate-limit
+      identifier as well as the report contents.
+- [x] `docs/distribution.md` — all seven rows: the three overview-table rows (`:206` collect?, `:207`
+      encrypted-in-transit justification, `:208` deletion), and the four per-type rows (Messages,
+      Personal info, Device IDs, App activity).
+- [x] `note` re-typed as **App activity → Other user-generated content** (not Messages) everywhere it
+      appears: this file's persistence table, Console answer table, and scope table; `distribution.md`'s
+      App activity per-type row.
+- [x] The two "no developer endpoint" egress claims corrected: `distribution.md`'s egress inventory now
+      lists `report.ventouxlabs.com`, and this file's permission table (`INTERNET`,
+      `ACCESS_NETWORK_STATE` row) no longer says "no developer endpoint".
+- [x] `report-worker/README.md` checked — it never used Play's type vocabulary (`note` is described
+      generically, "the operator's optional note," not as `Messages` or any other declared type), so
+      there was nothing to re-type there. Verified by reading the file, not assumed.
 
-  | Row | Where | What it says today |
-  |---|---|---|
-  | §"Play Data Safety form" overview | `:206` | "No" |
-  | Deletion request | `:208` | "Data not collected — nothing exists server-side" |
-  | **Messages** per-type | `:216` | "not collected" |
-  | **Device IDs** per-type | `:219` | "Not read, not transmitted", which the rate-limit hash contradicts |
-  | **App activity** per-type | `:220` | "Not collected today" — `reasonId`/`surface` |
-
-  Plus two rows that are neither in that five nor safe to skip:
-
-  - `:207`, encrypted-in-transit — the **answer** stays `Yes`, but the **justification** enumerates
-    the app's egress legs and will not mention the Worker. Add that leg, and note the HTTPS
-    guarantee is a Cloudflare zone setting rather than anything `index.ts` enforces.
-  - `:218`, personal identifiers / credentials — **answer not yet decided.** Free-text `excerpt` /
-    `note` may carry personal details, so this row depends on the OPEN question above. It cannot be
-    transcribed either way until that is settled.
-
-- **Whatever #267 decides, re-type `note` in EVERY declaration-bearing table, both files, same pass.**
-  It is currently **Messages** in three places here — the persistence table, the Console answer
-  table's "Data types" row, and the scope table's "Collected" row — and in `distribution.md` the
-  **App activity** per-type row (`:220`) describes only `reasonId`/`surface`, so it would need an
-  `Other user-generated content` entry too. Neither the App activity bullet above nor a "this file"
-  sweep reaches all of them: a PR could follow this checklist literally and still ship `note` typed as
-  a message in one table and absent from another. **Grep `note` across both files; do not fix one and
-  stop.** This checklist has been incomplete four times now — assume it is again.
-
-  *(This list has been wrong twice. The first draft named two rows; the second named three and
-  omitted **App activity** — the row gate 1's own declaration had just created — while quoting line
-  numbers that inserting that row had already invalidated. Derive the list by grepping the per-type
-  table, not from memory, and re-derive the line numbers in the same pass.)*
-- **The two "no developer endpoint" egress claims**, which are separate from every row above and
-  were missed by the first *three* drafts of this list:
-  - `docs/distribution.md` §"Egress inventory backing the 'No'" — it calls itself **"complete, from
-    source sweep 2026-07-07"** and does not list a VentouxLabs endpoint, because none existed. The
-    send path adds one, and a self-described complete inventory that omits it is worse than one that
-    never claimed completeness.
-  - **THIS file's** permission table — the `INTERNET`, `ACCESS_NETWORK_STATE` row reads
-    *"None — no developer endpoint"* in its Data Safety consequence column.
-- `report-worker/README.md` — same correction
-
-**Open and blocking #258:** *where* an opt-in send delivers to. There is no VentouxLabs endpoint
-today, and standing one up is a real commitment for a project whose pitch is no cloud. Resolve this
-before the send path is built; the local record and review screen are already done and are a
-prerequisite for any delivery design.
+The endpoint itself is deployed: `report.ventouxlabs.com` (Cloudflare Worker, custom domain,
+`report-worker/README.md`). Gate 1 is done pending the two dashboard-only steps that runbook still
+lists (edge Rate Limiting rule, confirming *Always Use HTTPS*) — neither blocks this declaration, both
+are already assumed true by the "encrypted in transit: Yes" answer above and should be confirmed before
+relying on it in review.
 
 ## ⚠ Gate 2 — target API level deadline
 
@@ -308,23 +275,18 @@ request). Expect a reviewer question on the download path; no code change is req
 Derivation and per-data-type reviewer notes: [`distribution.md`](distribution.md) §"Play Data Safety
 form".
 
-> ⚠ **This table is the answer sheet only while #258's report send is UNBUILT.** The moment the
-> client send path ships, **three** of the rows below become **false** — the first two *and the
-> deletion row*, which is the one most easily missed because "no server-side data exists" reads like
-> a property of the app rather than a claim the Worker's 180-day retention falsifies — and gate 1's
-> table replaces them.
-> Two tables in one runbook is a trap — the stale one looks like the answer sheet — so **whichever PR
-> ships the send path must edit THIS table**, not just the ones listed in gate 1.
+> The client send path has shipped (this PR). Every row below is the post-send-path answer — there is
+> no longer a separate "today, pre-send-path" table in this runbook.
 
-Transcribe (today, pre-send-path):
+Transcribe:
 
 | Console question | Answer |
 |---|---|
-| Does your app collect or share any of the required user data types? | **No** → **Yes** once the send path ships (gate 1) |
-| Data collected (sent off-device to the developer) | **None** → report contents + the rate-limit identifier (gate 1) |
-| Data shared (with third parties, by the developer) | **None** — unchanged; a report reaches the developer's own endpoint and goes no further |
+| Does your app collect or share any of the required user data types? | **Yes** |
+| Data collected (sent off-device to the developer) | Report contents (flagged excerpt, operator note, reason, surface — optionally including personal info a user typed) + the rate-limit identifier. See gate 1's persistence table above for the full field-by-field breakdown |
+| Data shared (with third parties, by the developer) | **None** — a report reaches the developer's own endpoint and goes no further |
 | Is all data encrypted in transit? | **Yes** |
-| Way to request data deletion? | **Data not collected** (n/a) → **Yes** once the send path ships (gate 1). Today: all data is on-device; in-app *Clear data* / uninstall removes it, and no server-side data exists. After: reports expire 180 days after receipt, and the rate-limit identifier one hour after that caller's last **counted** request (a renewing TTL, not a one-hour cap — see gate 1), with ad-hoc deletion by request to the contact email |
+| Way to request data deletion? | **Yes.** On-device data: in-app *Clear data* / uninstall. Sent reports: expire 180 days after receipt; the rate-limit identifier expires one hour after that caller's last **counted** request (a renewing TTL, not a one-hour cap — see gate 1), with ad-hoc deletion by request to the contact email |
 
 > Reviewer-note nuance to keep on file (not entered in the form): the app *does* transmit data the
 > **user directs** — a typed model-search query and optional HF token to `huggingface.co`, and
@@ -340,7 +302,7 @@ along with the notification-listener component. What remains, and the reviewer a
 
 | Permission | Why it ships | Data Safety consequence |
 |---|---|---|
-| `INTERNET`, `ACCESS_NETWORK_STATE` | Model downloads; LAN serving | None — no developer endpoint |
+| `INTERNET`, `ACCESS_NETWORK_STATE` | Model downloads; LAN serving; the opt-in report send (`ContentReportDelivery` → `report.ventouxlabs.com`) | See gate 1 above — the report send is the one developer-bound leg these permissions carry; everything else here remains no developer endpoint |
 | `FOREGROUND_SERVICE`, `..._DATA_SYNC` | The four services in Gate 3 | None |
 | `RECORD_AUDIO` | On-device transcription (`/v1/audio/transcriptions`) | **Not collected** — audio never leaves the device. TTS is *output* and needs no permission |
 | `CAMERA` | On-device vision / OCR capture | **Not collected** — no upload path exists |

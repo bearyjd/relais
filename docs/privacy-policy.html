@@ -36,13 +36,14 @@
 <main>
   <div class="wordmark">RELAIS</div>
   <h1>Privacy Policy</h1>
-  <p class="meta">Effective 2026-07-26 · Publisher: VentouxLabs · App: Relais
+  <p class="meta">Effective 2026-08-15 · Publisher: VentouxLabs · App: Relais
      (<code>com.ventouxlabs.relais</code> and its IzzyOnDroid/GitHub variants)</p>
 
   <p>Relais turns a phone you own into a private AI inference node: it runs language models
      <strong>on the device</strong> and serves an OpenAI-compatible API <strong>on your local
      network</strong>. It is built so that your prompts, documents, audio, and images never leave
-     hardware you control.</p>
+     hardware you control — with one exception you have to opt into: reporting AI output to us,
+     described below.</p>
 
   <h2>The short version</h2>
   <ul class="lead">
@@ -50,9 +51,11 @@
         transcribed audio, analyzed images, generated images, generated speech, and retrieval
         documents are processed by models running locally. None of it is sent to us or to any cloud
         AI service.</li>
-    <li><strong>We collect nothing.</strong> Relais has no analytics, no telemetry, no crash
-        reporting, no ads, no tracking, and no account system. There is no VentouxLabs server; we
-        never see your data.</li>
+    <li><strong>We collect nothing you don't choose to send us.</strong> Relais has no analytics, no
+        telemetry, no crash reporting, no ads, no tracking, and no account system. The one exception
+        is reporting AI output — if you flag something and check "also send to developer," that
+        report reaches us. It's off by default and decided per report. See "Reporting AI output"
+        below.</li>
     <li><strong>You control the network surface.</strong> The API is served only on your local
         network, protected by an access key generated on your device. You start and stop it.</li>
   </ul>
@@ -92,6 +95,31 @@
      also announces itself on your local network via mDNS (service name and port — no personal
      data) so clients can discover it.</p>
 
+  <h2>Reporting AI output</h2>
+  <p>Every AI reply has a REPORT option, so you can flag output you think is wrong or offensive
+     without leaving the app. Reporting always saves the flag on your device — you can review
+     everything you've flagged in the app's control panel — and that alone sends nothing
+     anywhere.</p>
+  <p>If you also check <strong>"also send to developer"</strong> (unchecked by default; a separate
+     choice every time), that one report is sent to us at <code>report.ventouxlabs.com</code>, over
+     HTTPS. What's sent:</p>
+  <ul>
+    <li>The flagged output and any note you typed explaining what was wrong.
+        <strong>If you type a name, email address, or other personal detail into that note, it is
+        sent as you typed it</strong> — we don't scan for or strip personal information. Please
+        avoid including it unless it's relevant to the report.</li>
+    <li>Which reason you picked, and which part of the app the output came from.</li>
+    <li>The model and processing mode that produced the output, if available.</li>
+  </ul>
+  <p>We keep a report for 180 days, then it's deleted automatically. We also keep a scrambled
+     (hashed), non-reversible version of your IP address, only to stop one device from flooding the
+     report system — never your actual IP address, and never linked to what you reported. It's
+     deleted an hour after your last report; if you report again within that hour, the hour restarts
+     from that report, so it lasts no longer than you keep reporting. We use reports only to
+     understand what's going wrong and improve moderation; we don't use them for anything else, and
+     we don't sell or share them, though our hosting provider (Cloudflare) processes reports and the
+     identifier on our behalf to run this service.</p>
+
   <h2>Permissions, in plain language</h2>
   <ul>
     <li><strong>Microphone / Camera</strong> — used only when you actively use voice input, audio
@@ -106,15 +134,18 @@
   </ul>
 
   <h2>Data sharing and selling</h2>
-  <p>We don't collect your data, so we cannot share or sell it. The app sends data to third parties
-     only in the user-directed cases listed above (Hugging Face downloads with your own token;
-     webhooks and skill URLs you configure). Those services' own privacy policies apply to what they
-     receive.</p>
+  <p>We don't sell your data, and we don't share it with anyone else. A report you choose to send us
+     stays with us, for the moderation purpose described above — it never goes further. The app sends
+     data to third parties only in the user-directed cases listed above (Hugging Face downloads with
+     your own token; webhooks and skill URLs you configure). Those services' own privacy policies
+     apply to what they receive.</p>
 
   <h2>Data retention and deletion</h2>
-  <p>Everything lives on your device. Delete any of it at any time via the in-app controls,
-     Android's <em>Clear data</em>, or by uninstalling the app. There is nothing to delete on our
-     side.</p>
+  <p>Almost everything lives only on your device. Delete any of it at any time via the in-app
+     controls, Android's <em>Clear data</em>, or by uninstalling the app. The one exception is a
+     report you've chosen to send us: it's retained for 180 days as described above, and if you want
+     it deleted sooner, contact us (below) with enough of the report's content for us to find it — we
+     don't keep any way to look reports up by who sent them.</p>
 
   <h2>Children</h2>
   <p>Relais is developer/infrastructure tooling and is not directed at children.</p>

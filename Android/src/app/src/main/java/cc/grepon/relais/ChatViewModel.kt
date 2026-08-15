@@ -18,6 +18,8 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import cc.grepon.relais.chat.ChatStreamRequest
 import cc.grepon.relais.chat.ChatTransportSelector
+import cc.grepon.relais.chat.ContentReportDelivery
+import cc.grepon.relais.chat.ContentReportDraft
 import cc.grepon.relais.chat.ERROR_BACKEND
 import cc.grepon.relais.chat.ReportDraftResult
 import cc.grepon.relais.chat.ReportReason
@@ -68,6 +70,12 @@ class ChatViewModel @JvmOverloads constructor(
    * Production always takes the default.
    */
   private val speechDispatcher: CoroutineDispatcher = Dispatchers.IO,
+  /**
+   * How an opt-in report is delivered (#258 gate 1). Injectable so a test can assert the opt-in
+   * gate — that `alsoSend = false` never invokes this — without a network stack. Production always
+   * takes the default.
+   */
+  private val sendReport: (ContentReportDraft, String) -> Boolean = ContentReportDelivery::send,
 ) : AndroidViewModel(app) {
 
   private val repo = ChatRepository(app, RelaisDatabase.get(app).chatDao())
@@ -312,11 +320,13 @@ class ChatViewModel @JvmOverloads constructor(
    * Record an operator report of assistant output (#258), satisfying Play's AI-Generated Content
    * policy requirement for in-app flagging.
    *
-   * The report is written to this device and never transmitted — Relais has no developer server, and
-   * adding one would change the Data Safety declaration from "collects nothing". Validation happens
-   * in [buildContentReportDraft] before anything reaches Room.
+   * The report is always written to this device first. [alsoSend] is the operator's separate,
+   * explicit opt-in ([ContentReportDialog]'s toggle, default off) to also deliver it to the
+   * maintainer via [ContentReportDelivery] — a save never depends on the send succeeding, and a
+   * failed send never undoes the save. Validation happens in [buildContentReportDraft] before
+   * anything reaches Room.
    */
-  fun reportContent(turn: ChatTurn, reason: ReportReason, note: String) {
+  fun reportContent(turn: ChatTurn, reason: ReportReason, note: String, alsoSend: Boolean) {
     val result =
       buildContentReportDraft(
         reason = reason,
@@ -341,8 +351,17 @@ class ChatViewModel @JvmOverloads constructor(
               surface = ReportSurface.CHAT,
               nowMs = System.currentTimeMillis(),
             )
+          // Surfaced immediately, not after the (up to ~35s) send below — the save already
+          // completed, and a silent gap here reads as "nothing happened" and invites a duplicate
+          // report while the send is still in flight.
           _reportNotice.value =
             if (saved) "REPORTED — saved on this device" else "Could not save that report."
+          if (saved && alsoSend) {
+            val sent = withContext(Dispatchers.IO) { sendReport(result.draft, ReportSurface.CHAT) }
+            _reportNotice.value =
+              if (sent) "REPORTED — saved on this device and sent to the developer"
+              else "REPORTED — saved on this device. Could not reach the developer."
+          }
         }
     }
   }

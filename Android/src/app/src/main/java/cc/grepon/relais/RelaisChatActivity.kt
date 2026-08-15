@@ -401,8 +401,8 @@ internal fun ChatScreen() {
       reportingTurn?.let { turn ->
         ContentReportDialog(
           onDismiss = { reportingTurnId = null },
-          onSubmit = { reason, note ->
-            vm.reportContent(turn, reason, note)
+          onSubmit = { reason, note, alsoSend ->
+            vm.reportContent(turn, reason, note, alsoSend)
             reportingTurnId = null
           },
         )
