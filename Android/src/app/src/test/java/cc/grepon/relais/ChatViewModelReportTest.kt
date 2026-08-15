@@ -20,15 +20,13 @@ import cc.grepon.relais.chat.ReportReason
 import cc.grepon.relais.data.ChatTurn
 import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.ExperimentalCoroutinesApi
-import kotlinx.coroutines.test.StandardTestDispatcher
-import kotlinx.coroutines.test.advanceUntilIdle
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.resetMain
-import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
+import kotlinx.coroutines.withTimeoutOrNull
 import org.junit.After
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -43,13 +41,20 @@ import org.robolectric.RuntimeEnvironment
  * ship broken with every other layer green.
  *
  * `sendReport` is injected the same way [ChatViewModelSpeechTest] injects a test dispatcher — a
- * constructor default, not a refactor — so no production code path changes to make this testable.
+ * constructor default, not a refactor.
+ *
+ * Deliberately NOT [kotlinx.coroutines.test.runTest] / [kotlinx.coroutines.test.StandardTestDispatcher]:
+ * `reportContent` goes through [cc.grepon.relais.chat.persistContentReport], a real Room write, and
+ * Room dispatches suspend queries on its own internal executor regardless of which
+ * `CoroutineDispatcher` the caller is on — a real thread hop no amount of `advanceUntilIdle()` can
+ * see, so the first version of this file raced and failed nondeterministically in CI (all three tests
+ * that reach the `Valid` branch; the one that short-circuits before touching Room passed). Plain
+ * `runBlocking` + awaiting the actual [ChatViewModel.reportNotice] emission sidesteps that: it waits
+ * for what really happened, not for a virtual clock's idea of "done".
  */
-@OptIn(ExperimentalCoroutinesApi::class)
 @RunWith(RobolectricTestRunner::class)
 class ChatViewModelReportTest {
 
-  private val dispatcher = StandardTestDispatcher()
   private val store = ViewModelStore()
 
   private fun turn(content: String = "flagged output") =
@@ -80,15 +85,26 @@ class ChatViewModelReportTest {
     val factory =
       object : ViewModelProvider.Factory {
         @Suppress("UNCHECKED_CAST")
-        override fun <T : ViewModel> create(modelClass: Class<T>): T =
-          ChatViewModel(app, dispatcher, sender) as T
+        override fun <T : ViewModel> create(modelClass: Class<T>): T = ChatViewModel(app, Dispatchers.IO, sender) as T
       }
     return ViewModelProvider(store, factory)[ChatViewModel::class.java]
   }
 
+  /**
+   * Waits (real time, bounded) for [ChatViewModel.reportNotice] to reach [expected], then asserts
+   * against whatever it actually settled on — so a wrong value fails with a normal expected/actual
+   * diff instead of an opaque timeout, whether it arrived late or never arrived at all.
+   */
+  private suspend fun awaitNotice(vm: ChatViewModel, expected: String) {
+    withTimeoutOrNull(5_000) { vm.reportNotice.first { it == expected } }
+    assertEquals(expected, vm.reportNotice.value)
+  }
+
   @Before
   fun setUp() {
-    Dispatchers.setMain(dispatcher)
+    // Real, not virtual: viewModelScope needs Dispatchers.Main to resolve to something, but nothing
+    // here is pumped by a test scheduler — see the class doc for why.
+    Dispatchers.setMain(Dispatchers.Unconfined)
   }
 
   @After
@@ -98,53 +114,46 @@ class ChatViewModelReportTest {
   }
 
   @Test
-  fun `alsoSend false never invokes the sender, even though the report still saves`() =
-    runTest(dispatcher) {
-      val sender = FakeSender()
-      val vm = viewModel(sender)
+  fun `alsoSend false never invokes the sender, even though the report still saves`() = runBlocking {
+    val sender = FakeSender()
+    val vm = viewModel(sender)
 
-      vm.reportContent(turn(), ReportReason.OTHER, "note", alsoSend = false)
-      advanceUntilIdle()
+    vm.reportContent(turn(), ReportReason.OTHER, "note", alsoSend = false)
+    awaitNotice(vm, "REPORTED — saved on this device")
 
-      assertEquals(0, sender.calls.get())
-      assertEquals("REPORTED — saved on this device", vm.reportNotice.value)
-    }
+    assertEquals(0, sender.calls.get())
+  }
 
   @Test
-  fun `alsoSend true invokes the sender exactly once and reports success in the notice`() =
-    runTest(dispatcher) {
-      val sender = FakeSender(result = true)
-      val vm = viewModel(sender)
+  fun `alsoSend true invokes the sender exactly once and reports success in the notice`() = runBlocking {
+    val sender = FakeSender(result = true)
+    val vm = viewModel(sender)
 
-      vm.reportContent(turn(), ReportReason.OTHER, "note", alsoSend = true)
-      advanceUntilIdle()
+    vm.reportContent(turn(), ReportReason.OTHER, "note", alsoSend = true)
+    awaitNotice(vm, "REPORTED — saved on this device and sent to the developer")
 
-      assertEquals(1, sender.calls.get())
-      assertEquals("REPORTED — saved on this device and sent to the developer", vm.reportNotice.value)
-    }
+    assertEquals(1, sender.calls.get())
+  }
 
   @Test
-  fun `a failed send is distinguished from a failed save in the notice`() = runTest(dispatcher) {
+  fun `a failed send is distinguished from a failed save in the notice`() = runBlocking {
     val sender = FakeSender(result = false)
     val vm = viewModel(sender)
 
     vm.reportContent(turn(), ReportReason.OTHER, "note", alsoSend = true)
-    advanceUntilIdle()
+    awaitNotice(vm, "REPORTED — saved on this device. Could not reach the developer.")
 
     assertEquals(1, sender.calls.get())
-    assertTrue(vm.reportNotice.value!!.startsWith("REPORTED"))
-    assertTrue(vm.reportNotice.value!!.contains("Could not reach the developer"))
   }
 
   @Test
-  fun `an empty turn is rejected before the sender is ever considered`() = runTest(dispatcher) {
+  fun `an empty turn is rejected before the sender is ever considered`() = runBlocking {
     val sender = FakeSender()
     val vm = viewModel(sender)
 
     vm.reportContent(turn(content = "   "), ReportReason.OTHER, "note", alsoSend = true)
-    advanceUntilIdle()
+    awaitNotice(vm, "Nothing to report — that turn is empty.")
 
     assertEquals(0, sender.calls.get())
-    assertEquals("Nothing to report — that turn is empty.", vm.reportNotice.value)
   }
 }
