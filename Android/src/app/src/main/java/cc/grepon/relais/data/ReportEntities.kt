@@ -20,9 +20,10 @@ import androidx.room.PrimaryKey
  * One operator report of offensive AI-generated output (#258).
  *
  * Play's AI-Generated Content policy requires an in-app way to flag AI output and requires that
- * reports inform moderation. Relais has no developer server, so a report **stays on this device**:
- * it is written here and reviewed in the control panel. Nothing is transmitted, which is what keeps
- * the Data Safety declaration ("collects nothing") true — see `docs/store-submission.md` gate 1.
+ * reports inform moderation. A report always **stays on this device** first: it is written here and
+ * reviewed in the control panel. Whether it also reaches the developer is a separate, later,
+ * per-report opt-in ([cc.grepon.relais.chat.ContentReportDelivery], #258 gate 1) — see
+ * `docs/store-submission.md` gate 1 for the resulting Data Safety declaration.
  *
  * `reasonId` stores `ReportReason.id` verbatim rather than the enum ordinal, so reordering or
  * renaming the enum cannot silently reinterpret existing rows.

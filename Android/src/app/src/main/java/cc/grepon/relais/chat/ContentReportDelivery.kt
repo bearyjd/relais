@@ -13,9 +13,9 @@
 package cc.grepon.relais.chat
 
 import android.util.Log
-import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
+import kotlinx.coroutines.CancellationException
 import org.json.JSONObject
 
 /**
@@ -65,10 +65,13 @@ object ContentReportDelivery {
   /**
    * Blocking — call off the main thread. Returns whether the Worker answered 2xx.
    *
-   * Catches [IOException] only, not [Exception]: this runs under `withContext(Dispatchers.IO)` from a
-   * coroutine, and a bare `catch (e: Exception)` would also swallow `CancellationException` if the
-   * operator navigates away mid-send — reporting a cancelled send as "could not reach the developer"
-   * rather than letting the coroutine machinery handle it.
+   * Catches [Exception], not just [java.io.IOException]: this is called from a caller-injected
+   * function type ([cc.grepon.relais.ChatViewModel]'s `sendReport` parameter), so a future change on
+   * either side of that seam — a null slipping into [JSONObject.put], a `ClassCastException` from the
+   * `HttpURLConnection` cast — must not crash the app; "best-effort, never fatal" is this function's
+   * whole contract. [CancellationException] is re-thrown first rather than swallowed, so a cancelled
+   * send (the operator navigating away mid-request) is still handled by the coroutine machinery
+   * instead of being reported as "could not reach the developer".
    */
   fun send(draft: ContentReportDraft, surface: String): Boolean =
     try {
@@ -94,7 +97,9 @@ object ContentReportDelivery {
       } finally {
         conn.disconnect()
       }
-    } catch (e: IOException) {
+    } catch (e: CancellationException) {
+      throw e
+    } catch (e: Exception) {
       Log.w(TAG, "report delivery failed: ${e.message}")
       false
     }

@@ -22,9 +22,10 @@ package cc.grepon.relais.chat
  * Pure shaping + validation for an AI-content report (#258).
  *
  * Google Play's AI-Generated Content policy requires an in-app way to report or flag offensive AI
- * output "without needing to exit the app". Relais has **no developer server**, so a report is
- * recorded on-device and reviewed by the operator — nothing is transmitted, which is what keeps the
- * Data Safety declaration ("collects nothing") true. See `docs/store-submission.md` gate 1.
+ * output "without needing to exit the app". A report is always recorded on-device and reviewed by the
+ * operator first; whether it also reaches the developer is a separate, per-report opt-in
+ * ([cc.grepon.relais.chat.ContentReportDelivery]). See `docs/store-submission.md` gate 1 for the
+ * resulting Data Safety declaration.
  *
  * Everything here is device-free by construction: the draft is built and validated first, and only a
  * valid draft is handed to Room. That keeps the rules unit-testable without a Context, matching the

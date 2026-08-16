@@ -71,9 +71,11 @@ import kotlinx.coroutines.launch
  * Operator review of on-device AI-content reports (#258).
  *
  * Play's AI-Generated Content policy requires not just a reporting affordance but that reports
- * "inform content filtering and moderation". With no developer server, that review happens here: the
- * operator reads what was flagged, sees which model produced it, and decides whether to change the
- * model or the system prompt. Nothing is transmitted from this screen.
+ * "inform content filtering and moderation". This screen is the on-device half of that: the operator
+ * reads what was flagged, sees which model produced it, and decides whether to change the model or
+ * the system prompt. Sending a report to the developer, if the operator opted in when submitting it,
+ * already happened at submit time ([cc.grepon.relais.chat.ContentReportDelivery]) — this review
+ * screen itself never transmits anything.
  *
  * Deliberately NOT gated on `POLICY_OPEN` — this is the surface the Play build most needs.
  */

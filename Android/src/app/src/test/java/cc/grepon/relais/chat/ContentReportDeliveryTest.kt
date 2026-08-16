@@ -86,4 +86,14 @@ class ContentReportDeliveryTest {
     assertEquals("gemma-4-E2B", json.getString("modelId"))
     assertEquals("GPU", json.getString("backend"))
   }
+
+  @Test
+  fun `quotes, backslashes, newlines and unicode in excerpt and note round-trip verbatim`() {
+    // excerpt and note are exactly the fields the privacy policy warns can carry a name or other
+    // personal detail typed verbatim — this pins that JSONObject escapes rather than mangles them.
+    val tricky = "quote\" backslash\\ newline\n emoji 😀 name: Jane O'Brien"
+    val json = JSONObject(ContentReportDelivery.buildPayload(draft(excerpt = tricky, note = tricky), surface = "chat"))
+    assertEquals(tricky, json.getString("excerpt"))
+    assertEquals(tricky, json.getString("note"))
+  }
 }
