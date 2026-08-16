@@ -10,8 +10,12 @@ uncommitted section was once destroyed by `git reset --hard` and had to be rebui
 
 ### Do these in order
 
-1. **Check CI on PR #274** (`gh pr checks 274`) — last pushed commit `32d7694e`, was still running JVM
-   unit tests + Build Android APK when this was written. If green, merge.
+1. **Check CI on PR #274** (`gh pr checks 274`) — HEAD is `4dc8bb15` (the fix commit `32d7694e` plus
+   this handoff, docs-only, added on top). As of this writing: JVM unit tests **pass** (validates every
+   new/changed test from the `/review` fix pass — the generation-guard regression test, the isolation
+   fix, the race-hardened negative test, the shared `deliverReport` tests); Build Android APK still
+   running. Everything else (gitleaks, trufflehog, headers ×2, worker, Detect Android changes) already
+   green. If Build Android APK comes back green too, merge.
 2. **After merging #274**, do the two Cloudflare **dashboard-only** steps `report-worker/README.md`
    still lists — neither is code: an edge **Rate Limiting rule** for `report.ventouxlabs.com/report`,
    and confirming **Always Use HTTPS** is on for the zone. The "encrypted in transit: Yes" Data Safety
