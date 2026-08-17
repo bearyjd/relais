@@ -21,6 +21,7 @@ package cc.grepon.relais.chat
 import android.content.Context
 import cc.grepon.relais.data.ContentReport
 import cc.grepon.relais.data.RelaisDatabase
+import cc.grepon.relais.data.ReportSendState
 
 /**
  * The single write path for AI-content reports (#258), shared by the two chat stacks: the Relais
@@ -33,8 +34,17 @@ import cc.grepon.relais.data.RelaisDatabase
  * Gallery/agent chat was simply unreportable, which is the one thing Play's AI-Generated Content
  * policy asks for. **If a third surface can render model output, it calls this too.**
  *
- * Returns true when the row was written. Callers must surface a false — a report that silently
- * fails to save leaves the operator believing a flag was recorded when it wasn't.
+ * Returns the new row's id, or **null** when the write failed. Callers must surface a null — a report
+ * that silently fails to save leaves the operator believing a flag was recorded when it wasn't.
+ *
+ * It returned a plain `Boolean` before #273. The id is now the thing that makes a failed send
+ * recoverable: without it, an attempt's outcome has no row to be recorded against, so "opted in but
+ * never delivered" is unrepresentable and the report is lost exactly as #273 describes.
+ *
+ * [sendState] records the operator's opt-in at write time rather than after the send resolves, so a
+ * process death mid-send still leaves a row the retry worker will pick up. Pass
+ * [ReportSendState.PENDING] when the operator ticked the toggle and [ReportSendState.NONE] when they
+ * did not — a `none` row is never transmitted, by anything, ever.
  *
  * This function never touches the network, by design — it stays the single, always-runs local write
  * regardless of whether the operator also opts in to sending. See [ContentReportDelivery] for that
@@ -46,7 +56,8 @@ suspend fun persistContentReport(
   draft: ContentReportDraft,
   surface: String,
   nowMs: Long,
-): Boolean =
+  sendState: String = ReportSendState.NONE,
+): Long? =
   runCatching {
       RelaisDatabase.get(context)
         .reportDao()
@@ -59,7 +70,8 @@ suspend fun persistContentReport(
             backend = draft.backend,
             surface = surface,
             createdAt = nowMs,
+            sendState = sendState,
           )
         )
     }
-    .isSuccess
+    .getOrNull()

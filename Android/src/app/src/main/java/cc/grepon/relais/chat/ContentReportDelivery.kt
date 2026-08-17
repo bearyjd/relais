@@ -20,7 +20,12 @@ import org.json.JSONObject
 
 /**
  * Opt-in, per-report delivery to the maintainer — the send half of #258 gate 1. [persistContentReport]
- * already wrote the local row; this is a separate, later step the operator chooses, never automatic.
+ * already wrote the local row; this is a separate, later step the operator chooses.
+ *
+ * "Never automatic" is how this KDoc used to end, and #273 narrowed it: a *retry* of an already
+ * opted-in report is now automatic (`ReportSendWorker`). What stays non-automatic is the thing that
+ * matters for the Data Safety declaration — nothing is ever sent for a report the operator did not
+ * tick the toggle for, so a `sendState` of `none` is never retried, only `pending`.
  *
  * Every field here already passed [buildContentReportDraft]'s validation, which mirrors the Worker's
  * own bounds (`ContentReportShapingTest`, `report-worker/src/schema-parity.test.ts`) — this layer does
@@ -63,17 +68,24 @@ object ContentReportDelivery {
       .toString()
 
   /**
-   * Blocking — call off the main thread. Returns whether the Worker answered 2xx.
+   * Blocking — call off the main thread. Returns *why* the attempt landed where it did (#273).
+   *
+   * This returned a plain `Boolean` until #273. A retry policy cannot be built on that: it collapses
+   * "the Worker is throttling you" (429) into the same value as "your payload is malformed" (4xx) and
+   * "the server fell over" (5xx), and retrying the first two burns the 10-per-hour per-caller budget
+   * that the operator's next real report needs. [classifySendResponse] does the mapping.
    *
    * Catches [Exception], not just [java.io.IOException]: this is called from a caller-injected
    * function type ([cc.grepon.relais.ChatViewModel]'s `sendReport` parameter), so a future change on
    * either side of that seam — a null slipping into [JSONObject.put], a `ClassCastException` from the
    * `HttpURLConnection` cast — must not crash the app; "best-effort, never fatal" is this function's
-   * whole contract. [CancellationException] is re-thrown first rather than swallowed, so a cancelled
+   * whole contract. Such a failure reports as [ReportSendResult.TRANSIENT], the same as a dropped
+   * connection: it is not knowably permanent, and the attempt cap stops an unknowable one from
+   * retrying forever. [CancellationException] is re-thrown first rather than swallowed, so a cancelled
    * send (the operator navigating away mid-request) is still handled by the coroutine machinery
-   * instead of being reported as "could not reach the developer".
+   * instead of being recorded as a spent attempt.
    */
-  fun send(draft: ContentReportDraft, surface: String): Boolean =
+  fun send(draft: ContentReportDraft, surface: String): ReportSendResult =
     try {
       val body = buildPayload(draft, surface).toByteArray(Charsets.UTF_8)
       val conn =
@@ -93,7 +105,7 @@ object ContentReportDelivery {
           // Drain the error body so the connection can be reused rather than leaked.
           conn.errorStream?.use { it.readBytes() }
         }
-        code in 200..299
+        classifySendResponse(code)
       } finally {
         conn.disconnect()
       }
@@ -101,6 +113,6 @@ object ContentReportDelivery {
       throw e
     } catch (e: Exception) {
       Log.w(TAG, "report delivery failed: ${e.message}")
-      false
+      ReportSendResult.TRANSIENT
     }
 }

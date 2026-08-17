@@ -43,7 +43,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
       ChatTurn::class,
       ContentReport::class,
     ],
-  version = 6,
+  version = 7,
   exportSchema = true,
 )
 abstract class RelaisDatabase : RoomDatabase() {
@@ -227,9 +227,44 @@ abstract class RelaisDatabase : RoomDatabase() {
         }
       }
 
+    /**
+     * v6 -> v7 (#273): adds `sendState`/`sendAttempts`/`lastAttemptAt` to `content_reports`, so an
+     * opt-in delivery that failed is recoverable instead of lost.
+     *
+     * The first ALTER-only migration here — every prior one created tables, so this is the first that
+     * must preserve existing rows. The two NOT NULL columns carry SQL defaults that match
+     * [ContentReport]'s `@ColumnInfo(defaultValue = ...)` **exactly**; Room compares defaults as part
+     * of the identity hash, so a mismatch (including the text literal's quoting) throws on open rather
+     * than drifting silently. Existing reports therefore backfill to `sendState = 'none'` — read as
+     * "the operator never opted in", which is true of every row written before this column existed, and
+     * keeps them out of the retry worker's queue.
+     *
+     * `@VisibleForTesting` so `RelaisDatabaseMigrationTest` can force-run + validate it vs `7.json`.
+     */
+    @VisibleForTesting
+    internal val MIGRATION_6_7 =
+      object : Migration(6, 7) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+          db.execSQL(
+            "ALTER TABLE `content_reports` ADD COLUMN `sendState` TEXT NOT NULL DEFAULT 'none'"
+          )
+          db.execSQL(
+            "ALTER TABLE `content_reports` ADD COLUMN `sendAttempts` INTEGER NOT NULL DEFAULT 0"
+          )
+          db.execSQL("ALTER TABLE `content_reports` ADD COLUMN `lastAttemptAt` INTEGER")
+        }
+      }
+
     /** Migrations appended by consumers when they add tables + bump [version]. */
     val MIGRATIONS: List<Migration> =
-      listOf(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
+      listOf(
+        MIGRATION_1_2,
+        MIGRATION_2_3,
+        MIGRATION_3_4,
+        MIGRATION_4_5,
+        MIGRATION_5_6,
+        MIGRATION_6_7,
+      )
 
     /** Process-wide singleton (single process — see backlog §3). */
     fun get(context: Context): RelaisDatabase =

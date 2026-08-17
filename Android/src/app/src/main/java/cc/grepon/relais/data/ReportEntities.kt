@@ -12,6 +12,7 @@
 
 package cc.grepon.relais.data
 
+import androidx.room.ColumnInfo
 import androidx.room.Entity
 import androidx.room.Index
 import androidx.room.PrimaryKey
@@ -26,7 +27,8 @@ import androidx.room.PrimaryKey
  * `docs/store-submission.md` gate 1 for the resulting Data Safety declaration.
  *
  * `reasonId` stores `ReportReason.id` verbatim rather than the enum ordinal, so reordering or
- * renaming the enum cannot silently reinterpret existing rows.
+ * renaming the enum cannot silently reinterpret existing rows. [sendState] follows the same rule for
+ * the same reason.
  */
 @Entity(tableName = "content_reports", indices = [Index(value = ["createdAt"])])
 data class ContentReport(
@@ -38,7 +40,46 @@ data class ContentReport(
   val backend: String?,
   val surface: String,
   val createdAt: Long,
+  /**
+   * Where this row's opt-in delivery stands (#273) — one of [ReportSendState].
+   *
+   * Defaults to [ReportSendState.NONE] both here and in the v6->v7 migration's `ADD COLUMN`, so every
+   * row written before #273 reads back as "the operator never asked for this to be sent" rather than
+   * as an undelivered backlog the retry worker would then try to flush to the Worker.
+   */
+  @ColumnInfo(defaultValue = ReportSendState.NONE) val sendState: String = ReportSendState.NONE,
+  /**
+   * How many *counted* delivery attempts this row has spent (see `dispositionFor` — a 429 is not
+   * counted). Bounded by `MAX_SEND_ATTEMPTS` for automatic retries only; a manual SEND ignores it.
+   */
+  @ColumnInfo(defaultValue = "0") val sendAttempts: Int = 0,
+  /** When the last delivery attempt resolved, for the review screen. Null until one has. */
+  val lastAttemptAt: Long? = null,
 )
+
+/**
+ * Where a report's opt-in delivery stands (stored as the `sendState` TEXT column, #273).
+ *
+ * Stored as these string constants rather than an enum ordinal so a future reordering cannot
+ * reinterpret existing rows — the same rule `reasonId` follows.
+ */
+object ReportSendState {
+  /** The operator did not opt in to sending. Terminal, and the default for every pre-#273 row. */
+  const val NONE = "none"
+
+  /** Opted in and not yet delivered — either mid-flight or waiting on a scheduled retry. */
+  const val PENDING = "pending"
+
+  /** Delivered; the Worker answered 2xx. Terminal. */
+  const val SENT = "sent"
+
+  /**
+   * Automatic delivery gave up — a permanent rejection, or `MAX_SEND_ATTEMPTS` exhausted. Terminal
+   * for the retry worker, but still manually re-sendable from `CONFIGURE › REPORTED OUTPUT`, which
+   * is the whole point of #273: no send is unrecoverable.
+   */
+  const val FAILED = "failed"
+}
 
 /** Which in-app surface the reported output was displayed on (stored as the `surface` TEXT column). */
 object ReportSurface {

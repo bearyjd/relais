@@ -42,7 +42,12 @@ LAN chat/completions API, and image generation (`:imagegen` — see Gate 3, it *
 **Both halves are built.** Local capture (reason picker, on-device persistence, `CONFIGURE › REPORTED
 OUTPUT` review screen) shipped in v1.0.18. The opt-in send to the maintainer (`ContentReportDelivery`
 → `report.ventouxlabs.com`, default off, decided per report) merged in #274, alongside the Data
-Safety declaration update it requires. Tracked as **#258**. The "encrypted in transit: Yes" answer
+Safety declaration update it requires. Tracked as **#258**. #273 then made that send **durable**: the
+opt-in is recorded on the row (`sendState`, schema v7), a failed delivery is retried by
+`ReportSendWorker`, and `CONFIGURE › REPORTED OUTPUT` grows a manual **SEND**. This does not widen the
+declaration below — the set of fields transmitted is unchanged, and a report the operator did not opt
+in for still has `sendState = none` and is never read by the worker. What changed is only that an
+opted-in report now actually arrives rather than being dropped on the first network failure. The "encrypted in transit: Yes" answer
 is enforced by the Worker itself — `isPlaintextRequest` refuses any request the edge marks
 plaintext with `403 https required` (added after the deployed Worker was observed **accepting and
 storing a report POSTed over plain http** — the zone's Always Use HTTPS was off; verify per

@@ -49,7 +49,17 @@ assistant turns on **both** chat surfaces (Relais `chat/` and inherited Gallery
   pattern) so a stale in-flight send can't overwrite a newer report's notice.
 - Both surfaces route through one gate: `chat/ContentReportOutcome.kt#deliverReport()` (the
   opt-in check lives there, pinned by `ChatViewModelReportTest` + `ContentReportOutcomeTest`) →
-  `ContentReportDelivery` → the Worker (see `backend.md` §Client egress).
+  `chat/ContentReportSendStep.kt#attemptReportSend()` → `ContentReportDelivery` → the Worker (see
+  `backend.md` §Client egress).
+- **Retry (#273)** — the send is durable, not one-shot. `persistContentReport` returns the row id and
+  stamps `sendState` (`none`/`pending`/`sent`/`failed`, schema **v7**) at write time, so an opt-in
+  survives process death. `attemptReportSend` records each attempt and schedules
+  `worker/ReportSendWorker` per the pure policy in `chat/ContentReportRetry.kt`, which classifies
+  **429 apart from 5xx apart from other 4xx** — a rate-limited attempt costs no attempt and waits out
+  the Worker's 60-minute window, so throttling can never be what permanently fails a report
+  (`ContentReportRetryTest`). `CONFIGURE › REPORTED OUTPUT` shows the send status and offers **SEND**
+  — but only on `pending`/`failed` rows, never on `none`, so the review screen cannot originate a
+  transmission the operator did not ask for.
 - `chat/ContentReportsActivity.kt` (manifest-registered, launched from CONFIGURE) —
   `CONFIGURE › REPORTED OUTPUT`, the on-device review list Play's "use reports to inform
   moderation" answer points at.

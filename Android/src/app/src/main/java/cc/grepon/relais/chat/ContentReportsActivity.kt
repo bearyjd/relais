@@ -62,10 +62,13 @@ import cc.grepon.relais.Paper
 import cc.grepon.relais.StopRed
 import cc.grepon.relais.data.ContentReport
 import cc.grepon.relais.data.RelaisDatabase
+import cc.grepon.relais.data.ReportSendState
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * Operator review of on-device AI-content reports (#258).
@@ -73,9 +76,14 @@ import kotlinx.coroutines.launch
  * Play's AI-Generated Content policy requires not just a reporting affordance but that reports
  * "inform content filtering and moderation". This screen is the on-device half of that: the operator
  * reads what was flagged, sees which model produced it, and decides whether to change the model or
- * the system prompt. Sending a report to the developer, if the operator opted in when submitting it,
- * already happened at submit time ([cc.grepon.relais.chat.ContentReportDelivery]) — this review
- * screen itself never transmits anything.
+ * the system prompt.
+ *
+ * "This review screen itself never transmits anything" is what this KDoc said until #273, and the
+ * SEND action makes it false: a report the operator opted in to send but which never reached the
+ * maintainer can be retried from here. The invariant that actually matters is narrower and still
+ * holds — SEND appears **only** on rows whose `sendState` records an opt-in
+ * ([ReportSendState.PENDING]/[ReportSendState.FAILED]), never on a [ReportSendState.NONE] row, so
+ * this screen cannot originate a transmission the operator did not ask for.
  *
  * Deliberately NOT gated on `POLICY_OPEN` — this is the surface the Play build most needs.
  */
@@ -96,6 +104,8 @@ private fun ContentReportsScreen() {
   val scope = rememberCoroutineScope()
   val dao = remember { RelaisDatabase.get(ctx).reportDao() }
   var reports by remember { mutableStateOf<List<ContentReport>>(emptyList()) }
+  // Rows with a manual SEND in flight — drives the disabled "SENDING…" label and blocks a second tap.
+  var sending by remember { mutableStateOf<Set<Long>>(emptySet()) }
 
   LaunchedEffect(Unit) { reports = dao.recent(MAX_REVIEWED_REPORTS) }
 
@@ -111,8 +121,8 @@ private fun ContentReportsScreen() {
     Spacer(Modifier.height(6.dp))
     Text(
       text =
-        "Flagged on this device and never sent anywhere. Use them to decide whether to change the " +
-          "model or the system prompt.",
+        "Flagged on this device. Use them to decide whether to change the model or the system " +
+          "prompt. Only reports you opted to send carry a send status; the rest stay here.",
       color = Muted,
       fontFamily = FontFamily.Monospace,
       fontSize = 11.sp,
@@ -133,10 +143,38 @@ private fun ContentReportsScreen() {
       items(reports, key = { it.id }) { report ->
         ReportRow(
           report = report,
+          sending = report.id in sending,
           onDismiss = {
             scope.launch {
               dao.delete(report.id)
               reports = dao.recent(MAX_REVIEWED_REPORTS)
+            }
+          },
+          onSend = {
+            // Guard against a double-tap queueing two concurrent attempts against one row: each would
+            // spend a request from the 10-per-hour caller budget to deliver the same report twice.
+            if (report.id !in sending) {
+              sending = sending + report.id
+              scope.launch {
+                withContext(Dispatchers.IO) {
+                  attemptReportSend(
+                    context = ctx,
+                    reportId = report.id,
+                    draft =
+                      ContentReportDraft(
+                        reasonId = report.reasonId,
+                        excerpt = report.excerpt,
+                        note = report.note,
+                        modelId = report.modelId,
+                        backend = report.backend,
+                      ),
+                    surface = report.surface,
+                    attemptsSoFar = report.sendAttempts,
+                  )
+                }
+                sending = sending - report.id
+                reports = dao.recent(MAX_REVIEWED_REPORTS)
+              }
             }
           },
         )
@@ -164,7 +202,12 @@ private fun ContentReportsScreen() {
 }
 
 @Composable
-private fun ReportRow(report: ContentReport, onDismiss: () -> Unit) {
+private fun ReportRow(
+  report: ContentReport,
+  sending: Boolean,
+  onDismiss: () -> Unit,
+  onSend: () -> Unit,
+) {
   Column(Modifier.fillMaxWidth().padding(vertical = 10.dp)) {
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
       Text(
@@ -176,14 +219,30 @@ private fun ReportRow(report: ContentReport, onDismiss: () -> Unit) {
         fontSize = 12.sp,
         fontWeight = FontWeight.Bold,
       )
-      Text(
-        text = "DISMISS",
-        color = Muted,
-        fontFamily = FontFamily.Monospace,
-        fontSize = 11.sp,
-        modifier =
-          Modifier.semantics { role = Role.Button }.clickable(onClick = onDismiss),
-      )
+      Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+        // SEND only where the operator already opted in (#273) — never on a NONE row, which is what
+        // keeps this screen from originating a transmission nobody asked for.
+        if (report.sendState == ReportSendState.PENDING ||
+          report.sendState == ReportSendState.FAILED) {
+          Text(
+            text = if (sending) "SENDING…" else "SEND",
+            color = if (sending) Muted else Amber,
+            fontFamily = FontFamily.Monospace,
+            fontSize = 11.sp,
+            fontWeight = FontWeight.Bold,
+            modifier =
+              Modifier.semantics { role = Role.Button }
+                .clickable(enabled = !sending, onClick = onSend),
+          )
+        }
+        Text(
+          text = "DISMISS",
+          color = Muted,
+          fontFamily = FontFamily.Monospace,
+          fontSize = 11.sp,
+          modifier = Modifier.semantics { role = Role.Button }.clickable(onClick = onDismiss),
+        )
+      }
     }
     Spacer(Modifier.height(4.dp))
     Text(
@@ -198,6 +257,15 @@ private fun ReportRow(report: ContentReport, onDismiss: () -> Unit) {
       Spacer(Modifier.height(6.dp))
       Text(text = "note: $it", color = Muted, fontFamily = FontFamily.Monospace, fontSize = 11.sp)
     }
+    sendStatusLine(report)?.let {
+      Spacer(Modifier.height(6.dp))
+      Text(
+        text = it,
+        color = if (report.sendState == ReportSendState.FAILED) StopRed else Muted,
+        fontFamily = FontFamily.Monospace,
+        fontSize = 11.sp,
+      )
+    }
     Spacer(Modifier.height(10.dp))
     Column(Modifier.fillMaxWidth().height(1.dp).background(Line)) {}
   }
@@ -205,6 +273,15 @@ private fun ReportRow(report: ContentReport, onDismiss: () -> Unit) {
 
 /** Newest-first review window. Deliberately bounded — this screen reads the whole list into memory. */
 private const val MAX_REVIEWED_REPORTS = 200
+
+/**
+ * [sendStatusText] plus, once an attempt has actually resolved, when that was. Null for a report the
+ * operator never opted to send — such a row shows no send status at all.
+ */
+private fun sendStatusLine(report: ContentReport): String? {
+  val base = sendStatusText(report.sendState, report.sendAttempts) ?: return null
+  return report.lastAttemptAt?.let { "$base · last tried ${stamp(it)}" } ?: base
+}
 
 private fun labelForReasonId(id: String): String =
   ReportReason.entries.firstOrNull { it.id == id }?.label ?: id.uppercase(Locale.US)

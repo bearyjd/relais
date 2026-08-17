@@ -98,6 +98,45 @@ class RelaisDatabaseMigrationTest {
     helper.close()
   }
 
+  /**
+   * Brings the on-disk v1 file up to **v6 exactly** and writes one report into it, so the v6->v7 test
+   * has a genuine pre-#273 row to preserve.
+   *
+   * Deliberately not `Room.databaseBuilder`: that always opens at the *compiled* version (now 7), so it
+   * would run MIGRATION_6_7 before the row could be inserted and the test would prove nothing about
+   * preservation. Driving the migrations through a plain [SupportSQLiteOpenHelper] pinned to version 6
+   * is what makes "a row that predates the new columns" actually representable.
+   */
+  private fun seedV6ReportRow() {
+    val configuration =
+      SupportSQLiteOpenHelper.Configuration.builder(context)
+        .name(TEST_DB)
+        .callback(
+          object : SupportSQLiteOpenHelper.Callback(6) {
+            override fun onCreate(db: SupportSQLiteDatabase) {
+              // Unreachable: createV1Database() already materialized the file.
+            }
+
+            override fun onUpgrade(db: SupportSQLiteDatabase, oldVersion: Int, newVersion: Int) {
+              RelaisDatabase.MIGRATION_1_2.migrate(db)
+              RelaisDatabase.MIGRATION_2_3.migrate(db)
+              RelaisDatabase.MIGRATION_3_4.migrate(db)
+              RelaisDatabase.MIGRATION_4_5.migrate(db)
+              RelaisDatabase.MIGRATION_5_6.migrate(db)
+            }
+          }
+        )
+        .build()
+    val helper = FrameworkSQLiteOpenHelperFactory().create(configuration)
+    helper.writableDatabase.execSQL(
+      "INSERT INTO `content_reports` " +
+        "(`reasonId`, `excerpt`, `note`, `modelId`, `backend`, `surface`, `createdAt`) " +
+        "VALUES ('other', 'pre-existing output', 'a note', 'm', 'GPU', 'chat', 4242)"
+    )
+    helper.writableDatabase.close()
+    helper.close()
+  }
+
   @Test
   fun `v1 to v2 migration runs and validates against the compiled v2 schema`() {
     createV1Database()
@@ -114,6 +153,7 @@ class RelaisDatabaseMigrationTest {
           RelaisDatabase.MIGRATION_3_4,
           RelaisDatabase.MIGRATION_4_5,
           RelaisDatabase.MIGRATION_5_6,
+          RelaisDatabase.MIGRATION_6_7,
         )
         .allowMainThreadQueries()
         .build()
@@ -159,6 +199,7 @@ class RelaisDatabaseMigrationTest {
           RelaisDatabase.MIGRATION_3_4,
           RelaisDatabase.MIGRATION_4_5,
           RelaisDatabase.MIGRATION_5_6,
+          RelaisDatabase.MIGRATION_6_7,
         )
         .allowMainThreadQueries()
         .build()
@@ -207,6 +248,7 @@ class RelaisDatabaseMigrationTest {
           RelaisDatabase.MIGRATION_3_4,
           RelaisDatabase.MIGRATION_4_5,
           RelaisDatabase.MIGRATION_5_6,
+          RelaisDatabase.MIGRATION_6_7,
         )
         .allowMainThreadQueries()
         .build()
@@ -247,6 +289,7 @@ class RelaisDatabaseMigrationTest {
           RelaisDatabase.MIGRATION_3_4,
           RelaisDatabase.MIGRATION_4_5,
           RelaisDatabase.MIGRATION_5_6,
+          RelaisDatabase.MIGRATION_6_7,
         )
         .allowMainThreadQueries()
         .build()
@@ -305,6 +348,7 @@ class RelaisDatabaseMigrationTest {
           RelaisDatabase.MIGRATION_3_4,
           RelaisDatabase.MIGRATION_4_5,
           RelaisDatabase.MIGRATION_5_6,
+          RelaisDatabase.MIGRATION_6_7,
         )
         .allowMainThreadQueries()
         .build()
@@ -315,9 +359,13 @@ class RelaisDatabaseMigrationTest {
       val nameCol = c.getColumnIndexOrThrow("name")
       while (c.moveToNext()) cols.add(c.getString(nameCol))
     }
+    // A PREFIX, not the whole list: opening through Room runs the chain to the compiled version, so v7's
+    // additive send-state columns (#273) are present too. What MIGRATION_5_6 owns is that these eight
+    // arrive, in this order — asserting the full list here would instead make this test fail on every
+    // future additive migration to the table, which is a tripwire on the wrong thing.
     assertEquals(
       listOf("id", "reasonId", "excerpt", "note", "modelId", "backend", "surface", "createdAt"),
-      cols,
+      cols.take(8),
     )
 
     val idxNames = mutableListOf<String>()
@@ -326,6 +374,61 @@ class RelaisDatabaseMigrationTest {
       while (c.moveToNext()) idxNames.add(c.getString(nameCol))
     }
     assertTrue(idxNames.contains("index_content_reports_createdAt"))
+
+    db.close()
+  }
+
+  @Test
+  fun `v6 to v7 migration adds the send-state columns and preserves existing reports`() {
+    // The first ALTER-based migration in this chain — every earlier one created a fresh table, so this
+    // is the first that can DESTROY operator data rather than merely fail to add some. Two things are
+    // asserted for that reason: that a report written under v6 survives the upgrade with its content
+    // intact, and that it backfills to sendState 'none' (#273). The backfill matters beyond tidiness:
+    // 'pending' would enrol every historical report into ReportSendWorker's queue and transmit reports
+    // whose operators never opted in — breaking the Data Safety declaration in store-submission.md.
+    createV1Database()
+    seedV6ReportRow()
+
+    val db =
+      Room.databaseBuilder(context, RelaisDatabase::class.java, TEST_DB)
+        .addMigrations(*RelaisDatabase.MIGRATIONS.toTypedArray())
+        .allowMainThreadQueries()
+        .build()
+    val supportDb = db.openHelper.writableDatabase
+
+    val cols = mutableListOf<String>()
+    supportDb.query("PRAGMA table_info(`content_reports`)").use { c ->
+      val nameCol = c.getColumnIndexOrThrow("name")
+      while (c.moveToNext()) cols.add(c.getString(nameCol))
+    }
+    assertEquals(
+      listOf(
+        "id",
+        "reasonId",
+        "excerpt",
+        "note",
+        "modelId",
+        "backend",
+        "surface",
+        "createdAt",
+        "sendState",
+        "sendAttempts",
+        "lastAttemptAt",
+      ),
+      cols,
+    )
+
+    supportDb
+      .query(
+        "SELECT `excerpt`, `sendState`, `sendAttempts`, `lastAttemptAt` FROM `content_reports`"
+      )
+      .use { c ->
+        assertTrue("the v6 report must survive the upgrade", c.moveToFirst())
+        assertEquals("pre-existing output", c.getString(0))
+        assertEquals("none", c.getString(1))
+        assertEquals(0, c.getInt(2))
+        assertTrue("an un-attempted row has no attempt timestamp", c.isNull(3))
+      }
 
     db.close()
   }

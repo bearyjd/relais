@@ -18,7 +18,11 @@ import androidx.room.Query
 
 /**
  * Data access for on-device AI-content reports (#258). Parameterized queries only. Suspend — driven
- * from the UI's viewModelScope; there is no worker and no network path, by design.
+ * from the UI's viewModelScope and, since #273, from `ReportSendWorker`'s coroutine.
+ *
+ * The "there is no worker and no network path, by design" this KDoc used to claim stopped being true
+ * in two steps: #258 gate 1 added the opt-in send, and #273 added the retry worker that drains it.
+ * The local write is still unconditional and still never blocks on either.
  */
 @Dao
 interface ReportDao {
@@ -38,4 +42,29 @@ interface ReportDao {
 
   /** Clear every report. Backs the control panel's bulk action and in-app *Clear data*. */
   @Query("DELETE FROM content_reports") suspend fun clear(): Int
+
+  /** A single row by id — what the retry worker and the manual SEND action re-read before sending. */
+  @Query("SELECT * FROM content_reports WHERE id = :id") suspend fun byId(id: Long): ContentReport?
+
+  /**
+   * Rows awaiting delivery, OLDEST first (#273) — the retry worker's queue.
+   *
+   * Oldest-first deliberately, against `recent`'s newest-first review order: the backlog should drain
+   * in the order the operator created it, and the Worker's 10-per-hour budget means a run can be cut
+   * short, so the report that has waited longest must not be the one perpetually skipped.
+   */
+  @Query(
+    "SELECT * FROM content_reports WHERE sendState = :state ORDER BY createdAt ASC, id ASC LIMIT :limit"
+  )
+  suspend fun awaitingSend(state: String, limit: Int): List<ContentReport>
+
+  /**
+   * Record where an attempt left a row. Returns rows touched, so a caller can tell a real update from
+   * an attempt against a row the operator dismissed while the send was in flight.
+   */
+  @Query(
+    "UPDATE content_reports SET sendState = :state, sendAttempts = :attempts, " +
+      "lastAttemptAt = :atMs WHERE id = :id"
+  )
+  suspend fun markSend(id: Long, state: String, attempts: Int, atMs: Long): Int
 }
