@@ -166,7 +166,7 @@ private fun SendToggleRow(checked: Boolean, onToggle: () -> Unit) {
       )
     }
     Text(
-      text = "Sends the flagged output, your note, the reason you picked, and the model/mode that produced it.",
+      text = "Sends the flagged output, your note, the reason you picked, the model/mode that produced it, and which chat surface it came from.",
       color = Muted,
       fontFamily = FontFamily.Monospace,
       fontSize = 11.sp,
