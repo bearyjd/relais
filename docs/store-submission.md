@@ -356,13 +356,13 @@ some locales.
 - **Contact email:** `bryn@ventouxadvisoryco.com` (matches the privacy policy).
 - **Target audience:** 18+ / developers — not directed at children (privacy policy §"Children").
 - **Ads:** declare **No ads**.
-- **AAB:** `app-full-playsafe-release.aab`, built and attached to a **draft** v1.0.19 GitHub
-  Release when its tag is pushed — release.yaml stops at the draft; **the maintainer reviews and
-  publishes it** (appId `com.ventouxlabs.relais`). ⚠ Pending artifact: byte count and release
-  link go here once it exists — the one forward-looking row under this file's "facts" banner.
-  **Do not upload an earlier AAB** — see Gate 2's row above. Enrol in **Play App Signing** on
-  first upload — the release key is the *upload* key; keep `distribution.md`'s warning about the
-  sideload key's immutable-signature story intact.
+- **AAB:** `app-full-playsafe-release.aab`, **78,004,698 bytes**, attached to the published
+  [v1.0.19 release](https://github.com/bearyjd/relais/releases/tag/v1.0.19) (appId
+  `com.ventouxlabs.relais`; published 2026-08-17 after an on-device smoke of the send path on the
+  signed build — REPORT → ALSO SEND TO DEVELOPER → SUBMIT → the record verified byte-faithful in
+  the Worker's production KV, then deleted). **Do not upload an earlier AAB** — see Gate 2's row
+  above. Enrol in **Play App Signing** on first upload — the release key is the *upload* key;
+  keep `distribution.md`'s warning about the sideload key's immutable-signature story intact.
 - **Changelog:** `fastlane/metadata/android/en-US/changelogs/37.txt` (versionCode 37 = v1.0.19).
 
 ---

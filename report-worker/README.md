@@ -215,9 +215,18 @@ curl -si "$BASE/report" | head -1
 
 ## Read the reports
 
+**`--remote` is load-bearing.** wrangler v4's `kv key` commands default to the **local** Miniflare
+store when run next to a `wrangler.toml` — without `--remote` these commands list a local store
+that is empty unless you've run local workerd, and the warning banner saying so goes to stderr,
+exactly where a script piping through `2>/dev/null` loses it. This burned a real session on
+2026-08-17: production writes were "missing" for 40 minutes while every list ran against local
+state, and deletes "cleaned up" the wrong store. If a listing disagrees with what the Worker
+demonstrably does (a 429 proves the counter exists), suspect which store you're reading before
+suspecting the data.
+
 ```bash
-npx wrangler kv key list --binding REPORTS --prefix 'report:'
-npx wrangler kv key get --binding REPORTS '<key>'
+npx wrangler kv key list --remote --binding REPORTS --prefix 'report:'
+npx wrangler kv key get  --remote --binding REPORTS '<key>'
 ```
 
 ## After it is live

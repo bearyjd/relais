@@ -6,7 +6,52 @@ uncommitted section was once destroyed by `git reset --hard` and had to be rebui
 
 ---
 
-## 2026-08-17 — ⏩ START HERE. **#258 fully shipped and merged. The Worker now enforces HTTPS itself. Next: merge the guard PR, deploy, cut v1.0.19, then #122.**
+## 2026-08-17 (later) — ⏩ START HERE. **v1.0.19 PUBLISHED, send path smoke-verified end-to-end on the signed build. Remaining: #122 Console work + one dashboard rule, both JD-only.**
+
+### Do these in order
+
+1. **#122 — Play Console** (account-gated): create the app, enrol Play App Signing on first
+   upload, upload the **v1.0.19** AAB (78,004,698 bytes, on the published
+   [release](https://github.com/bearyjd/relais/releases/tag/v1.0.19)), transcribe the forms from
+   `docs/store-submission.md` (all rows current as of today). Deadline: `targetSdk 35` submits
+   only until **2026-08-30**.
+2. **Cloudflare dashboard** (account-gated): the edge Rate Limiting rule for
+   `report.ventouxlabs.com/report` (exact recipe in the superseded section below, step 2 — still
+   accurate); optionally flip Always Use HTTPS (defense in depth now) and confirm no per-version
+   preview URLs exist for the Worker.
+
+### State
+
+- **v1.0.19 published 2026-08-17** (~11:20 UTC): tag on `4a283858`, all release gates green,
+  three artifacts. Published only after an **on-device smoke of the send path on the signed
+  build** (comet, izzy variant upgraded 36→37 exactly as Obtainium would): launch clean, dialog
+  assembles, ALSO SEND TO DEVELOPER default-off confirmed, REPORT → SUBMIT → notice "saved and
+  sent" → the record verified **byte-faithful in production KV** (7 fields, excerpt truncated at
+  the 2000-char cap, `backend: UNKNOWN` matching the UI row) → all smoke/probe artifacts deleted
+  from production, verified NONE remain via the raw REST API.
+- `main` = `8f231781`. Merged today: **#274** (send path), **#276** (Worker plaintext guard —
+  deployed live, both curls verified), **#275** (v1.0.19 prep), **#278/#279** (CODEMAPS refresh
+  to current main + tracked diff report). **#267 closed**, **#277 filed** (dialog consent text
+  omits `surface`), **#273** still open by design (send retry).
+- **Zero open PRs.**
+
+### The lesson that cost 40 minutes and produced false claims — do not re-learn
+
+**wrangler v4's `kv key list/get/put/delete` default to the LOCAL Miniflare store when run next
+to a `wrangler.toml`.** The banner saying so goes to stderr — piping through `2>/dev/null` eats
+it. This session: production KV writes looked "missing" for 40 minutes (phone got a genuine 202,
+list showed nothing), local boot-check keys were mistaken for the security reviewer's production
+probes and "deleted", and the handoff briefly claimed production was clean when only the local
+store was. The raw REST API (`/accounts/<id>/storage/kv/namespaces/<ns>/keys`) settled it, and
+the Worker's own rate limiter (429 on the 11th POST) proved the writes were durably there all
+along. **Always pass `--remote` for production KV work; never bury wrangler's stderr when a
+listing is the evidence.** `report-worker/README.md` §"Read the reports" now carries the warning
+— the maintainer's documented read path had the same trap, which would have read as "no reports
+from users, ever."
+
+---
+
+## 2026-08-17 — #258 fully shipped and merged. The Worker now enforces HTTPS itself. (superseded above — the guard PR is merged as #276, v1.0.19 is cut AND published; the KV-cleanup claim in step 1 was false, see the wrangler --remote lesson above)
 
 ### Do these in order
 
