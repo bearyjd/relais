@@ -40,8 +40,9 @@ Room-backed via `ChatDao` (conversations/turns, truncate/regenerate/edit-and-res
 assistant turns on **both** chat surfaces (Relais `chat/` and inherited Gallery
 `ui/common/chat/ChatPanel`):
 - `chat/ContentReportDialog.kt` — reason picker (6 reasons), optional note, and an
-  **ALSO SEND TO DEVELOPER** toggle, default off, decided per report; caption enumerates what a
-  send transmits (#277 tracks that it omits `surface`).
+  **ALSO SEND TO DEVELOPER** toggle, default off, decided per report; caption enumerates all six
+  fields a send transmits (#277 — `surface` was the missing one; note `ContentReportSink`'s KDoc
+  anticipates a third surface someday, at which point "which chat surface" needs re-checking).
 - Local save is unconditional (`ContentReportSink` → Room `content_reports`); the "saved" notice
   shows **immediately**, then updates when an opted-in send resolves — outcomes are
   **generation-guarded per report** (`reportGeneration`/`reportOwns`, mirroring the speech
