@@ -7,6 +7,13 @@ name = "relais-report"
 main = "src/index.ts"
 compatibility_date = "2026-01-01"
 
+# No *.workers.dev hostname and no per-version preview URLs: a custom domain is the ONLY intended
+# way in. Without these, wrangler defaults workers_dev to TRUE whenever no route is declared — and
+# this template ships with the route commented out (see below) — so a fresh deploy would publish a
+# second live hostname for the same code and the same KV. Pin it, don't infer it.
+workers_dev = false
+preview_urls = false
+
 # Reports and rate-limit counters share one namespace, distinguished by key prefix (`report:` /
 # `rl:`). Both carry a TTL, so nothing here grows without bound.
 #

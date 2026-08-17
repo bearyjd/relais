@@ -88,9 +88,38 @@ not exact under concurrency; the edge rule is what absorbs a real flood before i
 invocations.
 
 **Also turn on *Always Use HTTPS* for the zone, and confirm it.** The Data Safety form answers
-"encrypted in transit: yes" for this leg, and `index.ts` never inspects the request scheme — so that
-answer is a property of the Cloudflare configuration, not of this code. A plain-HTTP route would make
-a filed declaration false without changing a line of the Worker.
+"encrypted in transit: yes" for this leg. The Worker enforces this itself — `index.ts` refuses any
+request whose edge scheme markers don't all say https (`403 https required`, keyed off
+`x-forwarded-proto` / `cf-visitor`, with `cf-ray` as the through-the-edge backstop when neither
+marker arrives) — because the zone toggle is dashboard state this repo cannot pin, and it was
+observed off: before the guard, a full report **POSTed over plain http was accepted and stored**
+(202, `visit_scheme=http`, `tls=off` per `/cdn-cgi/trace`), not merely probed. The toggle is still
+worth flipping: it redirects before any bytes reach the Worker, and it covers the rest of the zone.
+
+Be precise about what the guard buys: it means **no report is accepted or stored over plaintext**.
+It cannot un-send bytes — a non-app caller who POSTs in the clear has already put the body on the
+wire by the time the 403 comes back. The app itself never does: `ContentReportDelivery` hard-codes
+`https://` with redirects disabled, so the app's own sends are encrypted by construction and the
+guard is the backstop for curl users, forks, and misconfiguration.
+
+**Required after every deploy, both curls** — this is the only check that observes which headers
+the real edge sends, which no local run can:
+
+```bash
+curl -sI http://report.ventouxlabs.com/report                                # expect 403
+curl -sI -H 'x-forwarded-proto: https' http://report.ventouxlabs.com/report  # expect 403
+```
+
+The first proves the deployed build has the guard at all (a 405 means a pre-guard build — the one
+that accepted and stored plaintext POSTs). The second is the spoof probe: it passes only if the
+edge overwrites a client-supplied `x-forwarded-proto`, which is documented but observed nowhere in
+this repo — a 405/404 there means the bypass is live, and the fix is to stop trusting
+`x-forwarded-proto` and key the guard on `cf-visitor` + `cf-ray` alone. Record what both return in
+the deploy notes. **Allow a minute for propagation before concluding anything**: observed on the
+2026-08-17 deploy, a plaintext POST ~30 s after `wrangler deploy` still hit the old build (202,
+stored — cleaned from KV afterwards) while GETs in the same seconds already saw the new one; a
+minute later every probe refused. A mixed result right after deploying means wait and re-run, and
+any 202 that slipped through means a junk `report:` key to delete.
 
 ## Verify locally first — no Cloudflare account needed
 
@@ -114,8 +143,10 @@ npx wrangler dev -c wrangler.local.toml --port 8787 --local
 
 In a second shell, run the checks under "Verify a deploy" below with
 `BASE=http://127.0.0.1:8787` — they are written against `$BASE` so the same three commands serve
-both local and deployed. Everything works locally except real TLS, so "encrypted in transit" is the
-one answer this cannot verify; that is a Cloudflare zone setting, see the deploy step above.
+both local and deployed. The plaintext guard is locally verifiable too
+(`curl -s -H 'x-forwarded-proto: http' "$BASE/report"` → 403, and a bare local request passes —
+no edge headers, nothing to enforce). What no local run can observe is which headers the **real**
+edge sends this Worker; that is what the two required post-deploy curls above exist for.
 
 Worth exercising beyond those three, since these are the behaviors the Data Safety declaration
 describes and they are cheap to confirm here:

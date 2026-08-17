@@ -28,7 +28,7 @@ IzzyOnDroid (#123) was **closed as not planned** on 2026-08-05 — reasoning in
 
 ---
 
-## Gate 1 — GenAI in-app content reporting (DONE, pending two dashboard steps)
+## Gate 1 — GenAI in-app content reporting (DONE, pending one dashboard step)
 
 Play's [AI-Generated Content policy](https://support.google.com/googleplay/android-developer/answer/13985936)
 requires that apps generating content with AI **"contain in-app user reporting or flagging features
@@ -41,10 +41,14 @@ LAN chat/completions API, and image generation (`:imagegen` — see Gate 3, it *
 
 **Both halves are built.** Local capture (reason picker, on-device persistence, `CONFIGURE › REPORTED
 OUTPUT` review screen) shipped in v1.0.18. The opt-in send to the maintainer (`ContentReportDelivery`
-→ `report.ventouxlabs.com`, default off, decided per report) ships in this PR, alongside the Data
-Safety declaration update it requires. Tracked as **#258**. Remaining before this gate is fully clear:
-the two dashboard-only steps `report-worker/README.md` still lists (edge Rate Limiting rule, confirm
-*Always Use HTTPS*) — neither is a code or doc change.
+→ `report.ventouxlabs.com`, default off, decided per report) merged in #274, alongside the Data
+Safety declaration update it requires. Tracked as **#258**. The "encrypted in transit: Yes" answer
+is enforced by the Worker itself — `isPlaintextRequest` refuses any request the edge marks
+plaintext with `403 https required` (added after the deployed Worker was observed **accepting and
+storing a report POSTed over plain http** — the zone's Always Use HTTPS was off; verify per
+`report-worker/README.md`, required after every deploy). Remaining before this gate
+is fully clear: one dashboard-only step — the edge Rate Limiting rule `report-worker/README.md`
+lists. The zone's *Always Use HTTPS* toggle is now defense in depth, still worth flipping.
 
 ### The requirement has two halves, and only one is easy
 
@@ -105,7 +109,7 @@ report rather than from the KV write. The record is `{...report, receivedAt}` �
 | Required or optional? | **Optional** for every one — default off, chosen per report |
 | Purpose | Report contents and interactions: **App functionality** (content moderation), per the AI-Generated Content policy's "use reports to inform moderation". The identifier: **fraud prevention, security and compliance** |
 | Is it shared with third parties? | **No** — it reaches the developer's own endpoint and goes no further |
-| Encrypted in transit? | **Yes** — HTTPS to the Worker. ⚠ Enforced by **Cloudflare, not by Worker code**: `index.ts` never inspects the scheme, so this answer is only true while the zone has *Always Use HTTPS* on. Confirm it at deploy time (`report-worker/README.md`) rather than inferring it from the source |
+| Encrypted in transit? | **Yes** — HTTPS to the Worker, enforced at both ends of the code: the client hard-codes `https://` with redirects disabled, and `index.ts` refuses edge-marked plaintext (`isPlaintextRequest` → `403 https required`). Verify against the live endpoint per `report-worker/README.md`; the zone's *Always Use HTTPS* toggle is defense in depth, not the load-bearing control |
 | Can users request deletion? | **Yes**, with a caveat worth getting right — see the row below |
 | …what deletion actually means here | Reports expire 180 days after receipt; the identifier expires one hour after that caller's last **counted** request, not one hour after their first (see below). For **ad-hoc deletion by request to the contact email**: the record has no dedicated identity field and stores no link from a report back to its caller, so the operator cannot query "this person's reports" — honoring a request means the requester supplies enough of the report for a manual scan of the KV namespace. Do not imply a lookup capability the schema makes impossible. **And do not overstate the anonymity either:** `excerpt` and `note` are free text (`parseReport` only length-bounds them), so a report *can* contain identifying information the user typed or the model emitted — the absence of an identity **field** is not an absence of identifying **content**. The `rl:<hash>` record is separate, cannot be reached from report content at all, and only ages out on its TTL |
 
@@ -222,10 +226,10 @@ than being deleted once satisfied (it had already been incomplete four times bef
       there was nothing to re-type there. Verified by reading the file, not assumed.
 
 The endpoint itself is deployed: `report.ventouxlabs.com` (Cloudflare Worker, custom domain,
-`report-worker/README.md`). Gate 1 is done pending the two dashboard-only steps that runbook still
-lists (edge Rate Limiting rule, confirming *Always Use HTTPS*) — neither blocks this declaration, both
-are already assumed true by the "encrypted in transit: Yes" answer above and should be confirmed before
-relying on it in review.
+`report-worker/README.md`). Gate 1 is done pending the one dashboard-only step that runbook still
+lists (the edge Rate Limiting rule) — it does not block this declaration. The "encrypted in transit:
+Yes" answer no longer rests on dashboard state: the Worker refuses edge-marked plaintext itself
+(`isPlaintextRequest` → `403 https required`), verifiable by curl per that README.
 
 ## ⚠ Gate 2 — target API level deadline
 
