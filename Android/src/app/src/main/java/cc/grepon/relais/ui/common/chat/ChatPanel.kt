@@ -82,13 +82,14 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
-import cc.grepon.relais.chat.ContentReportDelivery
 import cc.grepon.relais.chat.ContentReportDialog
 import cc.grepon.relais.chat.ReportDraftResult
 import cc.grepon.relais.chat.ReportOutcome
+import cc.grepon.relais.chat.attemptReportSend
 import cc.grepon.relais.chat.buildContentReportDraft
 import cc.grepon.relais.chat.deliverReport
 import cc.grepon.relais.chat.persistContentReport
+import cc.grepon.relais.data.ReportSendState
 import cc.grepon.relais.data.ReportSurface
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
@@ -661,14 +662,20 @@ fun ChatPanel(
                 // reason), but a silent no-op here would tell the operator a flag was recorded when it
                 // was not.
                 val validDraft = (draft as? ReportDraftResult.Valid)?.draft
-                val saved =
-                  validDraft != null &&
+                // The row id, not just a boolean: it is what lets a failed send be retried later
+                // (#273) instead of being lost the moment this composable leaves the screen.
+                val reportId =
+                  validDraft?.let {
                     persistContentReport(
                       context = context,
-                      draft = validDraft,
+                      draft = it,
                       surface = ReportSurface.GALLERY_CHAT,
                       nowMs = System.currentTimeMillis(),
+                      sendState =
+                        if (alsoSend) ReportSendState.PENDING else ReportSendState.NONE,
                     )
+                  }
+                val saved = reportId != null
                 // Cancelling a job that's suspended inside showSnackbar dismisses it early, so the
                 // final outcome (once deliverReport's onOutcome fires again) replaces the "saved"
                 // notice immediately instead of queuing behind its full display duration.
@@ -678,7 +685,11 @@ fun ChatPanel(
                   alsoSend = alsoSend,
                   draft = validDraft,
                   surface = ReportSurface.GALLERY_CHAT,
-                  send = { d, s -> withContext(Dispatchers.IO) { ContentReportDelivery.send(d, s) } },
+                  send = { d, s ->
+                    withContext(Dispatchers.IO) {
+                      attemptReportSend(context = context, reportId = reportId, draft = d, surface = s)
+                    }
+                  },
                   onOutcome = { outcome ->
                     pendingNotice?.cancel()
                     val text =

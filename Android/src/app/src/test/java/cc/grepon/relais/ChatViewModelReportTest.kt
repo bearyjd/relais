@@ -17,6 +17,7 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.ViewModelStore
 import cc.grepon.relais.chat.ContentReportDraft
 import cc.grepon.relais.chat.ReportReason
+import cc.grepon.relais.chat.ReportSendResult
 import cc.grepon.relais.data.ChatTurn
 import cc.grepon.relais.data.RelaisDatabase
 import java.util.concurrent.atomic.AtomicInteger
@@ -74,16 +75,17 @@ class ChatViewModelReportTest {
     )
 
   /** A `sendReport` fake that records whether it was ever invoked, and what it returns. */
-  private class FakeSender(private val result: Boolean = true) : (ContentReportDraft, String) -> Boolean {
+  private class FakeSender(private val result: ReportSendResult = ReportSendResult.SENT) :
+    (ContentReportDraft, String) -> ReportSendResult {
     val calls = AtomicInteger(0)
 
-    override fun invoke(draft: ContentReportDraft, surface: String): Boolean {
+    override fun invoke(draft: ContentReportDraft, surface: String): ReportSendResult {
       calls.incrementAndGet()
       return result
     }
   }
 
-  private fun viewModel(sender: (ContentReportDraft, String) -> Boolean): ChatViewModel {
+  private fun viewModel(sender: (ContentReportDraft, String) -> ReportSendResult): ChatViewModel {
     val app = RuntimeEnvironment.getApplication()
     val factory =
       object : ViewModelProvider.Factory {
@@ -159,7 +161,7 @@ class ChatViewModelReportTest {
 
   @Test
   fun `alsoSend true invokes the sender exactly once and reports success in the notice`() = runBlocking {
-    val sender = FakeSender(result = true)
+    val sender = FakeSender(result = ReportSendResult.SENT)
     val vm = viewModel(sender)
 
     vm.reportContent(turn(), ReportReason.OTHER, "note", alsoSend = true)
@@ -170,7 +172,7 @@ class ChatViewModelReportTest {
 
   @Test
   fun `a failed send is distinguished from a failed save in the notice`() = runBlocking {
-    val sender = FakeSender(result = false)
+    val sender = FakeSender(result = ReportSendResult.TRANSIENT)
     val vm = viewModel(sender)
 
     vm.reportContent(turn(), ReportReason.OTHER, "note", alsoSend = true)
@@ -191,9 +193,10 @@ class ChatViewModelReportTest {
   }
 
   /** A `sendReport` fake whose delay and result depend on which report's content invoked it. */
-  private class PerReportSender(private val behaviorByExcerpt: Map<String, Pair<Long, Boolean>>) :
-    (ContentReportDraft, String) -> Boolean {
-    override fun invoke(draft: ContentReportDraft, surface: String): Boolean {
+  private class PerReportSender(
+    private val behaviorByExcerpt: Map<String, Pair<Long, ReportSendResult>>
+  ) : (ContentReportDraft, String) -> ReportSendResult {
+    override fun invoke(draft: ContentReportDraft, surface: String): ReportSendResult {
       val (delayMs, result) = behaviorByExcerpt.getValue(draft.excerpt)
       Thread.sleep(delayMs) // send() is a blocking function by contract; a real sleep is honest here.
       return result
@@ -207,7 +210,10 @@ class ChatViewModelReportTest {
     // overwrite it — telling the operator the wrong report's outcome, exactly the bug the adversarial
     // review pass found: the send-outcome notice is the operator's one signal for whether a specific
     // report (which may carry a name or other detail typed into its note) actually left the device.
-    val sender = PerReportSender(mapOf("first turn" to (400L to false), "second turn" to (0L to true)))
+    val sender = PerReportSender(mapOf(
+          "first turn" to (400L to ReportSendResult.TRANSIENT),
+          "second turn" to (0L to ReportSendResult.SENT),
+        ))
     val vm = viewModel(sender)
 
     vm.reportContent(turn(content = "first turn"), ReportReason.OTHER, "note", alsoSend = true)

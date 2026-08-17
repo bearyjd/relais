@@ -21,6 +21,8 @@ import cc.grepon.relais.chat.ChatTransportSelector
 import cc.grepon.relais.chat.ContentReportDelivery
 import cc.grepon.relais.chat.ContentReportDraft
 import cc.grepon.relais.chat.ReportOutcome
+import cc.grepon.relais.chat.ReportSendResult
+import cc.grepon.relais.chat.attemptReportSend
 import cc.grepon.relais.chat.deliverReport
 import cc.grepon.relais.chat.ERROR_BACKEND
 import cc.grepon.relais.chat.ReportDraftResult
@@ -33,6 +35,7 @@ import cc.grepon.relais.chat.historyForRequest
 import cc.grepon.relais.data.ChatTurn
 import cc.grepon.relais.data.Conversation
 import cc.grepon.relais.data.RelaisDatabase
+import cc.grepon.relais.data.ReportSendState
 import cc.grepon.relais.data.ReportSurface
 import cc.grepon.relais.tts.RelaisTtsEngine
 import cc.grepon.relais.tts.RelaisTtsEngineProvider
@@ -77,7 +80,8 @@ class ChatViewModel @JvmOverloads constructor(
    * gate — that `alsoSend = false` never invokes this — without a network stack. Production always
    * takes the default.
    */
-  private val sendReport: (ContentReportDraft, String) -> Boolean = ContentReportDelivery::send,
+  private val sendReport: (ContentReportDraft, String) -> ReportSendResult =
+    ContentReportDelivery::send,
 ) : AndroidViewModel(app) {
 
   private val repo = ChatRepository(app, RelaisDatabase.get(app).chatDao())
@@ -365,19 +369,32 @@ class ChatViewModel @JvmOverloads constructor(
         }
       is ReportDraftResult.Valid ->
         viewModelScope.launch {
-          val saved =
+          // The row id, not just a boolean: it is what makes a failed send recoverable (#273) rather
+          // than lost the moment this coroutine ends.
+          val reportId =
             persistContentReport(
               context = getApplication(),
               draft = result.draft,
               surface = ReportSurface.CHAT,
               nowMs = System.currentTimeMillis(),
+              sendState = if (alsoSend) ReportSendState.PENDING else ReportSendState.NONE,
             )
           deliverReport(
-            saved = saved,
+            saved = reportId != null,
             alsoSend = alsoSend,
             draft = result.draft,
             surface = ReportSurface.CHAT,
-            send = { draft, surface -> withContext(Dispatchers.IO) { sendReport(draft, surface) } },
+            send = { draft, surface ->
+              withContext(Dispatchers.IO) {
+                attemptReportSend(
+                  context = getApplication(),
+                  reportId = reportId,
+                  draft = draft,
+                  surface = surface,
+                  attempt = sendReport,
+                )
+              }
+            },
             onOutcome = { outcome ->
               if (reportOwns(generation)) {
                 _reportNotice.value =
