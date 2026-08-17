@@ -6,6 +6,83 @@ uncommitted section was once destroyed by `git reset --hard` and had to be rebui
 
 ---
 
+## 2026-08-16 — ⏩ START HERE. **v1.0.18 shipped. Worker deployed. PR #274 (the send path) open, CI running on its latest push.**
+
+### Do these in order
+
+1. **Check CI on PR #274** (`gh pr checks 274`) — HEAD is `4dc8bb15` (the fix commit `32d7694e` plus
+   this handoff, docs-only, added on top). As of this writing: JVM unit tests **pass** (validates every
+   new/changed test from the `/review` fix pass — the generation-guard regression test, the isolation
+   fix, the race-hardened negative test, the shared `deliverReport` tests); Build Android APK still
+   running. Everything else (gitleaks, trufflehog, headers ×2, worker, Detect Android changes) already
+   green. If Build Android APK comes back green too, merge.
+2. **After merging #274**, do the two Cloudflare **dashboard-only** steps `report-worker/README.md`
+   still lists — neither is code: an edge **Rate Limiting rule** for `report.ventouxlabs.com/report`,
+   and confirming **Always Use HTTPS** is on for the zone. The "encrypted in transit: Yes" Data Safety
+   answer already assumes the second one; it isn't independently verified yet.
+3. **Then #122** (Play Console listing + AAB submission) is next in the epic. Deadline still live:
+   `targetSdk 35` is submittable only until **2026-08-30**.
+
+### State
+
+- `main` = `3bb12458` (**v1.0.18 published** — [GitHub Release](https://github.com/bearyjd/relais/releases/tag/v1.0.18) is live, all 5 build gates green, device-verified: cold boot, model load, REPORT → SUBMIT → CONFIGURE › REPORTED OUTPUT round-tripped clean on the actual signed release build on comet).
+- **`report-worker` is deployed**: `report.ventouxlabs.com` (Cloudflare custom domain), verified live by
+  curl — 202/400/405/404 all correct, valid TLS (`CN=ventouxlabs.com`, Google Trust Services).
+  `report-worker/wrangler.toml` in the working tree has the real KV namespace id + route uncommented —
+  **this is intentional and must never be committed** (the README says so; git status will keep
+  showing it modified, that's expected, not a mistake to fix).
+- **One open PR: #274** — `feat/258-report-send-path`. Ships gate 1's send half: opt-in
+  (default-off, per-report) delivery to the deployed Worker, plus every Data Safety/privacy-policy
+  doc update it requires. **#267 is resolved** (declared inside this PR): Personal info → optional,
+  `note` re-typed as App activity → Other user-generated content, not Messages.
+
+### What #274 actually contains, and how it got reviewed
+
+Two full independent passes, not one:
+
+1. **Before opening the PR**: a code-reviewer + security-reviewer pass on the diff. Fixed: the "saved"
+   notice was blocking on the ~35s network call before showing anything (read as "nothing happened",
+   invited duplicate reports); connection cleanup wasn't in a `finally`; the catch was too broad
+   (`Exception`, swallowing `CancellationException`); redirects weren't disabled; the toggle didn't
+   expose checked-state to TalkBack; the opt-in gate had no test.
+2. **After opening the PR, a full `/review` pass** (3 parallel specialists — testing, maintainability,
+   security — plus a Claude adversarial pass and a Codex adversarial pass that timed out at 5 min,
+   non-blocking). This found the **most serious bug of the whole feature**: `_reportNotice` was one
+   shared `StateFlow` for the entire `ChatViewModel`, not scoped per report. Reporting a second turn
+   while an earlier report's send was still in flight let the earlier report's late outcome silently
+   overwrite the more recent report's notice — misattributing whether a *specific* report (which may
+   carry a name typed into its note) actually left the device. **Fixed** with a generation-guard,
+   the exact pattern this file already used for speech-attempt supersession
+   (`reportGeneration`/`reportOwns`, mirroring `speechGeneration`/`owns`). Also fixed in the same pass:
+   ChatPanel (Gallery/agent chat) duplicated the gating logic with zero test coverage — extracted into
+   a shared `deliverReport()` (new file, `ContentReportOutcome.kt`) both surfaces now route through;
+   four **stale in-source doc comments** elsewhere in the codebase (`ReportEntities.kt`,
+   `ContentReportShaping.kt`, `ContentReportsActivity.kt`, `report-worker/README.md`) still claimed
+   "no developer server" / "not built yet", directly contradicted by this same PR — caught by grepping
+   the whole repo for the corrected claim, not by re-reading the files that were already touched.
+
+**Filed, not fixed: #273** — a failed send has no retry path; an opted-in report can silently never
+arrive. Deliberately out of scope for #274 (a real feature — schema change + review-screen UI — not a
+bug in what shipped).
+
+### Corrections that must not be re-derived
+
+- **Room's suspend queries dispatch on their own internal executor, invisible to
+  `runTest`/`advanceUntilIdle()`.** A `ChatViewModelReportTest` written with `StandardTestDispatcher` +
+  `advanceUntilIdle()` raced and failed nondeterministically in CI — real thread hop, virtual clock
+  can't see it. Fixed by switching to plain `runBlocking` + bounded real-time awaiting on the actual
+  `StateFlow` emission. If a ViewModel test touches Room (or any real I/O) through a real, non-fake
+  path, do not reach for `runTest` — await reality instead of virtual time.
+- **`RelaisDatabase.get()`'s test-isolation pattern**: `resetForTest()` + `deleteDatabase("relais.db")`
+  in `tearDown`, or rows leak across test methods sharing the JVM/classloader. Established precedent:
+  `RelaisSessionStoreTest.kt`. `ChatViewModelReportTest.kt` was missing this until `/review` caught it.
+- **A pre-PR review and a post-PR `/review` pass find different things.** The notice-misattribution bug
+  survived a full code-reviewer + security-reviewer round untouched; the *next* independent pass (fresh
+  context, adversarial framing, "think like an attacker and a chaos engineer") found it in one shot.
+  Don't treat one clean review round as sufficient for anything touching concurrency.
+
+---
+
 ## 2026-08-08 (end of day) — ⏩ START HERE. **Both halves of #258 are on `main` and have met. Zero open PRs. Next: one Cloudflare login.**
 
 ### Do these in order

@@ -26,6 +26,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -58,8 +59,10 @@ import cc.grepon.relais.StopRed
  * Reason picker + optional note for reporting AI output (#258).
  *
  * Play's AI-Generated Content policy requires flagging offensive AI output **without leaving the
- * app**, so this is a local dialog, not a `mailto:` or a browser hand-off. The report is written to
- * the device and reviewed in the control panel; nothing is transmitted.
+ * app**, so this is a local dialog, not a `mailto:` or a browser hand-off. The report is always
+ * written to the device and reviewed in the control panel; [onSubmit]'s third parameter is the
+ * operator's separate, explicit opt-in to also send it to the maintainer ([ContentReportDelivery]) —
+ * default off, decided per report, never automatic.
  *
  * The note field hard-stops at [MAX_REPORT_NOTE_CHARS] while typing, so the `NOTE_TOO_LONG`
  * rejection in [buildContentReportDraft] is unreachable from here — that guard remains for non-UI
@@ -74,12 +77,14 @@ private val ReasonSaver: Saver<ReportReason?, String> =
   Saver(save = { it?.id }, restore = { id -> ReportReason.entries.firstOrNull { it.id == id } })
 
 @Composable
-fun ContentReportDialog(onDismiss: () -> Unit, onSubmit: (ReportReason, String) -> Unit) {
+fun ContentReportDialog(onDismiss: () -> Unit, onSubmit: (ReportReason, String, Boolean) -> Unit) {
   // Saveable, not just remembered: a rotation (or the IME resizing the window, or process death
   // while the note field is focused) would otherwise silently discard a reason the operator picked
   // and a note they had typed, with the dialog still open and looking untouched.
   var selected by rememberSaveable(stateSaver = ReasonSaver) { mutableStateOf<ReportReason?>(null) }
   var note by rememberSaveable { mutableStateOf("") }
+  // Default OFF: the send is an explicit, per-report opt-in (#258 gate 1), never automatic.
+  var sendToDeveloper by rememberSaveable { mutableStateOf(false) }
 
   Dialog(onDismissRequest = onDismiss) {
     Column(
@@ -99,7 +104,7 @@ fun ContentReportDialog(onDismiss: () -> Unit, onSubmit: (ReportReason, String) 
         letterSpacing = 1.5.sp,
       )
       Text(
-        text = "Stays on this device. Relais has no server to send it to.",
+        text = "Saved on this device. Sent to the developer only if you check the box below.",
         color = Muted,
         fontFamily = FontFamily.Monospace,
         fontSize = 11.sp,
@@ -113,6 +118,8 @@ fun ContentReportDialog(onDismiss: () -> Unit, onSubmit: (ReportReason, String) 
 
       NoteField(note = note, onNoteChange = { note = it })
 
+      SendToggleRow(checked = sendToDeveloper, onToggle = { sendToDeveloper = !sendToDeveloper })
+
       Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.spacedBy(24.dp, Alignment.End),
@@ -123,10 +130,47 @@ fun ContentReportDialog(onDismiss: () -> Unit, onSubmit: (ReportReason, String) 
           text = "SUBMIT",
           color = if (selected == null) Muted else Amber,
           enabled = selected != null,
-          onClick = { selected?.let { onSubmit(it, note) } },
+          onClick = { selected?.let { onSubmit(it, note, sendToDeveloper) } },
         )
       }
     }
+  }
+}
+
+@Composable
+private fun SendToggleRow(checked: Boolean, onToggle: () -> Unit) {
+  Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+    Row(
+      modifier =
+        Modifier.fillMaxWidth()
+          // `toggleable`, not a bare `clickable` + Role.Checkbox: it announces on/off state to
+          // TalkBack, not just the role. That distinction matters more here than on ReasonRow's
+          // radio buttons — this control is the consent gate for sending data off-device, so a
+          // screen-reader user being unable to confirm the state before SUBMIT is a materially
+          // worse outcome than for picking a reason.
+          .toggleable(value = checked, role = Role.Checkbox, onValueChange = { onToggle() })
+          .padding(vertical = 7.dp),
+      horizontalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+      Text(
+        text = if (checked) "[x]" else "[ ]",
+        color = if (checked) Amber else Muted,
+        fontFamily = FontFamily.Monospace,
+        fontSize = 12.sp,
+      )
+      Text(
+        text = "ALSO SEND TO DEVELOPER",
+        color = if (checked) Paper else Muted,
+        fontFamily = FontFamily.Monospace,
+        fontSize = 12.sp,
+      )
+    }
+    Text(
+      text = "Sends the flagged output, your note, the reason you picked, and the model/mode that produced it.",
+      color = Muted,
+      fontFamily = FontFamily.Monospace,
+      fontSize = 11.sp,
+    )
   }
 }
 

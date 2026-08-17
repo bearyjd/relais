@@ -18,6 +18,10 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import cc.grepon.relais.chat.ChatStreamRequest
 import cc.grepon.relais.chat.ChatTransportSelector
+import cc.grepon.relais.chat.ContentReportDelivery
+import cc.grepon.relais.chat.ContentReportDraft
+import cc.grepon.relais.chat.ReportOutcome
+import cc.grepon.relais.chat.deliverReport
 import cc.grepon.relais.chat.ERROR_BACKEND
 import cc.grepon.relais.chat.ReportDraftResult
 import cc.grepon.relais.chat.ReportReason
@@ -68,6 +72,12 @@ class ChatViewModel @JvmOverloads constructor(
    * Production always takes the default.
    */
   private val speechDispatcher: CoroutineDispatcher = Dispatchers.IO,
+  /**
+   * How an opt-in report is delivered (#258 gate 1). Injectable so a test can assert the opt-in
+   * gate — that `alsoSend = false` never invokes this — without a network stack. Production always
+   * takes the default.
+   */
+  private val sendReport: (ContentReportDraft, String) -> Boolean = ContentReportDelivery::send,
 ) : AndroidViewModel(app) {
 
   private val repo = ChatRepository(app, RelaisDatabase.get(app).chatDao())
@@ -121,6 +131,19 @@ class ChatViewModel @JvmOverloads constructor(
    */
   private val _reportNotice = MutableStateFlow<String?>(null)
   val reportNotice: StateFlow<String?> = _reportNotice.asStateFlow()
+
+  /**
+   * Monotonic token identifying the current report submission. Guards every [_reportNotice] write so
+   * a late-arriving outcome from an EARLIER report — its up-to-~35s send window still open — can never
+   * overwrite a MORE RECENT report's notice. Without this, reporting a second turn while the first is
+   * still sending could misattribute one report's outcome onto the other: the operator could be told
+   * the wrong report was (or wasn't) transmitted, which matters because the transmitted content may
+   * include a name or other detail typed into the note. Same pattern as [speechGeneration].
+   */
+  private val reportGeneration = java.util.concurrent.atomic.AtomicLong(0)
+
+  /** True while [generation] is still the newest report submission — the guard on every notice write. */
+  private fun reportOwns(generation: Long): Boolean = reportGeneration.get() == generation
 
   /** The in-flight reload-observation poll, cancelled and replaced on each model switch. */
   private var reloadJob: kotlinx.coroutines.Job? = null
@@ -312,11 +335,17 @@ class ChatViewModel @JvmOverloads constructor(
    * Record an operator report of assistant output (#258), satisfying Play's AI-Generated Content
    * policy requirement for in-app flagging.
    *
-   * The report is written to this device and never transmitted — Relais has no developer server, and
-   * adding one would change the Data Safety declaration from "collects nothing". Validation happens
-   * in [buildContentReportDraft] before anything reaches Room.
+   * The report is always written to this device first. [alsoSend] is the operator's separate,
+   * explicit opt-in ([ContentReportDialog]'s toggle, default off) to also deliver it to the
+   * maintainer via [ContentReportDelivery] — a save never depends on the send succeeding, and a
+   * failed send never undoes the save. Validation happens in [buildContentReportDraft] before
+   * anything reaches Room. Gating and outcome sequencing are shared with the Gallery/agent chat
+   * surface via [deliverReport]; every notice write here is guarded by [reportOwns] so a second
+   * report submitted while this one is still sending can't have its outcome overwritten by this one
+   * arriving late.
    */
-  fun reportContent(turn: ChatTurn, reason: ReportReason, note: String) {
+  fun reportContent(turn: ChatTurn, reason: ReportReason, note: String, alsoSend: Boolean) {
+    val generation = reportGeneration.incrementAndGet()
     val result =
       buildContentReportDraft(
         reason = reason,
@@ -327,11 +356,13 @@ class ChatViewModel @JvmOverloads constructor(
       )
     when (result) {
       is ReportDraftResult.Rejected ->
-        _reportNotice.value =
-          when (result.error) {
-            ReportRejection.EMPTY_CONTENT -> "Nothing to report — that turn is empty."
-            ReportRejection.NOTE_TOO_LONG -> "That note is too long."
-          }
+        if (reportOwns(generation)) {
+          _reportNotice.value =
+            when (result.error) {
+              ReportRejection.EMPTY_CONTENT -> "Nothing to report — that turn is empty."
+              ReportRejection.NOTE_TOO_LONG -> "That note is too long."
+            }
+        }
       is ReportDraftResult.Valid ->
         viewModelScope.launch {
           val saved =
@@ -341,8 +372,25 @@ class ChatViewModel @JvmOverloads constructor(
               surface = ReportSurface.CHAT,
               nowMs = System.currentTimeMillis(),
             )
-          _reportNotice.value =
-            if (saved) "REPORTED — saved on this device" else "Could not save that report."
+          deliverReport(
+            saved = saved,
+            alsoSend = alsoSend,
+            draft = result.draft,
+            surface = ReportSurface.CHAT,
+            send = { draft, surface -> withContext(Dispatchers.IO) { sendReport(draft, surface) } },
+            onOutcome = { outcome ->
+              if (reportOwns(generation)) {
+                _reportNotice.value =
+                  when (outcome) {
+                    ReportOutcome.SAVE_FAILED -> "Could not save that report."
+                    ReportOutcome.SAVED_ONLY -> "REPORTED — saved on this device"
+                    ReportOutcome.SAVED_AND_SENT -> "REPORTED — saved on this device and sent to the developer"
+                    ReportOutcome.SAVED_SEND_FAILED ->
+                      "REPORTED — saved on this device. Could not reach the developer."
+                  }
+              }
+            },
+          )
         }
     }
   }

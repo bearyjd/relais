@@ -36,9 +36,10 @@ import cc.grepon.relais.data.RelaisDatabase
  * Returns true when the row was written. Callers must surface a false — a report that silently
  * fails to save leaves the operator believing a flag was recorded when it wasn't.
  *
- * There is no network path here, by design. See `docs/store-submission.md` gate 1: the opt-in
- * delivery to the maintainer is a separate, user-initiated step that has yet to be built, and
- * adding it will change the Data Safety declaration.
+ * This function never touches the network, by design — it stays the single, always-runs local write
+ * regardless of whether the operator also opts in to sending. See [ContentReportDelivery] for that
+ * separate, explicit, per-report step (#258 gate 1), and `docs/store-submission.md` gate 1 for why it
+ * changes the Data Safety declaration from "collects nothing" to optional collection.
  */
 suspend fun persistContentReport(
   context: Context,

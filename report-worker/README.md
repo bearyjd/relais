@@ -191,6 +191,6 @@ npx wrangler kv key get --binding REPORTS '<key>'
 
 ## After it is live
 
-The client send path (#258 step 2) needs the deployed URL. It is **not** built yet — do not point
-the app at an endpoint that has not been verified with the curl checks above, and land the privacy
-policy and Data Safety updates in the same PR as the client path, not after it.
+The client send path (#258 step 2) is built: `ContentReportDelivery.kt` posts to
+`https://report.ventouxlabs.com/report`, and the privacy policy and Data Safety updates landed in
+the same PR as the client path, per the rule above.

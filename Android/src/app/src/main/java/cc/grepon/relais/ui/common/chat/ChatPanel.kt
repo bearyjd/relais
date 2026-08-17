@@ -82,9 +82,12 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import cc.grepon.relais.chat.ContentReportDelivery
 import cc.grepon.relais.chat.ContentReportDialog
 import cc.grepon.relais.chat.ReportDraftResult
+import cc.grepon.relais.chat.ReportOutcome
 import cc.grepon.relais.chat.buildContentReportDraft
+import cc.grepon.relais.chat.deliverReport
 import cc.grepon.relais.chat.persistContentReport
 import cc.grepon.relais.data.ReportSurface
 import androidx.compose.runtime.snapshotFlow
@@ -122,10 +125,12 @@ import cc.grepon.relais.ui.common.ScrollToBottomButton
 import cc.grepon.relais.ui.modelmanager.ModelInitializationStatusType
 import cc.grepon.relais.ui.modelmanager.ModelManagerViewModel
 import cc.grepon.relais.ui.theme.customColors
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.android.awaitFrame
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 private const val TAG = "AGChatPanel"
 private const val SCROLL_ANIMATION_DURATION_MS = 300
@@ -641,7 +646,7 @@ fun ChatPanel(
         reportingContent?.let { content ->
           ContentReportDialog(
             onDismiss = { reportingContent = null },
-            onSubmit = { reason, note ->
+            onSubmit = { reason, note, alsoSend ->
               val draft =
                 buildContentReportDraft(
                   reason = reason,
@@ -652,22 +657,40 @@ fun ChatPanel(
                 )
               reportingContent = null
               scope.launch {
+                // Unreachable from this UI when null (the dialog caps the note and the button needs a
+                // reason), but a silent no-op here would tell the operator a flag was recorded when it
+                // was not.
+                val validDraft = (draft as? ReportDraftResult.Valid)?.draft
                 val saved =
-                  when (draft) {
-                    is ReportDraftResult.Valid ->
-                      persistContentReport(
-                        context = context,
-                        draft = draft.draft,
-                        surface = ReportSurface.GALLERY_CHAT,
-                        nowMs = System.currentTimeMillis(),
-                      )
-                    // Unreachable from this UI (the dialog caps the note and the button needs a
-                    // reason), but a silent no-op here would tell the operator a flag was recorded
-                    // when it was not.
-                    is ReportDraftResult.Rejected -> false
-                  }
-                snackbarHostState.showSnackbar(
-                  if (saved) "Reported — saved on this device" else "Could not save that report"
+                  validDraft != null &&
+                    persistContentReport(
+                      context = context,
+                      draft = validDraft,
+                      surface = ReportSurface.GALLERY_CHAT,
+                      nowMs = System.currentTimeMillis(),
+                    )
+                // Cancelling a job that's suspended inside showSnackbar dismisses it early, so the
+                // final outcome (once deliverReport's onOutcome fires again) replaces the "saved"
+                // notice immediately instead of queuing behind its full display duration.
+                var pendingNotice: kotlinx.coroutines.Job? = null
+                deliverReport(
+                  saved = saved,
+                  alsoSend = alsoSend,
+                  draft = validDraft,
+                  surface = ReportSurface.GALLERY_CHAT,
+                  send = { d, s -> withContext(Dispatchers.IO) { ContentReportDelivery.send(d, s) } },
+                  onOutcome = { outcome ->
+                    pendingNotice?.cancel()
+                    val text =
+                      when (outcome) {
+                        ReportOutcome.SAVE_FAILED -> "Could not save that report"
+                        ReportOutcome.SAVED_ONLY -> "Reported — saved on this device"
+                        ReportOutcome.SAVED_AND_SENT -> "Reported — saved on this device and sent to the developer"
+                        ReportOutcome.SAVED_SEND_FAILED ->
+                          "Reported — saved on this device. Could not reach the developer."
+                      }
+                    pendingNotice = launch { snackbarHostState.showSnackbar(text) }
+                  },
                 )
               }
             },
