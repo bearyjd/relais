@@ -6,7 +6,59 @@ uncommitted section was once destroyed by `git reset --hard` and had to be rebui
 
 ---
 
-## 2026-08-17 (later) — ⏩ START HERE. **v1.0.19 PUBLISHED, send path smoke-verified end-to-end on the signed build. Remaining: #122 Console work + one dashboard rule, both JD-only.**
+## 2026-08-17 (latest) — ⏩ START HERE. **#277 merged, #273 built. Every remaining open issue is JD-only (Play Console / Cloudflare dashboard) or hardware-blocked.**
+
+### Do these in order
+
+1. **#282 (#273 report send retry) — merge when CI goes green.** Armed for auto-merge. See below.
+2. **#122 — Play Console** (account-gated, unchanged from the section below, still accurate):
+   upload the **v1.0.19** AAB and transcribe `docs/store-submission.md`. **Deadline: targetSdk 35
+   submits only until 2026-08-30 — 13 days from today.** Path B (bump to targetSdk 36) removes the
+   deadline but has no open issue.
+3. **Cloudflare dashboard** (account-gated): the edge Rate Limiting rule. Marginally more relevant
+   now that #273 retries a failed send, though the retry is bounded and backs off.
+
+### What shipped today (after v1.0.19)
+
+- **#277 merged** (`0e2d67da`, PR #281) — the dialog consent caption now names `surface`. Verified
+  against `buildPayload`'s six keys before merging, not just against the issue text.
+- **#273 built** — PR **#282**, branch `fix/273-report-send-retry`. Schema **v7** (`sendState` /
+  `sendAttempts` / `lastAttemptAt`), `ReportSendWorker`, manual SEND in `REPORTED OUTPUT`.
+
+### The thing worth not re-deriving about #273
+
+**`ContentReportDelivery.send()` had to stop returning `Boolean` before a retry could be written at
+all.** A 429, a 500, a refused connection and a 400 were all `false`. Retrying on that boolean is
+*worse than no retry*: it spends the Worker's 10-per-caller-per-hour budget hammering a report the
+Worker is actively throttling, and then the operator's **next genuine report** is the one refused. It
+now returns a classified `ReportSendResult`, and the pure policy in `ContentReportRetry.kt` gives a
+429 a full-window cooldown **without counting it as an attempt** — so throttling can never be what
+permanently fails a report, which would have re-created the exact bug #273 exists to fix.
+
+Two incidental finds, both fixed in that PR: the `REPORTED OUTPUT` screen still claimed reports are
+*"never sent anywhere"* (and its KDoc that it *"never transmits anything"*) — false since #274, the
+same stale-claim class as #277, one PR later; and a WorkManager scheduling failure escaped
+`attemptReportSend`, aborting the caller mid-outcome so the operator saw **no send verdict at all**.
+The second was caught by an existing test, not by reading the code.
+
+### Audits done today, so they need no re-doing
+
+- **#258 — audited against every AC and commented on the issue.** All met; the *"no new network
+  egress / collects nothing"* AC is **consciously superseded** by #274, not failing. The only thing
+  left is the Cloudflare edge rate-limit rule (dashboard-only). Recommendation on the issue: keep it
+  open solely as that rule's tracker, or close it and carry the rule under #122's gate 1.
+- **#69 — still hardware-blocked, no new comment posted** (it already carries four dated
+  hardware-blocked reports plus a filed Google driver bug; a fifth would be noise). Only an
+  **offline emulator** is attached, which has no PowerVR GPU and cannot reproduce a Vulkan
+  first-dispatch deadlock in principle. The discriminating test still needs **non-G5 hardware
+  (G3/husky)**. Note its checklist still lists `#119`, which is closed.
+- **#122/#102/#97 — verified, nothing code-side remains.** `docs/store-submission.md` rows are
+  current (version/gate-1 re-verified today, and gate 1 now records #273). Gate 3 still needs a
+  **screen-recording video** — a deliverable, not a form field, and JD-only.
+
+---
+
+## 2026-08-17 (later) — v1.0.19 PUBLISHED, send path smoke-verified end-to-end on the signed build. (superseded above)
 
 ### Do these in order
 
