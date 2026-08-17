@@ -6,7 +6,76 @@ uncommitted section was once destroyed by `git reset --hard` and had to be rebui
 
 ---
 
-## 2026-08-16 — ⏩ START HERE. **v1.0.18 shipped. Worker deployed. PR #274 (the send path) open, CI running on its latest push.**
+## 2026-08-17 — ⏩ START HERE. **#258 fully shipped and merged. The Worker now enforces HTTPS itself. Next: merge the guard PR, deploy, cut v1.0.19, then #122.**
+
+### Do these in order
+
+1. **Merge this branch's PR** (`fix/258-worker-https-guard` — the Worker plaintext guard, below)
+   once CI is green. **The guard is already deployed and verified live** (version `6a0ad267`,
+   2026-08-17 ~01:46 UTC, deployed from this branch after both review passes completed):
+   plaintext GET → 403, plaintext POST → 403, the spoof probe
+   (`curl -sI -H 'x-forwarded-proto: https' http://…/report`) → **403 — the edge does overwrite a
+   client-supplied `x-forwarded-proto`, the one assumption the guard rested on, now observed**;
+   https GET → 405 and root → 404 (worker alive, https passes). Pre-guard severity for the
+   record: the security review proved a full report POSTed over plain http was **accepted and
+   stored** (202, `visit_scheme=http`, `tls=off`). One operational lesson recorded in the README:
+   a plaintext POST ~30 s post-deploy still hit the old build during propagation — wait a minute
+   and re-run before concluding. All probe reports (reviewer's two + propagation-window two) were
+   deleted; `report:` prefix lists empty.
+2. **One Cloudflare dashboard-only step left** (account-gated, JD only): an edge **Rate Limiting
+   rule** for `report.ventouxlabs.com/report`. Dashboard → the ventouxlabs.com zone → Security →
+   WAF → Rate limiting rules → e.g. 10 requests / 1 min per IP on
+   `(http.host eq "report.ventouxlabs.com" and http.request.uri.path eq "/report")`, action Block.
+   The in-Worker limiter (10/hr, renewing TTL) stands regardless; the edge rule absorbs floods
+   before they become Worker invocations. Flipping the zone's **Always Use HTTPS** toggle is now
+   defense in depth (the Worker refuses plaintext itself) — still worth doing for the rest of the
+   zone. The wrangler OAuth token has `zone (read)` only, so neither is agent-doable.
+3. **Cut v1.0.19** — the AAB submitted for #122 must contain the send path (#274), or the Data
+   Safety form declares collection the submitted binary cannot perform. Follow the #272 pattern:
+   release-prep PR (versionCode 36 → 37, versionName 1.0.19, `changelogs/37.txt` superseding
+   36.txt's now-false "Nothing is transmitted" line), then JD pushes the `v1.0.19` tag
+   (release.yaml does the rest; all RELEASE_* secrets in place).
+4. **Then #122** (Play Console listing + AAB submission — account-gated, JD only). The runbook is
+   `docs/store-submission.md`; note its Gate 2 / listing-checklist rows still reference the
+   v1.0.17 AAB and need re-pointing at v1.0.19 in the release-prep PR. Deadline still live:
+   `targetSdk 35` is submittable only until **2026-08-30**.
+
+### State
+
+- `main` = `1fc69b78` — **PR #274 merged** (squash, branch deleted): opt-in report send path +
+  every Data Safety/privacy-policy doc update it required. All 8 PR checks green, and the
+  post-merge push CI on `main` (all 5 workflows, including Build Android APK) green too.
+- **#267 closed** — resolved by #274's declarations (Personal info → optional; `note` re-typed as
+  App activity → Other user-generated content). Verified against the merged docs before closing.
+- **This branch: the Worker plaintext guard.** The zone's Always Use HTTPS was not enforcing —
+  first observed as the Worker's own 405 over unencrypted HTTP/1.1, then proven worse by the
+  security review: **a full report POSTed over plain http returned 202 and was stored**. The
+  "encrypted in transit: Yes" answer rested on dashboard state nobody had verified.
+  `isPlaintextRequest` (report-worker/src/index.ts) refuses any request whose scheme markers
+  don't all say https (`403 https required`): `x-forwarded-proto` and `cf-visitor` must each say
+  https when present (two present and disagreeing → refuse; both compared case-insensitively;
+  malformed `cf-visitor` → refuse), and when NEITHER is present, `cf-ray` decides — through the
+  edge with no scheme marker is a header-forwarding regression that must not silently allow, no
+  `cf-ray` means local workerd (vitest, CI boot check), which must not lock itself out. NOT keyed
+  off `url.protocol` for that same local reason. The hardened shape (cf-ray backstop,
+  disagreement refusal, case-insensitivity) came out of the security-review round on the first
+  version. `wrangler.toml`'s committed template also now pins `workers_dev = false` and
+  `preview_urls = false` — without them a fresh template deploy (route commented out) would
+  publish a `*.workers.dev` twin of the endpoint. Verified: 45/45 vitest + typecheck, and a real
+  workerd boot (local no-header 202, cf-ray-only 403, disagreement 403, full edge-https trio
+  202). Still open from that review, dashboard-side: confirm no per-version **preview URLs**
+  exist for the Worker. Docs updated in the same diff: `report-worker/README.md` (post-deploy
+  curl now REQUIRED), `docs/store-submission.md` (gate 1 + transit row), `docs/distribution.md`
+  transit row — all previously claimed "`index.ts` never inspects the scheme," which stopped
+  being true here.
+- **Filed, not fixed: #273** (send retry) — unchanged, still deliberately deferred.
+- `report-worker/wrangler.toml` in the working tree shows modified (real KV namespace id + route
+  uncommented) — **intentional, never commit it**, per the README. Same for any
+  `wrangler.local.toml`.
+
+---
+
+## 2026-08-16 — v1.0.18 shipped. Worker deployed. PR #274 (the send path) open, CI running on its latest push. (superseded above)
 
 ### Do these in order
 

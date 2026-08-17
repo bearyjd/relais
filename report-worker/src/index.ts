@@ -67,6 +67,38 @@ const reply = (status: number, message: string): Response =>
     headers: { 'content-type': 'application/json', 'cache-control': 'no-store' },
   });
 
+/**
+ * True unless every scheme marker on the request says https.
+ *
+ * Keyed off the proxy headers the edge sets on every forwarded request (Cloudflare documents that
+ * a client-supplied `x-forwarded-proto` is overwritten at the proxy), NOT `url.protocol` — local
+ * workerd (vitest, `wrangler dev`, the CI boot check) serves plain http with none of these headers
+ * and must not lock itself out. Every marker that is present must say https: if two are present
+ * and disagree, someone is lying and the request is refused. A malformed `cf-visitor` counts as
+ * plaintext — only the edge writes that header. And when NO scheme marker is present, `cf-ray`
+ * decides: its presence means the request came through the edge, where a missing scheme marker is
+ * a header-forwarding regression this guard must not silently allow; its absence means no edge in
+ * front (local workerd) and no TLS statement to enforce.
+ */
+export function isPlaintextRequest(request: Request): boolean {
+  const proto = request.headers.get('x-forwarded-proto');
+  if (proto !== null && proto.toLowerCase() !== 'https') return true;
+
+  const visitor = request.headers.get('cf-visitor');
+  if (visitor !== null) {
+    try {
+      const scheme = (JSON.parse(visitor) as { scheme?: unknown }).scheme;
+      if (typeof scheme !== 'string' || scheme.toLowerCase() !== 'https') return true;
+    } catch {
+      return true;
+    }
+  }
+
+  if (proto === null && visitor === null) return request.headers.get('cf-ray') !== null;
+
+  return false;
+}
+
 function isBoundedString(value: unknown, max: number): value is string {
   return typeof value === 'string' && value.length > 0 && value.length <= max;
 }
@@ -175,6 +207,12 @@ async function overRateLimit(env: Env, ip: string): Promise<boolean> {
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
+    // Transport before routing: a report body can carry a name typed into a note, and the zone's
+    // Always Use HTTPS toggle is dashboard state nothing in this repo can pin — so the Worker
+    // refuses plaintext itself. A caller speaking http learns nothing about paths or methods and
+    // costs no KV work.
+    if (isPlaintextRequest(request)) return reply(403, 'https required');
+
     const url = new URL(request.url);
     if (url.pathname !== '/report') return reply(404, 'not found');
     if (request.method !== 'POST') return reply(405, 'method not allowed');

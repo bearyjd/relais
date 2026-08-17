@@ -179,6 +179,110 @@ describe('missing KV binding', () => {
   });
 });
 
+/**
+ * The zone's Always Use HTTPS toggle is dashboard state — nothing in this repo can pin it, and
+ * plain http://report.ventouxlabs.com was observed reaching the deployed Worker (its own 405/404,
+ * served over HTTP/1.1 in the clear). So the Worker refuses plaintext itself, keyed off the proxy
+ * headers only the edge controls.
+ *
+ * Every test here runs with REPORTS unbound, which makes the outcome a position proof: 403 means
+ * the transport check rejected it, 503 means it got past transport and reached the storage guard.
+ */
+describe('plaintext transport', () => {
+  const post = (headers: Record<string, string>): Request =>
+    new Request('https://example.invalid/report', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', ...headers },
+      body: JSON.stringify(valid),
+    });
+  const noEnv = {} as unknown as Env;
+
+  it('refuses a request the edge marked http via x-forwarded-proto', async () => {
+    const res = await worker.fetch(post({ 'x-forwarded-proto': 'http' }), noEnv);
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ message: 'https required' });
+  });
+
+  it('refuses a request the edge marked http via cf-visitor', async () => {
+    const res = await worker.fetch(post({ 'cf-visitor': '{"scheme":"http"}' }), noEnv);
+    expect(res.status).toBe(403);
+  });
+
+  it('refuses before routing — a plaintext GET gets 403, not 405', async () => {
+    const res = await worker.fetch(
+      new Request('https://example.invalid/report', {
+        headers: { 'x-forwarded-proto': 'http' },
+      }),
+      noEnv,
+    );
+    expect(res.status).toBe(403);
+  });
+
+  it('treats a malformed cf-visitor as plaintext — only the edge writes that header', async () => {
+    const res = await worker.fetch(post({ 'cf-visitor': 'not json' }), noEnv);
+    expect(res.status).toBe(403);
+  });
+
+  it('refuses when the two markers disagree, whichever one is lying', async () => {
+    const disagreements: Record<string, string>[] = [
+      { 'x-forwarded-proto': 'https', 'cf-visitor': '{"scheme":"http"}' },
+      { 'x-forwarded-proto': 'http', 'cf-visitor': '{"scheme":"https"}' },
+    ];
+    for (const headers of disagreements) {
+      const res = await worker.fetch(post(headers), noEnv);
+      expect(res.status, JSON.stringify(headers)).toBe(403);
+    }
+  });
+
+  it('refuses an edge request (cf-ray present) that carries no scheme marker at all', async () => {
+    // If the edge ever stops forwarding both scheme headers, the guard must not silently become a
+    // no-op on exactly the traffic it exists to refuse.
+    const res = await worker.fetch(post({ 'cf-ray': '8f1a2b3c4d5e6f70-FRA' }), noEnv);
+    expect(res.status).toBe(403);
+  });
+
+  it('compares schemes case-insensitively in both markers', async () => {
+    const upperMarks: Record<string, string>[] = [
+      { 'x-forwarded-proto': 'HTTPS' },
+      { 'cf-visitor': '{"scheme":"HTTPS"}' },
+    ];
+    for (const headers of upperMarks) {
+      const res = await worker.fetch(post(headers), noEnv);
+      expect(res.status, JSON.stringify(headers)).toBe(503); // past transport
+    }
+  });
+
+  it('ignores url.protocol — an http:// URL with an https marker passes', async () => {
+    // Pins the comment's "NOT url.protocol" claim: local workerd serves http:// URLs, and the
+    // guard must read only the edge's markers.
+    const res = await worker.fetch(
+      new Request('http://localhost:8787/report', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-forwarded-proto': 'https' },
+        body: JSON.stringify(valid),
+      }),
+      noEnv,
+    );
+    expect(res.status).toBe(503);
+  });
+
+  it('passes an https-marked request through to the rest of the handler', async () => {
+    const httpsMarks: Record<string, string>[] = [
+      { 'x-forwarded-proto': 'https' },
+      { 'cf-visitor': '{"scheme":"https"}' },
+    ];
+    for (const headers of httpsMarks) {
+      const res = await worker.fetch(post(headers), noEnv);
+      expect(res.status).toBe(503); // past transport, stopped at the unbound-storage guard
+    }
+  });
+
+  it('passes a request with neither header — local workerd must not lock itself out', async () => {
+    const res = await worker.fetch(post({}), noEnv);
+    expect(res.status).toBe(503);
+  });
+});
+
 describe('transport cap vs schema caps', () => {
   it('accepts a maximum-size CJK report — every field at its limit, all multi-byte', () => {
     const maximal = {
