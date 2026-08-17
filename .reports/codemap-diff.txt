@@ -1,71 +1,38 @@
-Codemap refresh — 2026-08-04
-Previous generation: 2026-07-19 @ main ab345ff
-This generation:     2026-08-04 @ main afc237c1 (~16 days, +44 commits)
+Codemap refresh — 2026-08-17 (previous: 2026-08-04 @ afc237c1; now: main @ 4a283858)
 
-FILES SCANNED: 318 main .kt (was 334) — a NET DECREASE. 29 verified-dead files were removed
-across 5 gated PRs (0c84a125 + siblings), implying ~13 net-new files in the same window.
-ui/ 114 -> 90, customtasks/ 43 -> 38.
+Files changed since last scan (codemap-relevant):
+- NEW subsystem: content reporting (#258) — chat/ContentReportDialog, ContentReportSink,
+  ContentReportDelivery, ContentReportOutcome, ContentReportShaping, ContentReportsActivity,
+  data/ReportEntities + ReportDao; Room v5 → v6 (MIGRATION_5_6, content_reports).
+- NEW component: report-worker/ (Cloudflare Worker) — deployed at report.ventouxlabs.com,
+  plaintext guard (isPlaintextRequest) added 2026-08-17 (#276); workers_dev/preview_urls pinned.
+- Releases: v1.0.17, v1.0.18 published since last scan; v1.0.19 tagged 2026-08-17.
+- RelaisHttpServer 2202L → ~1900L (no route changes — extraction/cleanup only).
 
-=== CHANGE SUMMARY BY FILE ===
+Codemap updates (all in place; diff % = changed/total lines by numstat):
+- architecture.md  12/52  (23%) — report-worker component, server line count
+- backend.md       15/84  (18%) — "Client egress" section (report delivery + Worker summary)
+- data.md          20/46  (43%) — v6, ContentReport row, ReportDao, egress block; >30% flagged,
+                                   shown in PR for approval; nothing removed, additions + marker cleanup
+- frontend.md      19/71  (27%) — reporting UI section (dialog, notice guard, review screen)
+- dependencies.md  19/52  (37%) — Room v6 note, releases row, report-worker deps, external hosts;
+                                   mostly additive
 
-frontend.md   74% changed  (only file over the 30% gate; rewrite approved by the user)
-  - RESOLVED: the "29 genuinely dead files" section described work that HAS SINCE SHIPPED.
-    Every file it listed is gone from disk (verified individually). Section replaced with a
-    4-line "Dead code — cleared" note.
-  - CONDENSED: the 15-line same-day CORRECTION block collapsed to a 4-line standing warning.
-    The durable lesson is kept deliberately: Hilt @IntoSet multibinding is invisible to an
-    import-graph BFS, which is what produced the wrong "157 files dead" claim on 07-19. The
-    file now carries that lesson so the mistake is not re-derived; the incident narrative is
-    dropped.
-  - KEPT: ui/home/LicensesActivity.kt survived the cleanup (manifest-declared, probe-covered).
-    Its launch path SettingsDialog did NOT, so it is manifest-live but unreachable — corrected
-    from "IS dead" (present tense, pre-cleanup) to "was removed by the cleanup".
-  - CORRECTED: customtasks/agentchat/ 22 -> 24 files (stale count, unrelated to the cleanup).
+New dependencies detected: none in the Android catalog since 08-04; report-worker toolchain
+(wrangler ^4, vitest ^3, TS ^5.7, node>=22) now recorded.
 
-architecture.md   27% changed
-  - CORRECTED: RelaisHttpServer 1876L -> 2202L, RelaisEngine 782L -> 1026L (both materially
-    stale; the file counts and line sizes were the least trustworthy part of the old map).
-  - CORRECTED: the dead-code pocket is removed, not pending. Title framing updated to match.
-  - ADDED: the #220 runtime-compat gate to the resilience spine — four chokepoints over one
-    measured table (catalog / provisioner x2 / per-request swap / legacy Gallery download).
+Architecture changes: one new egress leg (report.ventouxlabs.com — the only developer-bound
+host); no new HTTP server routes.
 
-backend.md   23% changed
-  - ADDED MISSING ROUTE: POST /v1/messages (Anthropic Messages API, #179). Shipped ~07-23/25,
-    i.e. AFTER the last refresh, and never made it into the route table. Handler is live at
-    RelaisHttpServer.kt:484 (dispatch) / :1372 (handleAnthropicMessages).
-  - ADDED: a runtime-compat gate section — chokepoint table, the VERIFIED/INCOMPATIBLE/SUSPECT/
-    UNKNOWN axis, the independent license-gating axis, and where the operator-facing vs
-    API-client refusal copy each live (refusalMessage vs incompatibleModelMessage).
-  - CORRECTED: RelaisHttpServer/RelaisEngine line counts (as above).
+Staleness flags (>90 days, cross-referenced with source changes):
+- CONTRIBUTING.md — last commit 2025-04-14 (490 days). Inherited upstream-gallery text ("not
+  currently ready for code contributions") predates the AGPL relicense, the public repo, and
+  DEVELOPMENT.md's contributor onboarding. Whether to accept contributions is a maintainer
+  policy call — flagged for JD, deliberately NOT rewritten by this sync.
+- All other root + docs/ files touched within 90 days. RUNBOOK.md (08-03) predates the report
+  subsystem but covers node operation only; report-worker ops live in report-worker/README.md
+  (current). No change made.
 
-dependencies.md   15% changed
-  - ADDED: appId != namespace. build.gradle.kts onVariants sets applicationId per channel while
-    namespace stays cc.grepon.relais. This is the root cause of the stale probe instrument
-    targets fixed in PR #245, so it is now recorded where a reader will look.
-  - ADDED: v1.0.16 (2026-08-04) is the FIRST published GitHub Release, with asset sizes and the
-    R8-is-on-but-not-in-CI caveat.
-  - VERIFIED UNCHANGED: litertlm 0.12.0, llmedge 0.4.7.2, flavor matrix, license-lint CI.
-
-data.md   13% changed
-  - ADDED: the #180 model registry (provisioned_models plaintext pref -> ProvisionedModel
-    triples). Previously undocumented despite being the SAFETY BOUNDARY for per-request model
-    swaps, and despite being pruned-on-read rather than on-write. That read-time pruning is
-    load-bearing and was invisible in the old map.
-  - VERIFIED UNCHANGED: Room v5, 5 DataStore serializers, Hilt AppModule, provisioning paths.
-
-=== STALENESS WARNINGS ===
-- None of the 5 maps were 90+ days stale (16 days since last full pass).
-- HOWEVER, two files had drifted WITHOUT their header reflecting it: dependencies.md and
-  frontend.md were content-edited on 2026-07-28 (llmedge bump, #211 speech) while their
-  <!-- Generated: 2026-07-19 --> header stayed put. Freshness headers are only trustworthy if
-  every content edit bumps them; a reader checking the header would have been misled by 9 days.
-  Worth a lint if this recurs.
-- The line-count facts (1876L, 782L, 22 files) rotted fastest and silently. They are the
-  cheapest thing to get wrong and the easiest to auto-verify — a candidate for generation
-  rather than hand-maintenance.
-
-=== NOTE, NOT A CODEMAP ISSUE ===
-Android/src/app/src/main/java/cc/grepon/relais/.omc/state/ exists inside the Kotlin source
-package. It is untracked (0 files known to git) so it does not ship, but it is OMC tooling state
-sitting in a source tree. Harmless today; worth a .gitignore entry or relocation so it is never
-picked up by a glob-based scan.
+Doc generation sources present: report-worker/package.json (scripts documented in its README —
+no drift), docs/openapi.yaml (routes cross-checked against RelaisHttpServer dispatch — no new
+routes since 08-04, so not regenerated this pass). No .env.example, no Dockerfile in this repo.
