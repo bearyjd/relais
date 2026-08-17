@@ -1,6 +1,6 @@
 # Dependencies, Flavors & Manifest Surface
 
-<!-- Generated: 2026-08-04 | Files scanned: build.gradle.kts + libs.versions.toml + AndroidManifest + src/{full,degoogled,playsafe} | main @ afc237c1 -->
+<!-- Generated: 2026-08-17 | Files scanned: build.gradle.kts + libs.versions.toml + AndroidManifest + src/{full,degoogled,playsafe} + report-worker/package.json | main @ 4a283858 -->
 
 ## External dependencies (catalog: `Android/src/gradle/libs.versions.toml`)
 | Dep | Version | Purpose | Flavor |
@@ -12,7 +12,7 @@
 | **kotlinx-coroutines-test** | **1.10.2 [NEW]** | virtual-time testing (polling-pause regression) | test |
 | mlkit-genai-prompt | 1.0.0-beta2 | AICore/Gemini Nano (NPU) | full |
 | llmedge | **0.4.7.2** | sd.cpp image-gen (CPU on Pixel 10 — see `ImageGenBackendPolicy`) | full |
-| room | 2.7.1 | SQLite ORM (schema now v5) | all |
+| room | 2.7.1 | SQLite ORM (schema now v6 — 5→6 adds `content_reports`, #258) | all |
 | hilt-android | 2.58 | DI | all |
 | bcpkix-jdk15to18 | 1.78.1 | self-signed TLS for LAN server | all |
 | compose-bom | 2026.02.00 | UI | all |
@@ -30,7 +30,20 @@ playsafe strip live (#76, `tools:node="remove"` × 6). degoogled = zero GMS, CI-
 
 **appId ≠ namespace.** `namespace` stays `cc.grepon.relais`; `build.gradle.kts` `onVariants` sets the applicationId per channel (composing suffixes across both dimensions would double-suffix degoogled+open). This is why an on-device probe's instrument target is `com.ventouxlabs.relais.izzy.test` for `fullOpen`, not `cc.grepon.relais.test` — the latter resolves only to a pre-rebrand leftover package and fails at class-load. Resolve it per-device with `adb shell pm list packages | grep -E 'relais|ventoux'`.
 
-**Releases** — `v1.0.16` (2026-08-04) is the first published GitHub Release: `degoogled-open` APK 35.2 MB, `full-open` APK 77.9 MB, `full-playsafe` AAB 78.0 MB, all past the build/permission/ABI/16 KB-alignment/signature gates. R8 is ON for release builds (#231); every keep rule was earned from a real on-device failure, and CI runs no R8 — so proguard changes and reflective dep bumps need an on-device *inference* check, not just a green build.
+**Releases** — published: `v1.0.16` (2026-08-04, the first), `v1.0.17`, `v1.0.18` (2026-08-14, capture half of #258); `v1.0.19` tagged 2026-08-17 (send path — release.yaml builds to a **draft** the maintainer publishes). Artifacts per release: `degoogled-open` APK, `full-open` APK, `full-playsafe` AAB, all past the build/permission/ABI/16 KB-alignment/signature gates. R8 is ON for release builds (#231); every keep rule was earned from a real on-device failure, and CI runs no R8 — so proguard changes and reflective dep bumps need an on-device *inference* check, not just a green build.
+
+## report-worker (the one non-Android component) [NEW #258]
+`wrangler` ^4.0.0 · `vitest` ^3.0.0 · `typescript` ^5.7.0 · `@cloudflare/workers-types` ^5.x ·
+Node ≥22 (wrangler's own engines floor — Node 20 installs a CLI that won't reliably run).
+Cloudflare custom domain `report.ventouxlabs.com`, KV binding `REPORTS`; `workers_dev`/`preview_urls`
+pinned **false** in the committed template (a fresh deploy would otherwise publish a
+`*.workers.dev` twin).
+
+## External hosts the app talks to (grepped, `main/java`)
+`huggingface.co` (model downloads + OAuth) · `github.com`/`raw.githubusercontent.com` (release
+checks, skill fetch) · `report.ventouxlabs.com` (opt-in report send — the ONLY developer-bound
+leg) · `dl.google.com` · webhooks = operator-configured, HTTPS-only unless allowlisted
+(`WebhookGuard`).
 
 ## License split (CI-enforced) [NEW since 06-26]
 `.github/workflows/license-lint.yml` — net-new Relais files require an AGPL-3.0 header; Google-origin files keep Apache-2.0; scans `src/main/*.kt` only.
