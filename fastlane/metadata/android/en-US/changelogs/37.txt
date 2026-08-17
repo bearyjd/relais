@@ -1,0 +1,1 @@
+1.0.19: a report can now also be sent to the developer — off by default, chosen per report. Check "also send to the developer" when submitting and that report's contents (excerpt, reason, optional note, model id) leave the device over HTTPS; otherwise nothing is transmitted. All reports stay saved on this device and listed in the control panel either way.

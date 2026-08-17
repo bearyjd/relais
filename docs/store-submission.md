@@ -14,7 +14,8 @@ Companion to [`distribution.md`](distribution.md) (signing + release pipeline + 
 derivation of every Data Safety answer). That doc builds and signs the artifacts; this one is the
 **listing + policy paperwork** to get them accepted.
 
-**Facts below re-verified against `main` and the published release on 2026-08-05.** Anything marked
+**Facts below re-verified against `main` and the published release on 2026-08-05; version and
+gate-1 rows re-verified 2026-08-17 (post-#274, v1.0.19 prep).** Anything marked
 ⚠ is a gate that must clear *before* an upload is worth making.
 
 ## Blocked on the operator (account-gated — cannot be automated)
@@ -228,8 +229,8 @@ relying on it in review.
 
 ## ⚠ Gate 2 — target API level deadline
 
-`build.gradle.kts` is at **`targetSdk = 35`** (`compileSdk = 35`, `minSdk = 31`, versionCode 35 /
-versionName 1.0.17).
+`build.gradle.kts` is at **`targetSdk = 35`** (`compileSdk = 35`, `minSdk = 31`, versionCode 37 /
+versionName 1.0.19).
 
 Per Google's [target API level requirements](https://developer.android.com/google/play/requirements/target-sdk),
 **new apps submitted from 2026-08-31 must target API 36.** targetSdk 35 qualifies for a new
@@ -239,7 +240,7 @@ So there are two viable paths, and the choice is a sequencing decision, not a te
 
 | Path | What it means |
 |---|---|
-| **Submit before 2026-08-31** | The current v1.0.17 AAB is eligible as-is. Requires Gate 1 to land first. |
+| **Submit before 2026-08-31** | The v1.0.19 AAB is eligible as-is. Gate 1 has landed — **submit v1.0.19 or later, not an earlier AAB**: v1.0.18 lacks the send path and v1.0.17 lacks reporting entirely, so an earlier binary contradicts both the GenAI policy answer and the Data Safety declaration. |
 | **Bump to targetSdk 36 first** | Removes the deadline pressure entirely. Tracked as a deferred sub-project in `.claude/PRPs/plans/relais-release-pipeline.plan.md` — no open issue yet. Note `build.gradle.kts:284` already flags a dependency whose 14.x fix wants `compileSdk 36`. |
 
 *Not verified here:* whether an app already **in review** on 2026-08-31 is judged against the old
@@ -351,21 +352,21 @@ some locales.
 - **Contact email:** `bryn@ventouxadvisoryco.com` (matches the privacy policy).
 - **Target audience:** 18+ / developers — not directed at children (privacy policy §"Children").
 - **Ads:** declare **No ads**.
-- **AAB:** `app-full-playsafe-release.aab`, **77,969,674 bytes**, attached to the published
-  [v1.0.17 release](https://github.com/bearyjd/relais/releases/tag/v1.0.17) (appId
-  `com.ventouxlabs.relais`). Enrol in **Play App Signing** on first upload — the release key is the
-  *upload* key; keep `distribution.md`'s warning about the sideload key's immutable-signature story
-  intact.
-- **Changelog:** `fastlane/metadata/android/en-US/changelogs/35.txt` (versionCode 35 = v1.0.17).
+- **AAB:** `app-full-playsafe-release.aab` attached to the **v1.0.19** release once its tag is
+  pushed (release.yaml publishes it; appId `com.ventouxlabs.relais`). **Do not upload an earlier
+  AAB** — see Gate 2's row above. Enrol in **Play App Signing** on first upload — the release key
+  is the *upload* key; keep `distribution.md`'s warning about the sideload key's
+  immutable-signature story intact.
+- **Changelog:** `fastlane/metadata/android/en-US/changelogs/37.txt` (versionCode 37 = v1.0.19).
 
 ---
 
 ## Order for the operator
 
-1. **Land Gate 1** (in-app content reporting), **including the opt-in send** — the local record
-   alone does not meet the "to developers" half. Nothing below is worth doing first: a GenAI app
-   without this is rejectable on a policy Google enforces at review. Decide the delivery endpoint
-   before building the send path.
+1. **Land Gate 1** (in-app content reporting), **including the opt-in send** — **DONE as of
+   v1.0.19**: capture shipped in v1.0.18, the opt-in send merged in #274, and the endpoint is
+   deployed at `report.ventouxlabs.com`. The local record alone would not have met the "to
+   developers" half. What remains is the dashboard-only work gate 1 lists above.
 2. **Decide Gate 2**: submit before 2026-08-31 at targetSdk 35, or bump to 36 first.
 3. Record the **Gate 3** FGS video and write the four declarations.
 4. Create the app in Play Console, enrol in Play App Signing, upload the AAB.
