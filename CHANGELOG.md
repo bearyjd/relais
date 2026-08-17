@@ -16,6 +16,39 @@ user-visible releases, and every release also bumps the Android `versionCode`.
 
 ### Security
 
+## [1.0.19] - 2026-08-17
+
+versionCode 37. The report a user files against AI output can now — per report,
+and only on request — also be sent to the developer, completing the "to
+developers" half of Play's AI-Generated Content policy that 1.0.18's local-only
+capture deliberately deferred. This flips the Data Safety declaration: the app
+now declares optional collection.
+
+### Added
+
+- An ALSO SEND TO DEVELOPER toggle in the report dialog: default off, decided
+  per report. When checked, that report — the flagged excerpt, the reason
+  picked, the optional note, and the model, backend and chat surface it came
+  from — is POSTed over HTTPS to the deployed receiver
+  (`report.ventouxlabs.com`); when unchecked, nothing transmits, exactly as
+  before. The "saved" notice appears immediately and updates when the send
+  resolves. A failed send is reported, not retried — retry is tracked as #273.
+  (#274)
+
+### Changed
+
+- Data Safety declarations and the privacy policy now describe the optional
+  collection the send path creates: Messages (excerpt), App activity (reason,
+  surface, note), Personal info (free text can carry it), Device or other IDs
+  (the receiver's salted rate-limit hash). (#274, #267)
+
+### Security
+
+- The send is HTTPS-only with redirects disabled and carries no credentials —
+  the receiver is effectively open by design and defends structurally: hard
+  body caps before parsing, an allowlist schema, per-IP rate limiting on a
+  salted non-reversible hash. (#274)
+
 ## [1.0.18] - 2026-08-08
 
 versionCode 36. Adds in-app reporting for AI-generated output, which is what

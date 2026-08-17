@@ -161,7 +161,7 @@ While checking Q2, the exact **Messages** sub-type label in the Console is also 
 **"Other in-app messages"** — verify against the current Console copy when transcribing, since that is
 a label check this doc cannot make authoritatively.
 
-Both land in this PR, alongside the client send path. Reasoning and sources: **#267**.
+Both landed in #274, alongside the client send path. Reasoning and sources: **#267**.
 
 **The rate-limit identifier counts too, and it is not part of the report.** The Worker derives a
 salted SHA-256 of `cf-connecting-ip` and retains it in KV to link a caller's requests, on a one-hour
@@ -276,7 +276,7 @@ request). Expect a reviewer question on the download path; no code change is req
 Derivation and per-data-type reviewer notes: [`distribution.md`](distribution.md) §"Play Data Safety
 form".
 
-> The client send path has shipped (this PR). Every row below is the post-send-path answer — there is
+> The client send path has shipped (#274). Every row below is the post-send-path answer — there is
 > no longer a separate "today, pre-send-path" table in this runbook.
 
 Transcribe:
@@ -352,11 +352,13 @@ some locales.
 - **Contact email:** `bryn@ventouxadvisoryco.com` (matches the privacy policy).
 - **Target audience:** 18+ / developers — not directed at children (privacy policy §"Children").
 - **Ads:** declare **No ads**.
-- **AAB:** `app-full-playsafe-release.aab` attached to the **v1.0.19** release once its tag is
-  pushed (release.yaml publishes it; appId `com.ventouxlabs.relais`). **Do not upload an earlier
-  AAB** — see Gate 2's row above. Enrol in **Play App Signing** on first upload — the release key
-  is the *upload* key; keep `distribution.md`'s warning about the sideload key's
-  immutable-signature story intact.
+- **AAB:** `app-full-playsafe-release.aab`, built and attached to a **draft** v1.0.19 GitHub
+  Release when its tag is pushed — release.yaml stops at the draft; **the maintainer reviews and
+  publishes it** (appId `com.ventouxlabs.relais`). ⚠ Pending artifact: byte count and release
+  link go here once it exists — the one forward-looking row under this file's "facts" banner.
+  **Do not upload an earlier AAB** — see Gate 2's row above. Enrol in **Play App Signing** on
+  first upload — the release key is the *upload* key; keep `distribution.md`'s warning about the
+  sideload key's immutable-signature story intact.
 - **Changelog:** `fastlane/metadata/android/en-US/changelogs/37.txt` (versionCode 37 = v1.0.19).
 
 ---
