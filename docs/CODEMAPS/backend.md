@@ -1,6 +1,6 @@
 # Backend — HTTP API & Node Lifecycle
 
-<!-- Generated: 2026-08-04 | Files scanned: RelaisHttpServer(2202L)+Engine(1026L)+extracted handler/gate files + embed/rerank/rag/tts/batch/nodetools | main @ afc237c1 -->
+<!-- Generated: 2026-08-17 | Files scanned: RelaisHttpServer(~1900L)+Engine(1026L)+extracted handler/gate files + embed/rerank/rag/tts/batch/nodetools + report-worker | main @ 4a283858 -->
 
 ## Routes (RelaisHttpServer — now pure parse→gate→dispatch over ~20 `handleX(ctx: RequestContext)` handlers)
 Auth: bearer token, checked before dispatch; all routes except `/health` gated.
@@ -69,3 +69,16 @@ Resident engine lifecycle, `generate()` backend dispatcher (GPU/NPU/TPU), `gener
 
 ## Admission / backpressure
 Shared semaphore for normal inference (chat/generate/audio/TTS); exclusive drain-all for image-gen. Unprovisioned features: 501 (not registered) / 503+Retry-After (provisioning in progress, kicks background fetch) / 200 (ready).
+
+## Client egress — NOT a server route [NEW #258]
+`chat/ContentReportDelivery.kt` POSTs an opted-in report to the fixed compile-time endpoint
+`https://report.ventouxlabs.com/report` (redirects disabled, `IOException`-narrow catch,
+`finally`-cleanup; no SSRF pinning needed — no attacker-controlled host). Receiver:
+**`report-worker/`** (Cloudflare Worker, KV): accepts only `POST /report`, allowlist schema
+(`reasonId`∈6, `surface`∈{chat,gallery_chat}), byte-counted 32 KiB body cap enforced off the
+stream, per-IP limiter (10/hr on a salted SHA-256, renewing TTL — never "one hour retention" on a
+form), 180-day report TTL, fixed never-echo replies, and `isPlaintextRequest` — refuses any
+request whose edge scheme markers don't all say https (`cf-ray` backstop when none present).
+`schema-parity.test.ts` pins the client↔worker vocabulary; `report-worker.yml` CI boots real
+workerd (unit tests can't see workerd-only failures, #268). Deploy runbook + required post-deploy
+curls: `report-worker/README.md`.

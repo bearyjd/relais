@@ -1,6 +1,6 @@
 # Frontend — UI (unified Relais shell over still-live inherited Gallery code)
 
-<!-- Generated: 2026-08-04 | Files scanned: RelaisAppShell + chat/ + Dashboard/Models screens + full ui/(90) + customtasks/(38) import+DI graph | main @ afc237c1 -->
+<!-- Generated: 2026-08-17 | Files scanned: RelaisAppShell + chat/ + Dashboard/Models screens + full ui/(90) + customtasks/(38) import+DI graph | main @ 4a283858 -->
 
 > ⚠️ **Reachability here is not visible to an import graph.** `ModelManagerViewModel` constructor-injects
 > `Set<@JvmSuppressWildcards CustomTask>`, and `@Provides @IntoSet` modules in `customtasks/agentchat/`,
@@ -35,6 +35,23 @@ Room-backed via `ChatDao` (conversations/turns, truncate/regenerate/edit-and-res
 - `tts/TtsPlayer.kt` — `AudioTrack` playback in `MODE_STREAM`, one live track at a time, transient audio-focus handling, `COMPLETED`/`CANCELLED`/`FAILED` outcomes.
 - `ChatViewModel` owns synthesis + playback behind a monotonic **generation token** (turn-id comparison is insufficient — stop-then-re-tap of the same turn yields identical ids). Availability is re-checked on `ON_RESUME` because **TTS registers at node startup, not app startup** (`TtsRegistration` ← `RelaisNodeService`), and `refreshSpeechOffered()` deliberately avoids `availability()` since that loads the ~64 MB voice model.
 - Coverage: JVM (`SpeechTextTest`, `ChatSpeechTest`, `ChatViewModelSpeechTest`) + on-device `SpeechPlaybackProbe` (player/focus/real voice) and `ChatSpeechUiProbe` (Compose UI; the repo's first).
+
+**AI-content reporting (#258, v1.0.18 capture + v1.0.19 send) [NEW]** — a REPORT affordance on
+assistant turns on **both** chat surfaces (Relais `chat/` and inherited Gallery
+`ui/common/chat/ChatPanel`):
+- `chat/ContentReportDialog.kt` — reason picker (6 reasons), optional note, and an
+  **ALSO SEND TO DEVELOPER** toggle, default off, decided per report; caption enumerates what a
+  send transmits (#277 tracks that it omits `surface`).
+- Local save is unconditional (`ContentReportSink` → Room `content_reports`); the "saved" notice
+  shows **immediately**, then updates when an opted-in send resolves — outcomes are
+  **generation-guarded per report** (`reportGeneration`/`reportOwns`, mirroring the speech
+  pattern) so a stale in-flight send can't overwrite a newer report's notice.
+- Both surfaces route through one gate: `chat/ContentReportOutcome.kt#deliverReport()` (the
+  opt-in check lives there, pinned by `ChatViewModelReportTest` + `ContentReportOutcomeTest`) →
+  `ContentReportDelivery` → the Worker (see `backend.md` §Client egress).
+- `chat/ContentReportsActivity.kt` (manifest-registered, launched from CONFIGURE) —
+  `CONFIGURE › REPORTED OUTPUT`, the on-device review list Play's "use reports to inform
+  moderation" answer points at.
 
 ## Models (`ModelsScreen.kt`)
 Current-model header + bottom-sheet model selector, reload-polling feedback.

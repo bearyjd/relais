@@ -1,8 +1,8 @@
 # Data Layer — Room, DataStore, DI
 
-<!-- Generated: 2026-08-04 | Files scanned: data/ + di/ + rag/RagStore + tts/imagegen provisioners + RelaisModelRegistry | main @ afc237c1 -->
+<!-- Generated: 2026-08-17 | Files scanned: data/ + di/ + rag/RagStore + tts/imagegen provisioners + RelaisModelRegistry | main @ 4a283858 -->
 
-## Room — `relais.db` v5 (was v4; still additive-only, NO destructive fallback)
+## Room — `relais.db` v6 (was v5; still additive-only, NO destructive fallback)
 Accessed via static `RelaisDatabase.get(context)` (not Hilt-provided).
 
 | Entity | Table | Key columns | Feature |
@@ -12,10 +12,18 @@ Accessed via static `RelaisDatabase.get(context)` (not Hilt-provided).
 | RagDocument | rag_documents | id, title, createdAt | RAG |
 | RagChunk | rag_chunks | id, documentId, chunkIndex, text, embedding(BLOB,256-dim MRL), createdAt | RAG |
 | BatchJob | batch_jobs | id, jobId(UNIQUE), status, requestJson, resultJson, webhookUrl | batch |
-| **Conversation** | conversations | id, title, modelId, created/updatedAt | **chat depth [NEW]** |
-| **ChatTurn** | chat_turns | id, conversationId(FK CASCADE), role, content, attachmentPath?, answeredByBackend? | **chat depth [NEW]** |
+| Conversation | conversations | id, title, modelId, created/updatedAt | chat depth |
+| ChatTurn | chat_turns | id, conversationId(FK CASCADE), role, content, attachmentPath?, answeredByBackend? | chat depth |
+| **ContentReport** | content_reports | id(auto PK), reasonId(enum **id string**, not ordinal), excerpt, note?, modelId?, backend?, surface(`chat`/`gallery_chat`), createdAt(indexed) | **AI-content reports, #258 [NEW]** |
 
-DAOs: SessionDao, RagDao, BatchDao, SchemaMetaDao, **ChatDao** (upsert/rename/touch/delete conversation, observe turns Flow, delete-turns-after for edit/retry). Migrations: 1→2→3→4 (unchanged) + **4→5 chat depth**.
+DAOs: SessionDao, RagDao, BatchDao, SchemaMetaDao, ChatDao (upsert/rename/touch/delete conversation, observe turns Flow, delete-turns-after for edit/retry), **ReportDao**. Migrations: 1→2→3→4→5 (unchanged) + **5→6 content_reports**.
+
+**Report egress (the one Room table with an off-device leg):** local insert is unconditional on
+SUBMIT; delivery is per-report opt-in, default off — `ChatViewModel`/`ChatPanel` →
+`deliverReport()` (`chat/ContentReportOutcome.kt`, shared gate) → `ContentReportDelivery` (POST
+`https://report.ventouxlabs.com/report`, redirects disabled, notice generation-guarded per
+report). No delivery-status column exists — a failed opt-in send is unrecoverable (#273 tracks
+retry). Rows reviewable in-app: `ContentReportsActivity` (CONFIGURE › REPORTED OUTPUT).
 
 ## Proto DataStore (unchanged since 06-26)
 Settings/UserData/Cutouts/BenchmarkResults/Skills — same 5 serializers, same facade (`DataStoreRepository`).
