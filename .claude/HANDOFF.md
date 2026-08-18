@@ -6,7 +6,64 @@ uncommitted section was once destroyed by `git reset --hard` and had to be rebui
 
 ---
 
-## 2026-08-17 (latest) — ⏩ START HERE. **#277 merged, #273 built. Every remaining open issue is JD-only (Play Console / Cloudflare dashboard) or hardware-blocked.**
+## 2026-08-18 — ⏩ START HERE. **#69 answered on Mali hardware. targetSdk 36 de-risked. Two PRs open, both yours to call.**
+
+### Do these in order
+
+1. **#284 — targetSdk 36, ready for review.** The edge-to-edge risk I originally flagged **is not real**
+   (see below). Build side is two version bumps. Merging it deletes the 2026-08-30 deadline.
+2. **#285 — probe-suite fix + the CI step that prevents a repeat.** Armed for auto-merge.
+3. **#122 — Play Console** (account-gated, unchanged). Deadline only bites if #284 is NOT merged.
+
+### #69 — Vulkan PASSES on Mali-G710 / Tensor G2 (measured today on cheetah)
+
+`ImageGenServiceProbe#vulkanRetestAfterDriverUpdate` on Pixel 7 Pro (GS201, Mali-G710 `v1.r54p3`,
+Android 17), current main, llmedge 0.4.7.2: **OK, 168.5 s**, `backend=VULKAN`, sampling 70.05 s,
+VAE decode 83.28 s, `generate_image` 158.23 s, valid 512×512 PNG, isolated process confirmed gone.
+
+**The novel part is NOT the Mali/PowerVR split — that was already settled.** `ImageGenServiceProbe`'s
+own header has recorded *"Mali (Tensor G3 / Pixel 8 Pro): PASSES"* since 2026-06-22, so the
+2026-07-30 comment on #69 calling a non-G5 run "the single highest-information next step" was stale
+when written. **Read the probe header before repeating that issue's next-steps.** What today actually
+delivered is the **first runtime verification of llmedge 0.4.7.2 on any hardware** — #216 bumped it and
+`libs.versions.toml` was explicit that CI proves only that it builds.
+
+Unexplained and worth not over-claiming: **158 s today vs the "~5 min cold" the header records for
+Mali/G3.** Could be G2-vs-G3 or a real 0.4.7.2 gain; not disentangled, needs a G3 run on 0.4.7.2.
+
+G5/PowerVR is untouched, still deadlocking, still CPU-forced. Dropping `imageGenForcesCpuBackend`
+still needs a deliberate G5 re-test with wedge risk and an explicit go-ahead.
+
+### #284 — the edge-to-edge risk was my error, corrected on the PR
+
+Enforcement began at **targetSdk 35**, which v1.0.19 already ships, and
+`windowOptOutEdgeToEdgeEnforcement` is **used nowhere** — so the 35→36 delta is nil. Counting
+`enableEdgeToEdge` call sites was the wrong measure: **7 activities draw UI and all 7 handle insets**;
+the other 4 never call Compose `setContent` at all (`RelaisShareActivity`'s apparent hits were
+`setContentTitle`/`setContentText` on a *notification* builder). Device-confirmed on comet/Android 17
+for MainActivity + RelaisConfigureActivity.
+
+Build side: `compileSdk`/`targetSdk` 36 + **Robolectric 4.14.1 → 4.16**. Robolectric is the hidden
+blocker — 4.14.1 caps at maxSdk 35 and kills the ENTIRE JVM suite at targetSdk 36; **4.15.1 does not
+fix it**, 4.16 does. AGP 8.8.2 only warns. NOT audited: JobScheduler quotas, predictive back.
+
+### The process lesson from today
+
+**CI never compiled `androidTest`.** #273 changed `send()`'s return type and silently broke every
+on-device probe; it surfaced only when the probe APK was next built — mid-investigation, on a device.
+#285 adds `:app:compileFullOpenDebugAndroidTestKotlin` to the JVM job, verified to fail on main and
+pass with the fix. **Run that task locally after any signature change to shared code**, per CLAUDE.md.
+
+### Device state
+
+cheetah (Pixel 7 Pro) has the **debug** build installed plus a 2 GB `sdturbo.gguf` at
+`/data/local/tmp/relais/imagegen/sdturbo/` — left in place for further probe runs; delete when done.
+comet still carries the signed v1.0.19 release (untouched; the debug build could not be installed
+there without uninstalling it and destroying on-device data).
+
+---
+
+## 2026-08-17 (latest) —  **#277 merged, #273 built. Every remaining open issue is JD-only (Play Console / Cloudflare dashboard) or hardware-blocked.**
 
 ### Do these in order
 
