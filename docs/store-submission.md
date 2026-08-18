@@ -71,6 +71,30 @@ is usually also the user, a purely local record is self-reporting. *(Raised by `
 | "to developers" | Each report offers an explicit, per-report **send to the maintainer**, chosen by the operator. |
 | "use reports to inform moderation" | Reports are reviewable in-app (`CONFIGURE › REPORTED OUTPUT`), so the operator can act on them whether or not one is sent. |
 
+### Imported models are not gated in the Play build — decision, and why (#291)
+
+`ModelManagerViewModel`'s import path lets a user side-load a model file they already have. It is
+**not** gated on the policy flavor, so the Play build has it exactly as the IzzyOnDroid build does.
+A user can therefore import an "uncensored"/abliterated model and the app will run it.
+
+**Decision: leave it ungated.** The reasoning, so it is not improvised if a reviewer asks:
+
+- **The app ships, links to, and markets no such model.** The curated allowlist is what the app
+  offers; import is the user supplying a file they already possess, from their own storage.
+- **Upstream precedent.** Relais is forked from `google-ai-edge/gallery`, which ships custom model
+  import. Google publishing an app with this capability is meaningful evidence about how the policy
+  is applied in practice.
+- **No third-party audience.** Output goes to the operator's own client on their own LAN, behind the
+  node's bearer key. The person who imported the model is the person who reads its output.
+- **The reporting affordance is model-agnostic.** Both chat surfaces offer it regardless of which
+  model produced the output, so the policy's moderation loop works on imported models too.
+
+**What was rejected, and why it is worth recording:** gating import behind `POLICY_OPEN` — the
+treatment skill-loading-from-URL already gets — was considered and declined. Skill-from-URL fetches
+**instructions the app then acts on** from an arbitrary remote host; model import reads a file the
+user already chose, from local storage, with no network fetch. The asymmetry is deliberate, not an
+oversight, which is the thing this paragraph exists to establish.
+
 ### Which surfaces carry the affordance, and why image generation does not
 
 **Have the report affordance:** the Relais in-app chat (`chat/`, `ReportSurface.CHAT`) and the
@@ -348,6 +372,52 @@ Google's guidance prefers a **user-initiated data transfer job** over `dataSync`
 transfers* specifically, which describes the WorkManager download case. It is guidance, not a
 prohibition, and `dataSync` remains correct for the other three (local processing on explicit user
 request). Expect a reviewer question on the download path; no code change is required to answer it.
+Tracked as #288.
+
+### Transcribe this into App content → Foreground service permissions
+
+The console asks **per declared type**, not per service. All four services declare the single type
+`dataSync`, so this is **one** declaration covering all four uses.
+
+**Foreground service type:** `dataSync`
+
+**What is your app's core functionality that uses this foreground service type?**
+
+> Relais runs a large language model entirely on the device and serves it to the user's own
+> computers over their local network, plus a few on-device inference paths that outlive the screen
+> that started them. Four services declare `dataSync`:
+>
+> 1. **Node service** — keeps the on-device model resident and the local API server listening while
+>    the user's other devices are using it. Started only by explicit user action (a START button, or
+>    a boot-start the user opted into).
+> 2. **Share service** — runs one inference for text the user shared into the app. A single response
+>    takes 30–120 seconds on phone hardware, which outlives the share dialog that launched it.
+> 3. **Automation service** — the same, for a request triggered by the user's own automation app.
+> 4. **Download service** (WorkManager) — downloads the multi-gigabyte model file the user chose.
+>
+> Every one of these begins with a direct user action. None of them starts on its own.
+
+**What is the user impact if this work is deferred?**
+
+> The work is the feature; deferring it means the feature does not happen.
+>
+> - **Node service:** the local API server stops answering. The user's laptop, sitting on the same
+>   network and mid-request, gets a dead connection — and because the model takes tens of seconds to
+>   load back into memory, resuming is not instant. The user explicitly started a server and expects
+>   it to stay up.
+> - **Share / automation services:** a response the user asked for is abandoned partway through, with
+>   nothing to show for the 30–120 seconds already spent. There is no partial result to keep.
+> - **Download service:** a multi-gigabyte transfer over the user's own connection is interrupted.
+>   The app resumes from where it stopped rather than restarting, but the model is unusable until it
+>   finishes, and the app cannot do its one job without it.
+>
+> None of this work can run without the user noticing, which is why each service posts a visible
+> notification for its whole lifetime.
+
+**Video demonstrating the feature:** ⚠ **TO RECORD.** A screen recording showing: the app open →
+press **START** → the status flips to LIVE with the LAN address shown → a request answered from
+another device (or the in-app CHAT tab) → **STOP**. Under a minute is sufficient. Upload unlisted to
+YouTube or Drive and paste the link — the console requires a link, not a file.
 
 ---
 
