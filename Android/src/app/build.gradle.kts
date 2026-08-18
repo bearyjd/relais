@@ -37,12 +37,12 @@ val releaseStoreFile: String? = System.getenv("RELEASE_STORE_FILE")?.takeIf { fi
 
 android {
   namespace = "cc.grepon.relais"
-  compileSdk = 35
+  compileSdk = 36
 
   defaultConfig {
     applicationId = "cc.grepon.relais"
     minSdk = 31
-    targetSdk = 35
+    targetSdk = 36
     versionCode = 37
     versionName = "1.0.19"
 
