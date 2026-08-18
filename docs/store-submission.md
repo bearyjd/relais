@@ -71,6 +71,49 @@ is usually also the user, a purely local record is self-reporting. *(Raised by `
 | "to developers" | Each report offers an explicit, per-report **send to the maintainer**, chosen by the operator. |
 | "use reports to inform moderation" | Reports are reviewable in-app (`CONFIGURE › REPORTED OUTPUT`), so the operator can act on them whether or not one is sent. |
 
+### Which surfaces carry the affordance, and why image generation does not
+
+**Have the report affordance:** the Relais in-app chat (`chat/`, `ReportSurface.CHAT`) and the
+inherited Gallery/agent chat (`ui/common/chat/ChatPanel`, `ReportSurface.GALLERY_CHAT`). Both route
+through the one write path, `persistContentReport`, so they cannot drift on what a report stores.
+
+**Does not, deliberately: image generation.** This needs stating plainly here rather than being
+reconstructed under a review clock, because #258's own scope line said *"Report/flag entry point in
+the in-app chat UI, **and on generated images**"* and the second half is not shipped.
+
+The policy sentence is *"allow users to report or flag offensive content to developers **without
+needing to exit the app**"*. That presupposes the content is displayed **in the app**, which is the
+locus a flag affordance attaches to. Generated images have no such locus in this build:
+
+| Route | Where the image is displayed | In-app Android UI? |
+|---|---|---|
+| `POST /v1/images/generations` | The caller's own client, over the LAN | No — the app never renders it |
+| `GET /experiments` | A **browser**, from HTML the node serves | No — a served page, not a Compose surface |
+
+There is no in-app gallery, no image viewer, and no Compose surface that displays a generated image.
+The app generates image bytes and hands them to whoever asked over HTTP. Adding a "report this
+image" button would mean **first building a screen that shows images**, purely to have somewhere to
+put the button — which would not make users safer, and would add an image-browsing surface the app
+otherwise has no reason to have.
+
+**What actually governs this content instead:** `/v1/images/generations` requires the node's bearer
+key, the node is started only by explicit operator action, and the operator and the viewer are the
+same person — the LAN caller is the operator's own client on the operator's own network. There is no
+third-party audience to protect from content the operator asked their own device to produce, and the
+review surface that *does* exist (`CONFIGURE › REPORTED OUTPUT`) is where a person acting on
+generated content would go.
+
+**If that changes, this changes.** The moment an in-app surface renders a generated image — a
+results gallery, an image attachment in chat, a share-sheet preview — it gets a report affordance and
+a `ReportSurface` entry, exactly as the two chat stacks did. `ContentReportSink`'s KDoc already
+carries that instruction for any third surface.
+
+**Expect this to be asked.** Image generation genuinely ships in `fullPlaysafe` —
+`ImageGenRegistration` splits on the **dist** dimension, not policy, so the Play build registers the
+real sd.cpp generator. A reviewer seeing "this app generates images" and looking for a flag button
+will not find one. The answer is the table above: there is nothing in-app to flag, and the app is
+not the display surface.
+
 ### ⚠ The send path FLIPS the Data Safety answer to "Yes". Default-off does not preserve it.
 
 An earlier draft of this section said keeping the send **default-off, per-report and user-initiated**
