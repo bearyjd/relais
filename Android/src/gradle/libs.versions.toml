@@ -52,7 +52,7 @@ mlkit-genai-prompt = "1.0.0-beta2"  # Ref: https://developers.google.com/ml-kit/
 mlkit-text-recognition = "16.0.1"
 mcp = "0.8.0"
 ktor = "3.4.3"
-robolectric = "4.14.1"  # https://github.com/robolectric/robolectric/releases/tag/robolectric-4.14.1
+robolectric = "4.16"
 # Virtual-time coroutine testing (runTest/TestScope) — matches the resolved kotlinx-coroutines 1.10.x
 # in the graph. Test-only; used by the shell-polling pause/resume regression (#171).
 coroutinesTest = "1.10.2"
