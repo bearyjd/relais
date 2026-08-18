@@ -230,3 +230,14 @@ jobs:
         # Two flavor dimensions (dist × policy) — `testDebugUnitTest` is ambiguous. Run every shipping
         # variant's debug unit tests (fullOpen / fullPlaysafe / degoogledOpen).
         run: ./gradlew testFullOpenDebugUnitTest testFullPlaysafeDebugUnitTest testDegoogledOpenDebugUnitTest
+      - name: Compile the on-device probe suite
+        # COMPILE ONLY — these need physical hardware to RUN and are executed by hand, so CI never ran
+        # them and, until now, never compiled them either. That gap let #273 change
+        # `ContentReportDelivery.send()`'s return type and silently break EVERY probe in the suite; it
+        # surfaced only when someone next built the probe APK, well after the change had merged. A
+        # broken probe suite is discovered at exactly the moment it is needed most — mid-investigation
+        # on a device — so the compile belongs in CI even though the execution cannot be.
+        #
+        # `androidTestFull` (the image-gen probes) is full-flavor only, so this target covers it;
+        # degoogled has no probe sources of its own.
+        run: ./gradlew :app:compileFullOpenDebugAndroidTestKotlin

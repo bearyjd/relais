@@ -18,6 +18,8 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import cc.grepon.relais.chat.ContentReportDelivery
 import cc.grepon.relais.chat.ContentReportDraft
+import cc.grepon.relais.chat.ReportSendResult
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Assume.assumeTrue
 import org.junit.Test
@@ -57,7 +59,15 @@ class ContentReportDeliveryProbe {
       )
     // Blocking by contract (see ContentReportDelivery.send's KDoc) — instrumented tests already run
     // off the main thread, so no explicit dispatcher hop is needed here.
-    val delivered = ContentReportDelivery.send(draft, surface = "chat")
-    assertTrue("send() did not return true — check logcat tag RelaisReportDelivery for the HTTP code", delivered)
+    val result = ContentReportDelivery.send(draft, surface = "chat")
+    // Asserts the classified result (#273), not a boolean: a failure now names WHICH failure, so a
+    // probe run distinguishes "the Worker throttled this caller" from "the deploy is broken" without
+    // going to logcat. RATE_LIMITED in particular is an expected outcome when this probe is re-run
+    // more than ten times in an hour, and reads very differently from a 5xx.
+    assertEquals(
+      "send() returned $result — check logcat tag RelaisReportDelivery for the HTTP code",
+      ReportSendResult.SENT,
+      result,
+    )
   }
 }
