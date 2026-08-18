@@ -16,6 +16,47 @@ user-visible releases, and every release also bumps the Android `versionCode`.
 
 ### Security
 
+## [1.0.20] - 2026-08-18
+
+versionCode 38. The app now targets Android 16 (API 36), and an opt-in report
+that fails to reach the developer is retried instead of silently lost.
+
+### Added
+
+- Opt-in report sends are durable. The choice is recorded on the report itself
+  (schema v7), a failed delivery is retried in the background, and
+  `CONFIGURE > REPORTED OUTPUT` shows each report's send status with a SEND
+  action for anything still undelivered. A report the user did not opt to send
+  is never transmitted — by the retry worker or by that screen.
+- Download stop reasons are logged. The app previously had no way to tell a
+  stalled download from one the system had throttled.
+
+### Changed
+
+- Targets Android 16 (API 36); `compileSdk` 36, Robolectric 4.16. Verified on a
+  Pixel 10 Pro Fold: the unfolded 852dp layout renders identically to 1.0.19,
+  which already filled the same window.
+- The report dialog's consent caption now names every field a send carries.
+  It previously omitted the chat surface, which the Data Safety form declares.
+
+### Fixed
+
+- A download resuming after the system stopped its worker is no longer counted
+  as a new download. It previously overwrote the recorded start time — so an
+  interrupted download reported a *faster* duration than an uninterrupted one —
+  logged a duplicate start event, and left the progress bar frozen at its last
+  value with no explanation. A dropped network was enough to trigger this.
+- Report delivery distinguishes a rate-limited attempt from a server error and
+  from a rejected payload. A rate-limited attempt no longer consumes the retry
+  budget, so being throttled can never be what permanently fails a report.
+- The on-device probe suite compiles again, and CI now compiles it so it cannot
+  silently break.
+
+### Security
+
+- No change to what the app transmits. The set of fields a sent report carries
+  is unchanged from 1.0.19; only its delivery is now durable.
+
 ## [1.0.19] - 2026-08-17
 
 versionCode 37. The report a user files against AI output can now — per report,
