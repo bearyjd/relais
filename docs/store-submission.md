@@ -15,7 +15,7 @@ derivation of every Data Safety answer). That doc builds and signs the artifacts
 **listing + policy paperwork** to get them accepted.
 
 **Facts below re-verified against `main` and the published release on 2026-08-05; version and
-gate-1 rows re-verified 2026-08-17 (post-#274, v1.0.19 prep).** Anything marked
+gate-1 rows re-verified 2026-08-17; Gate 2 cleared and version rows updated 2026-08-18 (v1.0.20 prep).** Anything marked
 ⚠ is a gate that must clear *before* an upload is worth making.
 
 ## Blocked on the operator (account-gated — cannot be automated)
@@ -279,25 +279,53 @@ lists (the edge Rate Limiting rule) — it does not block this declaration. The 
 Yes" answer no longer rests on dashboard state: the Worker refuses edge-marked plaintext itself
 (`isPlaintextRequest` → `403 https required`), verifiable by curl per that README.
 
-## ⚠ Gate 2 — target API level deadline
+## ✅ Gate 2 — target API level (CLEARED)
 
-`build.gradle.kts` is at **`targetSdk = 35`** (`compileSdk = 35`, `minSdk = 31`, versionCode 37 /
-versionName 1.0.19).
+`build.gradle.kts` is at **`targetSdk = 36`** (`compileSdk = 36`, `minSdk = 31`, versionCode 38 /
+versionName 1.0.20). Bumped in #284 along with Robolectric 4.14.1 → 4.16.
 
 Per Google's [target API level requirements](https://developer.android.com/google/play/requirements/target-sdk),
-**new apps submitted from 2026-08-31 must target API 36.** targetSdk 35 qualifies for a new
-submission **only until 2026-08-30**. An extension to 2026-11-01 can be requested from Play Console.
+new apps submitted from 2026-08-31 must target API 36. **That deadline no longer applies** — submit
+on whatever schedule suits.
 
-So there are two viable paths, and the choice is a sequencing decision, not a technical one:
+**Submit v1.0.20 or later, not an earlier AAB.** v1.0.18 lacks the send path and v1.0.17 lacks
+reporting entirely, so an earlier binary contradicts both the GenAI policy answer and the Data
+Safety declaration.
 
-| Path | What it means |
+### What the bump was, and what it was not
+
+The build side was two version bumps. Robolectric was the non-obvious part: 4.14.1 caps at maxSdk 35,
+so at targetSdk 36 the ENTIRE JVM suite dies at initialization. **4.15.1 does not fix it** (verified);
+4.16 does. AGP 8.8.2 warns about `compileSdk = 36` but does not fail.
+
+All 16 targeting-36 behavior changes were audited against this codebase. Only one applied, and it was
+measured to be a no-op:
+
+| Change | Applies? |
 |---|---|
-| **Submit before 2026-08-31** | The v1.0.19 AAB is eligible as-is. Gate 1 has landed — **submit v1.0.19 or later, not an earlier AAB**: v1.0.18 lacks the send path and v1.0.17 lacks reporting entirely, so an earlier binary contradicts both the GenAI policy answer and the Data Safety declaration. |
-| **Bump to targetSdk 36 first** | Removes the deadline pressure entirely. Tracked as a deferred sub-project in `.claude/PRPs/plans/relais-release-pipeline.plan.md` — no open issue yet. Note `build.gradle.kts:284` already flags a dependency whose 14.x fix wants `compileSdk 36`. |
+| Large-screen orientation ignored (≥600dp) | **Measured no-op** — see below |
+| Edge-to-edge opt-out disabled | No — enforcement began at targetSdk **35**, already shipped; the opt-out is unused |
+| Predictive back default-on | No — no `onBackPressed` / `KEYCODE_BACK` / `OnBackPressedCallback` anywhere |
+| `elegantTextHeight`, `scheduleAtFixedRate`, health perms, Bluetooth, `MediaStore#getVersion` | No — unused |
+| Safer Intents, photo-picker pre-selection | Opt-in / not applicable |
+| GPU syscall filtering (Mali, Pixel 6-9) | Watch only — blocks deprecated/dev-only IOCTLs; this app's Vulkan/LiteRT use is normal API |
+| **Local Network Permission** | Opt-in today — **watch this**, it targets LAN-serving apps, which is this app's whole function |
 
-*Not verified here:* whether an app already **in review** on 2026-08-31 is judged against the old
-level, and what the first post-deadline *update* must target. Confirm in Console before relying on
-either.
+**The orientation change, measured rather than reasoned about.** `MainActivity` declares
+`android:screenOrientation="portrait"`, which API 36 ignores on displays ≥600dp. On rango
+(Pixel 10 Pro Fold, **unfolded inner display, sw852dp**, Android 17) the targetSdk 36 build and the
+installed targetSdk 35 release produced an **identical** `mAppBounds=Rect(0, 0 - 2076, 2152)` — both
+already fill the whole panel, neither is pillarboxed. The layout renders correctly at 852dp. No
+`PROPERTY_COMPAT_ALLOW_RESTRICTED_RESIZABILITY` opt-out was needed.
+
+*Method note:* simulating a large screen with a density override (`wm density 280` → config reported
+`sw617dp lrg`) did **not** reproduce the policy — the app stayed portrait. A density override changes
+what the configuration reports, not what the display physically is. Only the real unfolded panel
+settled it. Do not trust a simulated large screen for this question.
+
+**Not audited:** JobScheduler quota interactions beyond the download path (#288), and predictive-back
+behavior under 3-button navigation.
+
 
 ## ⚠ Gate 3 — foreground-service declaration
 
@@ -404,14 +432,14 @@ some locales.
 - **Contact email:** `bryn@ventouxadvisoryco.com` (matches the privacy policy).
 - **Target audience:** 18+ / developers — not directed at children (privacy policy §"Children").
 - **Ads:** declare **No ads**.
-- **AAB:** `app-full-playsafe-release.aab`, **78,004,698 bytes**, attached to the published
-  [v1.0.19 release](https://github.com/bearyjd/relais/releases/tag/v1.0.19) (appId
-  `com.ventouxlabs.relais`; published 2026-08-17 after an on-device smoke of the send path on the
-  signed build — REPORT → ALSO SEND TO DEVELOPER → SUBMIT → the record verified byte-faithful in
-  the Worker's production KV, then deleted). **Do not upload an earlier AAB** — see Gate 2's row
-  above. Enrol in **Play App Signing** on first upload — the release key is the *upload* key;
+- **AAB:** `app-full-playsafe-release.aab` from the **v1.0.20** release (appId
+  `com.ventouxlabs.relais`). ⚠ **PENDING** until that release is built and smoke-tested — v1.0.19's
+  artifact was 78,004,698 bytes; v1.0.20's size and checksum go here once the tag builds. Publish it
+  the way v1.0.19 was published: only after an on-device smoke on the SIGNED build. For this release
+  that means the **schema v6→v7 migration on a device holding real data** and a **report send**, not
+  just a clean launch. **Do not upload an earlier AAB** — see Gate 2. Enrol in **Play App Signing** on first upload — the release key is the *upload* key;
   keep `distribution.md`'s warning about the sideload key's immutable-signature story intact.
-- **Changelog:** `fastlane/metadata/android/en-US/changelogs/37.txt` (versionCode 37 = v1.0.19).
+- **Changelog:** `fastlane/metadata/android/en-US/changelogs/38.txt` (versionCode 38 = v1.0.20).
 
 ---
 

@@ -43,8 +43,8 @@ android {
     applicationId = "cc.grepon.relais"
     minSdk = 31
     targetSdk = 36
-    versionCode = 37
-    versionName = "1.0.19"
+    versionCode = 38
+    versionName = "1.0.20"
 
     // NOTE: abiFilters is deliberately NOT set here. AGP takes the UNION of defaultConfig and
     // buildType abiFilters, so anything listed at this level can never be narrowed later — a release
