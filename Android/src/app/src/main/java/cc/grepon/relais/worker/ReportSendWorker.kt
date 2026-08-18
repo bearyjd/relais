@@ -14,6 +14,7 @@ package cc.grepon.relais.worker
 
 import android.content.Context
 import android.util.Log
+import androidx.annotation.VisibleForTesting
 import androidx.work.Constraints
 import androidx.work.CoroutineWorker
 import androidx.work.ExistingWorkPolicy
@@ -21,7 +22,9 @@ import androidx.work.NetworkType
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
+import cc.grepon.relais.chat.ContentReportDelivery
 import cc.grepon.relais.chat.ContentReportDraft
+import cc.grepon.relais.chat.ReportSendResult
 import cc.grepon.relais.chat.attemptReportSend
 import cc.grepon.relais.data.RelaisDatabase
 import cc.grepon.relais.data.ReportSendState
@@ -71,6 +74,7 @@ class ReportSendWorker(context: Context, params: WorkerParameters) :
               ),
             surface = report.surface,
             attemptsSoFar = report.sendAttempts,
+            attempt = sender,
           )
         }
       }
@@ -79,7 +83,17 @@ class ReportSendWorker(context: Context, params: WorkerParameters) :
   }
 
   companion object {
-    private const val UNIQUE_WORK = "relais_report_send"
+    @VisibleForTesting internal const val UNIQUE_WORK = "relais_report_send"
+
+    /**
+     * How a drained row is actually delivered. Overridable **only** so `ReportSendWorkerTest` can run
+     * the real enqueue-and-drain loop without a socket — a JVM test that used the default would POST
+     * to the production Worker on every CI run. The same seam `ChatViewModel`'s `sendReport` parameter
+     * and [attemptReportSend]'s `attempt` parameter already provide; a worker cannot take constructor
+     * arguments, so for this one it has to live on the companion. Production never assigns it.
+     */
+    @VisibleForTesting
+    internal var sender: (ContentReportDraft, String) -> ReportSendResult = ContentReportDelivery::send
 
     /**
      * Bound on one run, well under the Worker's 10-requests-per-60-minutes per-caller budget.
