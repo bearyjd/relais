@@ -432,13 +432,23 @@ some locales.
 - **Contact email:** `bryn@ventouxadvisoryco.com` (matches the privacy policy).
 - **Target audience:** 18+ / developers — not directed at children (privacy policy §"Children").
 - **Ads:** declare **No ads**.
-- **AAB:** `app-full-playsafe-release.aab` from the **v1.0.20** release (appId
-  `com.ventouxlabs.relais`). ⚠ **PENDING** until that release is built and smoke-tested — v1.0.19's
-  artifact was 78,004,698 bytes; v1.0.20's size and checksum go here once the tag builds. Publish it
-  the way v1.0.19 was published: only after an on-device smoke on the SIGNED build. For this release
-  that means the **schema v6→v7 migration on a device holding real data** and a **report send**, not
-  just a clean launch. **Do not upload an earlier AAB** — see Gate 2. Enrol in **Play App Signing** on first upload — the release key is the *upload* key;
-  keep `distribution.md`'s warning about the sideload key's immutable-signature story intact.
+- **AAB:** `app-full-playsafe-release.aab`, **78,022,931 bytes**, attached to the published
+  [v1.0.20 release](https://github.com/bearyjd/relais/releases/tag/v1.0.20) (appId
+  `com.ventouxlabs.relais`; published 2026-08-18). **Do not upload an earlier AAB** — see Gate 2.
+  Enrol in **Play App Signing** on first upload — the release key is the *upload* key; keep
+  `distribution.md`'s warning about the sideload key's immutable-signature story intact.
+  - Verified before publishing: comet (Pixel 9 Pro Fold, Android 17) upgraded **in place** 1.0.19 →
+    1.0.20 with no uninstall, and the app opened cleanly. That is the schema **v6 → v7** migration
+    proof — Room validates the identity hash on every open and throws `IllegalStateException` if a
+    migration did not produce the compiled schema, so a clean open cannot happen on a botched one.
+  - Also verified: the v1.0.19 and v1.0.20 signing certificates are **identical**
+    (SHA-256 `3468fbe6…5b9e9bd2`, `CN=Relais, O=grepon.cc`), so users upgrade in place.
+  - rango (Pixel 10 Pro Fold, GrapheneOS, Tensor G5) ran a clean install of the same signed APK at
+    targetSdk 36 without error.
+  - ⚠ **Known, not a shipping defect:** a locally-built pre-keystore APK (rango was on such a
+    v1.0.17) is signed with a different key and can NEVER be upgraded in place by a published
+    release — it needs an uninstall, which destroys on-device data. Only affects devices carrying
+    non-release builds.
 - **Changelog:** `fastlane/metadata/android/en-US/changelogs/38.txt` (versionCode 38 = v1.0.20).
 
 ---
