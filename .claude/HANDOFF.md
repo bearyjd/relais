@@ -6,7 +6,74 @@ uncommitted section was once destroyed by `git reset --hard` and had to be rebui
 
 ---
 
-## 2026-08-18 — ⏩ START HERE. **#69 answered on Mali hardware. targetSdk 36 de-risked. Two PRs open, both yours to call.**
+## 2026-08-18 (late) — ⏩ START HERE. **targetSdk 36 MERGED, deadline gone. Nothing left with code work in it.**
+
+### State
+
+`main` is **targetSdk 36 / compileSdk 36 / Robolectric 4.16** (#284). The 2026-08-30 submission
+deadline **no longer applies** — submit on your own schedule.
+
+Merged today: #281 (#277 caption) · #282 (#273 send retry) · #283 (retry wiring tests) · #285 (probe
+suite + CI compiles it) · #286 (handoff) · **#284 (targetSdk 36)** · #287 (download resume fix).
+Closed: #277, #273. Filed: **#288**.
+
+### Everything still open is blocked on JD or on evidence
+
+1. **#288** — UIDT job vs direct foreground service for downloads. **Deliberately blocked on field
+   evidence**, not effort. Do NOT "just convert it": see below.
+2. **#258** — one Cloudflare dashboard rule (edge rate limiting). Account-gated.
+3. **#69** — upstream PowerVR driver bug. **Only re-test when the driver build string changes**
+   (`dumpsys SurfaceFlinger | grep GLES:` vs `25.3@6908880`). An OS update and an llmedge bump have
+   both now been shown NOT to move it.
+4. **#122/#102/#97** — Play Console + an FGS screen recording. Account-gated.
+
+### The download-quota story, so it is not re-derived a fourth time
+
+The Android 16 JobScheduler quota change is on **Behavior changes: ALL apps** — *"regardless of
+targetSdkVersion"*. It is **not** caused by targetSdk 36 and already affects shipped v1.0.19. Two
+mitigations already in the code blunt it: `DownloadWorker` does HTTP `Range` resume (no bytes lost)
+and WorkManager re-enqueues interrupted workers by itself. So the realistic failure is a *stuttering*
+download, not a broken one, and it is rate-dependent — a fast link never notices.
+
+#287 fixed the bug that investigation actually found, which was live independent of Android 16: the
+`ENQUEUED` branch treated every resume as a fresh start, **overwriting the start timestamp** (so an
+interrupted download reported a FASTER duration than an uninterrupted one) and logging a duplicate
+start event. A dropped network was already enough to trigger it.
+
+#287 also added the stop observability the app had **none** of — nothing called `getStopReason()`.
+`STOP_REASON_QUOTA` in a log is the evidence that would justify #288's architecture change. Note
+`onStopped()` is **final** on `CoroutineWorker`; the seam is a `finally` guarded on `isStopped`.
+
+### Three things I asserted today that were WRONG — recorded so they are not re-inherited
+
+1. **"Edge-to-edge will break 8 activities at 36."** No. Enforcement begins at targetSdk **35**, which
+   was already shipped, and the opt-out is unused. 7 activities draw UI and all handle insets; the
+   other 4 never call Compose `setContent` (`RelaisShareActivity`'s apparent hits were
+   `setContentTitle`/`setContentText` on a *notification* builder).
+2. **"A debug build can't be installed without uninstalling the signed release."** No — JD caught
+   this. `applicationId` follows the CHANNEL: `fullPlaysafe` = `com.ventouxlabs.relais`, `fullOpen` =
+   `…izzy`, `degoogledOpen` = `…degoogled`. **Build `fullPlaysafe` debug to test alongside an izzy
+   release** — image-gen is on the *dist* dimension, so it is still a full build with the real
+   generator. This unlocks every on-device test.
+3. **"The JobScheduler quota is a targetSdk 36 issue."** No — see above. I agreed with an external
+   review before checking which doc page the change lived on.
+
+### Hardware results from today
+
+- **Mali-G710 / Tensor G2 (Pixel 7 Pro): Vulkan image-gen PASSES**, 168.5 s, `backend=VULKAN`. First
+  runtime evidence for **llmedge 0.4.7.2** on any hardware (#216 only ever proved it builds).
+- **PowerVR DXT-48 / G5 (rango), Android 17: still wedges**, byte-identical arrest point (unet
+  compute buffer 1.93 MB VRAM, then silence). Containment held; no reboot needed.
+- **targetSdk 36 on rango's unfolded 852dp panel: renders correctly.** The 35 release gets an
+  IDENTICAL `mAppBounds=Rect(0, 0 - 2076, 2152)`, so 36 changed nothing. A density-override
+  simulation did NOT reproduce the policy — only the real panel settles it.
+
+All three devices were restored to their original state (debug builds uninstalled, staged GGUFs
+removed, density/rotation reset).
+
+---
+
+## 2026-08-18 —  **#69 answered on Mali hardware. targetSdk 36 de-risked. Two PRs open, both yours to call.**
 
 ### Do these in order
 
