@@ -6,7 +6,64 @@ uncommitted section was once destroyed by `git reset --hard` and had to be rebui
 
 ---
 
-## 2026-08-18 (late) — ⏩ START HERE. **targetSdk 36 MERGED, deadline gone. Nothing left with code work in it.**
+## 2026-08-18 (release) — ⏩ START HERE. **v1.0.20 is TAGGED and BUILT as a DRAFT. Do NOT publish it until the migration smoke passes.**
+
+### The one thing that matters
+
+`v1.0.20` is tagged, `release.yaml` succeeded, and a **draft** GitHub release holds all three signed
+artifacts:
+
+| Artifact | Bytes |
+|---|---|
+| `app-full-open-release.apk` (izzy) | 77,927,462 |
+| `app-full-playsafe-release.aab` (Play) | 78,022,931 |
+| `app-degoogled-open-release.apk` | 35,283,729 |
+
+`draft=true` — nothing is public. **The smoke test has NOT been run** (no device was attached when
+the build finished). The tag message says so too.
+
+### Why this release specifically cannot be smoke-tested by a clean install
+
+**v1.0.20 migrates the on-device database v6 → v7** (#282's `sendState`/`sendAttempts`/
+`lastAttemptAt` columns on `content_reports`). A fresh install never runs the migration at all, so a
+clean-install launch proves nothing about it. The only thing that exercises it is an **in-place
+upgrade of a device that already holds real data**.
+
+### The smoke sequence, when a phone is attached
+
+1. **Before-snapshot** — `dumpsys package com.ventouxlabs.relais.izzy` (expect versionCode 37), plus
+   screenshots of `CONFIGURE › REPORTED OUTPUT` and the chat conversation list, so "data survived" is
+   evidenced rather than asserted.
+2. Download `app-full-open-release.apk` from the draft (`gh release download v1.0.20`). This is the
+   `.izzy` variant matching what is installed and is signed with the same release key, so it upgrades
+   in place.
+3. `adb install -r` — **no uninstall**. Uninstalling destroys the very data the test is about.
+4. **Verify:** app launches without crashing (Room throws `IllegalStateException` on an identity-hash
+   mismatch, so a clean launch IS migration proof), historical reports and conversations still
+   present, logcat free of Room migration errors.
+5. File a report with **ALSO SEND TO DEVELOPER** ticked; confirm it sends.
+6. Only then: publish the draft, and patch `docs/store-submission.md`'s AAB row — it is deliberately
+   marked **PENDING** and wants the real size (78,022,931) once the artifact is trusted.
+
+### Shipping content (v1.0.19 → v1.0.20)
+
+#281 consent caption names every sent field · #282 durable opt-in report send (**schema v7**) ·
+#284 **targetSdk/compileSdk 36** + Robolectric 4.16 · #287 a resumed download is no longer counted as
+a new one.
+
+**Nothing changed about WHAT the app transmits.** The field set is identical to 1.0.19; only delivery
+became durable. The Data Safety declaration needs no revision.
+
+### Play status
+
+**Gate 2 is CLEARED** — targetSdk 36 is on `main`, so the 2026-08-30 submission deadline no longer
+applies. Gate 1 now also documents why image generation carries no report affordance (#290). Two open
+decisions before submitting: **#291** (arbitrary model import — recommend option 1, write the
+rationale) and **Gate 3** (FGS screen recording + four declarations, JD-only).
+
+---
+
+## 2026-08-18 (late) —  **targetSdk 36 MERGED, deadline gone. Nothing left with code work in it.**
 
 ### State
 
