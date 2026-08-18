@@ -94,6 +94,16 @@ class DefaultDownloadRepository(
   private val downloadStartTimeSharedPreferences =
     context.getSharedPreferences("download_start_time_ms", Context.MODE_PRIVATE)
 
+  /**
+   * Last reported byte count per model, so a re-enqueue can say where the download actually stands.
+   *
+   * In-memory only, and deliberately so: it is a display detail, not state the download depends on
+   * — the authoritative resume point is the partial `.tmp` file on disk, which `DownloadWorker`
+   * reads to build its `Range` request. Losing this map to process death costs a progress bar that
+   * briefly reads zero, never a re-downloaded byte.
+   */
+  private val lastReceivedBytes = java.util.concurrent.ConcurrentHashMap<String, Long>()
+
   override fun downloadModel(
     task: Task?,
     model: Model,
@@ -198,13 +208,46 @@ class DefaultDownloadRepository(
       if (workInfo != null) {
         when (workInfo.state) {
           WorkInfo.State.ENQUEUED -> {
-            downloadStartTimeSharedPreferences.edit {
-              putLong(model.name, System.currentTimeMillis())
+            // ENQUEUED is two events with one name: a download starting, and a download RESUMING
+            // after the system stopped its worker (a lost constraint, or on Android 16+ a spent job
+            // quota). This branch used to treat both as a start, which silently restamped the start
+            // timestamp and logged a second start event on every interruption — see
+            // [dispositionForEnqueue].
+            val disposition =
+              dispositionForEnqueue(downloadStartTimeSharedPreferences.getLong(model.name, 0L))
+            if (disposition.recordStartTime) {
+              downloadStartTimeSharedPreferences.edit {
+                putLong(model.name, System.currentTimeMillis())
+              }
             }
-            firebaseAnalytics?.logEvent(
-              GalleryEvent.MODEL_DOWNLOAD.id,
-              bundleOf("event_type" to "start", "model_id" to model.name),
-            )
+            if (disposition.logStartEvent) {
+              firebaseAnalytics?.logEvent(
+                GalleryEvent.MODEL_DOWNLOAD.id,
+                bundleOf("event_type" to "start", "model_id" to model.name),
+              )
+            }
+            if (disposition.isResume) {
+              // The app had NO stop observability before this; a stalled download was
+              // indistinguishable from a throttled one. Seeing STOP_REASON_QUOTA here is the
+              // evidence that would justify moving downloads off WorkManager entirely.
+              Log.i(
+                TAG,
+                "download for %s re-enqueued, waiting to resume: %s"
+                  .format(model.name, describeStopReason(workInfo.stopReason)),
+              )
+              // Report the last known byte count rather than nothing: dropping to zero would read
+              // as "the download restarted", when in fact the bytes on disk are kept and the
+              // transfer resumes with a Range request.
+              onStatusUpdated(
+                model,
+                ModelDownloadStatus(
+                  status = ModelDownloadStatusType.IN_PROGRESS,
+                  totalBytes = model.totalBytes,
+                  receivedBytes = lastReceivedBytes[model.name] ?: 0L,
+                  waitingToResume = true,
+                ),
+              )
+            }
           }
 
           WorkInfo.State.RUNNING -> {
@@ -215,6 +258,9 @@ class DefaultDownloadRepository(
 
             if (!startUnzipping) {
               if (receivedBytes != 0L) {
+                // Remembered so a later re-enqueue can report where the download actually is; the
+                // ENQUEUED transition carries no progress data of its own.
+                lastReceivedBytes[model.name] = receivedBytes
                 onStatusUpdated(
                   model,
                   ModelDownloadStatus(
@@ -255,6 +301,7 @@ class DefaultDownloadRepository(
               ),
             )
             downloadStartTimeSharedPreferences.edit { remove(model.name) }
+            lastReceivedBytes.remove(model.name)
           }
 
           WorkInfo.State.FAILED,
@@ -292,6 +339,7 @@ class DefaultDownloadRepository(
               ),
             )
             downloadStartTimeSharedPreferences.edit { remove(model.name) }
+            lastReceivedBytes.remove(model.name)
           }
 
           else -> {}

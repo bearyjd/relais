@@ -27,6 +27,7 @@ import androidx.core.app.NotificationCompat
 import androidx.work.CoroutineWorker
 import androidx.work.Data
 import androidx.work.ForegroundInfo
+import cc.grepon.relais.data.describeStopReason
 import androidx.work.WorkerParameters
 import cc.grepon.relais.data.KEY_MODEL_COMMIT_HASH
 import cc.grepon.relais.data.KEY_MODEL_DOWNLOAD_ACCESS_TOKEN
@@ -322,6 +323,23 @@ class DownloadWorker(context: Context, params: WorkerParameters) :
           Result.failure(
             Data.Builder().putString(KEY_MODEL_DOWNLOAD_ERROR_MESSAGE, e.message).build()
           )
+        } finally {
+          // Why the system took this worker away. `onStopped()` is final on CoroutineWorker, and a
+          // stop cancels this coroutine, so a `finally` guarded on [isStopped] is the seam that
+          // actually reports it.
+          //
+          // The app had NO stop observability before this: a halted download looked identical
+          // whether the network dropped, the user cancelled, or the platform reclaimed the job. On
+          // Android 16+ this is the only way to see `STOP_REASON_QUOTA` — jobs running alongside a
+          // foreground service now count against the app's JobScheduler runtime quota regardless of
+          // `targetSdkVersion`, and a multi-gigabyte model download is exactly the shape of work
+          // that spends it.
+          //
+          // Nothing is cleaned up here on purpose: the partial `.tmp` file IS the resume point, and
+          // deleting it would turn a recoverable pause into a full re-download.
+          if (isStopped) {
+            Log.i(TAG, "download worker stopped: ${describeStopReason(stopReason)}")
+          }
         }
       }
     }

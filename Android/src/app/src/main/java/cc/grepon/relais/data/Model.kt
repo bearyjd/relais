@@ -429,6 +429,22 @@ data class ModelDownloadStatus(
   val errorMessage: String = "",
   val bytesPerSecond: Long = 0,
   val remainingMs: Long = 0,
+  /**
+   * The download is mid-flight but no worker is currently running it — the system stopped the
+   * worker and WorkManager will retry it.
+   *
+   * A flag on [IN_PROGRESS] rather than a new [ModelDownloadStatusType] on purpose: every one of the
+   * 15 files that reads this enum should keep treating a paused download as in progress, because it
+   * is — the bytes already on disk are kept and the transfer resumes with an HTTP `Range` request.
+   * Only the surfaces that render progress need to say anything different, and a new enum entry
+   * would have forced all of them to care. Callers that ignore this field keep their existing
+   * behavior exactly.
+   *
+   * Without it the UI has no way to distinguish "downloading" from "stalled indefinitely": the
+   * progress bar simply froze at its last value with no explanation, which on Android 16+ can now
+   * last until the job quota window rolls over.
+   */
+  val waitingToResume: Boolean = false,
 )
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
