@@ -47,10 +47,20 @@ Verified before publishing, not assumed:
 
 | Device | Relais |
 |---|---|
-| comet (Pixel 9 Pro Fold) | `…izzy` **v1.0.20** |
-| rango (Pixel 10 Pro Fold) | `…izzy` **v1.0.20** · ⚠ `…relais.degoogled` **NOT updated** — a second install with its own data |
+| comet (Pixel 9 Pro Fold) | `…izzy` **v1.0.20** — sole install |
+| rango (Pixel 10 Pro Fold) | `…izzy` **v1.0.20** — sole install |
 | cheetah (Pixel 7 Pro) | none (had none; the Mali-probe debug build was removed) |
 | SM_F936U1 (Galaxy Z Fold 4) | **unknown, never inspected** |
+
+Cleaned up 2026-08-19 — both phones now carry exactly one Relais install. Removed: rango's
+`com.ventouxlabs.relais.degoogled` (v1.0.15, 2026-07-07) and comet's `cc.grepon.relais` (v1.0.15,
+2026-06-12 — the **pre-rename namespace**, from before the applicationId split into
+`…izzy`/`…degoogled`/`…relais`), plus both orphaned `.test` instrumentation APKs.
+
+Worth knowing for the future: stale installs accumulate silently because each applicationId is a
+separate app with its own launcher entry and its own data. `pm list packages | grep -iE
+"ventouxlabs.relais|grepon.relais"` is the check — the old `cc.grepon.*` namespace had been sitting
+on comet for two months unnoticed.
 
 ### Traps found the expensive way — do not re-learn these
 
