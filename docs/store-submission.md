@@ -414,7 +414,7 @@ The console asks **per declared type**, not per service. All four services decla
 > None of this work can run without the user noticing, which is why each service posts a visible
 > notification for its whole lifetime.
 
-**Video demonstrating the feature:** ⚠ **RECORDED — needs uploading, then paste the link here.**
+**Video demonstrating the feature:** <https://github.com/bearyjd/relais/releases/download/v1.0.20/relais-fgs-demo.mp4>
 
 `~/relais-fgs-demo.mp4` (1080×2364, 28.7 s, 723 KB). Captured on comet (Pixel 9 Pro Fold,
 Android 17) running the published v1.0.20: dashboard OFFLINE → **START** → `STARTING` → **LIVE** with
@@ -424,8 +424,11 @@ Android 17) running the published v1.0.20: dashboard OFFLINE → **START** → `
 Nothing sensitive is on screen: the access key renders masked (`••••…4869`) and the LAN address is
 RFC1918. Checked frame by frame before this was written down.
 
-The console wants a **link, not a file** — upload unlisted to YouTube or Drive and replace this
-paragraph with the URL.
+⚠ **That URL is a direct download, not a streaming page.** It is durable and public and serves as
+the archival copy, but Play reviewers generally expect a link that *plays in a browser*. If the
+console rejects it or a reviewer cannot open it, re-upload the **same file** unlisted to YouTube or
+Drive and swap the link — do not re-record. The file is unchanged and kept both on the release and
+at `~/relais-fgs-demo.mp4`.
 
 *Deliberately not in the recording:* an inference being answered. The declaration is about the
 foreground service keeping the node **resident and listening**, which START → LIVE demonstrates; a
