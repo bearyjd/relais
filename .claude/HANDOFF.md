@@ -6,7 +6,71 @@ uncommitted section was once destroyed by `git reset --hard` and had to be rebui
 
 ---
 
-## 2026-08-18 (release) — ⏩ START HERE. **v1.0.20 is TAGGED and BUILT as a DRAFT. Do NOT publish it until the migration smoke passes.**
+## 2026-08-19 — ⏩ START HERE. **v1.0.20 SHIPPED. Every remaining item is Play Console work only JD can do.**
+
+### State
+
+**v1.0.20 is published** (2026-08-18), not a draft: <https://github.com/bearyjd/relais/releases/tag/v1.0.20>
+`main` is targetSdk/compileSdk 36, Robolectric 4.16. **Zero open PRs.**
+
+Verified before publishing, not assumed:
+- **comet upgraded IN PLACE 1.0.19 → 1.0.20 and opened cleanly.** That is the schema **v6 → v7**
+  migration proof — Room validates the identity hash on every open and throws if a migration did not
+  produce the compiled schema, so a clean open cannot happen on a botched one.
+- **v1.0.19 and v1.0.20 signing certs are identical** (`3468fbe6…5b9e9bd2`), so users upgrade in place.
+- rango clean-installed the same signed APK at targetSdk 36 on GrapheneOS / Tensor G5.
+
+### What is left — ALL of it is JD-only
+
+1. **#122 Play Console:** create the app, enrol Play App Signing on first upload, upload the
+   **v1.0.20** AAB (`app-full-playsafe-release.aab`, 78,022,931 bytes), transcribe the forms from
+   `docs/store-submission.md`. Every gate's copy is written and ready to paste.
+2. **Gate 3 video is DONE but the link may need re-hosting.** It is attached to the release:
+   <https://github.com/bearyjd/relais/releases/download/v1.0.20/relais-fgs-demo.mp4> — ⚠ that is a
+   direct **download**, not a streaming page. If the console rejects it, re-upload the **same file**
+   (also at `~/relais-fgs-demo.mp4`) unlisted to YouTube/Drive and swap the link. **Do not re-record.**
+3. **#258:** the Cloudflare edge Rate Limiting rule. Dashboard-only.
+
+### Play readiness — all gates cleared
+
+- **Gate 1** — reporting shipped; also now documents *why image generation carries no report
+  affordance* (there is no in-app surface that displays a generated image; the reversal trigger is
+  recorded).
+- **Gate 2** — CLEARED. targetSdk 36 merged; the 2026-08-30 deadline no longer applies.
+- **Gate 3** — declaration copy written (**one** declaration for the type `dataSync`, NOT four — the
+  console asks per type, not per service) + video recorded.
+- **#291 CLOSED** — model import stays ungated in the Play build, with the rationale AND what was
+  rejected (gating it behind `POLICY_OPEN`) recorded, because the inconsistency otherwise looks
+  accidental.
+
+### Device state (test devices, NOT users — the published release is unaffected)
+
+| Device | Relais |
+|---|---|
+| comet (Pixel 9 Pro Fold) | `…izzy` **v1.0.20** |
+| rango (Pixel 10 Pro Fold) | `…izzy` **v1.0.20** · ⚠ `…relais.degoogled` **NOT updated** — a second install with its own data |
+| cheetah (Pixel 7 Pro) | none (had none; the Mali-probe debug build was removed) |
+| SM_F936U1 (Galaxy Z Fold 4) | **unknown, never inspected** |
+
+### Traps found the expensive way — do not re-learn these
+
+- **Check the installed signature BEFORE planning an in-place upgrade.** A locally-built pre-keystore
+  APK is signed with a different key and can NEVER be upgraded in place by a published release; it
+  needs an uninstall, which destroys on-device data. This cost rango's chat history.
+- **`applicationId` follows the CHANNEL.** To test alongside an installed izzy release, build
+  **`fullPlaysafe`** (`com.ventouxlabs.relais`) — image-gen is on the *dist* dimension, so it is still
+  a full build. This unlocks on-device testing without touching the real install.
+- **`screenrecord` on a foldable pillarboxes** into a canvas matching neither display. Crop it
+  (`crop=1080:2364:498:0` for comet's cover screen).
+- **A density override does NOT reproduce large-screen orientation policy.** It changes what the
+  config reports, not what the display is. Only a real panel settles it.
+- **Do not blind-tap through JD's daily driver.** It repeatedly drifted into other apps (share sheet,
+  camera dialog, a live Zoom call). Prefer evidence that needs no UI: a clean launch plus a silent
+  logcat proved the migration without touching the screen at all.
+
+---
+
+## 2026-08-18 (release) —  **v1.0.20 is TAGGED and BUILT as a DRAFT. Do NOT publish it until the migration smoke passes.**
 
 ### The one thing that matters
 
