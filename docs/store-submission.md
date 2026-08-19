@@ -414,10 +414,23 @@ The console asks **per declared type**, not per service. All four services decla
 > None of this work can run without the user noticing, which is why each service posts a visible
 > notification for its whole lifetime.
 
-**Video demonstrating the feature:** ⚠ **TO RECORD.** A screen recording showing: the app open →
-press **START** → the status flips to LIVE with the LAN address shown → a request answered from
-another device (or the in-app CHAT tab) → **STOP**. Under a minute is sufficient. Upload unlisted to
-YouTube or Drive and paste the link — the console requires a link, not a file.
+**Video demonstrating the feature:** ⚠ **RECORDED — needs uploading, then paste the link here.**
+
+`~/relais-fgs-demo.mp4` (1080×2364, 28.7 s, 723 KB). Captured on comet (Pixel 9 Pro Fold,
+Android 17) running the published v1.0.20: dashboard OFFLINE → **START** → `STARTING` → **LIVE** with
+`engine resident · Gemma-4-E4B-it`, the LAN address `https` and the loopback address, then the
+**STOP** control. The node reached LIVE in ~12 s.
+
+Nothing sensitive is on screen: the access key renders masked (`••••…4869`) and the LAN address is
+RFC1918. Checked frame by frame before this was written down.
+
+The console wants a **link, not a file** — upload unlisted to YouTube or Drive and replace this
+paragraph with the URL.
+
+*Deliberately not in the recording:* an inference being answered. The declaration is about the
+foreground service keeping the node **resident and listening**, which START → LIVE demonstrates; a
+model response would add a minute of waiting and demonstrate the model, not the service. Record a
+longer take if a reviewer asks for one.
 
 ---
 
